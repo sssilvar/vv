@@ -1,0 +1,3 @@
+{
+  "dependencies": ["fmt", { "name": "vtk", "features": ["opengl"] }]
+}
