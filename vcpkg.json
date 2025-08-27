@@ -1,3 +1,13 @@
 {
-  "dependencies": ["fmt", { "name": "vtk", "features": ["opengl"] }]
+  "name": "vv",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "fmt",
+    {
+      "name": "vtk",
+      "features": [
+        "opengl"
+      ]
+    }
+  ]
 }

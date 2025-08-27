@@ -2,7 +2,10 @@ PROJECT_NAME := VtkViewer
 
 .PHONY: all build run clean install
 
-all: build
+all: build run clean install
+
+install:
+	vcpkg install
 
 build:
 	cmake --preset=default
@@ -12,6 +15,7 @@ run: build
 	cmake --build build --target run
 
 clean:
+	rm -rf CMakeCache.txt CMakeFiles
 	rm -rf build
 
 install:

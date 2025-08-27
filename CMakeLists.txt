@@ -1,0 +1,57 @@
+cmake_minimum_required(VERSION 3.10)
+
+project(VtkViewer)
+
+find_package(fmt CONFIG REQUIRED)
+find_package(VTK REQUIRED COMPONENTS
+  CommonCore
+  CommonDataModel
+  CommonColor
+  IOLegacy
+  IOXML
+  FiltersCore
+  RenderingCore
+  RenderingOpenGL2
+  InteractionStyle
+  IOPLY
+  RenderingAnnotation
+)
+
+add_executable(vv main.cpp)
+
+target_link_libraries(vv PRIVATE fmt::fmt)
+target_link_libraries(vv PRIVATE
+  VTK::CommonCore
+  VTK::CommonDataModel
+  VTK::CommonColor
+  VTK::IOLegacy
+  VTK::IOXML
+  VTK::FiltersCore
+  VTK::RenderingCore
+  VTK::RenderingOpenGL2
+  VTK::InteractionStyle
+  VTK::RenderingAnnotation
+)
+
+vtk_module_autoinit(
+  TARGETS vv
+  MODULES ${VTK_LIBRARIES}
+)
+
+add_custom_target(run
+    COMMAND $<TARGET_FILE:vv>
+    DEPENDS vv
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running the application"
+)
+
+
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX "$ENV{HOME}/.local" CACHE PATH "Install path prefix." FORCE)
+endif()
+
+install(TARGETS vv RUNTIME DESTINATION bin)
+
+add_custom_command(TARGET vv POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E echo "To use 'vv', add $ENV{HOME}/.local/bin to your PATH."
+)
