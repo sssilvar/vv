@@ -22,7 +22,7 @@
 #define COLORBAR_TITLE "Scalars"
 #define COLORBAR_WIDTH 100
 #define COLORBAR_HEIGHT 400
-
+#define NAN_COLOR "Grey"
 class ScalarCyclerStyle : public vtkInteractorStyleTrackballCamera
 {
 public:
@@ -63,6 +63,12 @@ public:
             newlut->SetNumberOfTableValues(256);
             newlut->SetRange(range);
             newlut->SetHueRange(0.0, 0.8); // Red to purple
+            // Set NaN color
+            double meshColor[3];
+            vtkNew<vtkNamedColors> colors;
+            colors->GetColorRGB(NAN_COLOR, meshColor);
+            double nanColor[4] = {meshColor[0], meshColor[1], meshColor[2], 1.0};
+            newlut->SetNanColor(nanColor);
             newlut->Build();
             Mapper->SetLookupTable(newlut);
             lut = newlut;
@@ -71,6 +77,12 @@ public:
         {
             lut->SetRange(range);
             lut->SetHueRange(0.0, 0.8); // Red to purple
+            // Set NaN color
+            double meshColor[3];
+            vtkNew<vtkNamedColors> colors;
+            colors->GetColorRGB(NAN_COLOR, meshColor);
+            double nanColor[4] = {meshColor[0], meshColor[1], meshColor[2], 1.0};
+            lut->SetNanColor(nanColor);
             lut->Build();
         }
         Mapper->SetLookupTable(lut);
