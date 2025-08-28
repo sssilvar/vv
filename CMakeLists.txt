@@ -17,7 +17,15 @@ find_package(VTK REQUIRED COMPONENTS
   RenderingAnnotation
 )
 
-add_executable(vv main.cpp)
+add_executable(vv
+  main.cpp
+  MeshParser.cpp
+  XMLMeshParser.cpp
+  VTKMeshParser.cpp
+  MeshRenderer.cpp
+  ScalarCyclerStyle.cpp
+  mesh_utils.cpp
+)
 
 target_link_libraries(vv PRIVATE fmt::fmt)
 target_link_libraries(vv PRIVATE
