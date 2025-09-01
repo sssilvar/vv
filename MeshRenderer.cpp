@@ -46,16 +46,8 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>> &polys,
 
     window = vtkSmartPointer<vtkRenderWindow>::New();
     window->AddRenderer(renderer);
-    int screenWidth = 1024, screenHeight = 768;
-    int *screenSize = window->GetScreenSize();
-    if (screenSize)
-    {
-        screenWidth = screenSize[0];
-        screenHeight = screenSize[1];
-    }
-    int winWidth = static_cast<int>(screenWidth * 0.7);
-    int winHeight = static_cast<int>(screenHeight * 0.7);
-    window->SetSize(winWidth, winHeight);
+    int screenWidth = 1200, screenHeight = 1024;
+    window->SetSize(screenWidth, screenHeight);
     window->SetPosition(100, 100);
     window->SetWindowName("VTK Viewer");
 
