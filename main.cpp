@@ -1,250 +1,119 @@
-#include <vtkNew.h>
-#include <vtkGenericDataObjectReader.h>
-#include <vtkPolyDataMapper.h>
-#include <vtkActor.h>
-#include <vtkNamedColors.h>
-#include <vtkRenderer.h>
-#include <vtkRenderWindow.h>
-#include <vtkRenderWindowInteractor.h>
-#include <vtkProperty.h>
-#include <vtkInteractorStyleTrackballCamera.h>
-#include <vtkPointData.h>
+#include "MeshParser.h"
+#include "XMLMeshParser.h"
+#include "VTKMeshParser.h"
+#include "MeshRenderer.h"
+#include "mesh_utils.h"
+#include <vtkSmartPointer.h>
 #include <vtkPolyData.h>
+#include <array>
 #include <vector>
 #include <string>
 #include <iostream>
-#include <vtkScalarBarActor.h>
-#include <vtkLookupTable.h>
-#include <vtkTextProperty.h>
+#include <memory>
+#include <cstdio>
+#include <unistd.h>
+#include <cstring>
 
-#define BACKGROUND_COLOR "201F1F"
-#define DEFAULT_MESH_COLOR "White"
-#define COLORBAR_TITLE "Scalars"
-#define COLORBAR_WIDTH 100
-#define COLORBAR_HEIGHT 400
-#define NAN_COLOR "Grey"
-class ScalarCyclerStyle : public vtkInteractorStyleTrackballCamera
+// Detect mesh format from buffer (returns "xml", "vtk", or "unknown")
+std::string detect_format(const char *buf, size_t n)
 {
-public:
-    static ScalarCyclerStyle *New();
-    vtkTypeMacro(ScalarCyclerStyle, vtkInteractorStyleTrackballCamera);
-
-    void SetScalars(const std::vector<std::string> &names, vtkPolyDataMapper *mapper, vtkPolyData *poly, vtkRenderWindow *win, vtkScalarBarActor *bar)
-    {
-        this->ScalarNames = names;
-        this->Mapper = mapper;
-        this->Poly = poly;
-        this->Win = win;
-        this->Bar = bar;
-        this->HasNoScalarsState = true;
-    }
-
-    void UpdateColorbar(const std::string &name, bool show = true)
-    {
-        if (!show)
-        {
-            Bar->SetLookupTable(nullptr);
-            Bar->SetTitle("");
-            Bar->SetNumberOfLabels(0);
-            Bar->GetLabelTextProperty()->SetFontSize(1);
-            Bar->GetTitleTextProperty()->SetFontSize(1);
-            return;
-        }
-        auto arr = Poly->GetPointData()->GetArray(name.c_str());
-        if (!arr)
-            return;
-        double range[2];
-        arr->GetRange(range);
-
-        vtkLookupTable *lut = vtkLookupTable::SafeDownCast(Mapper->GetLookupTable());
-        if (!lut)
-        {
-            vtkNew<vtkLookupTable> newlut;
-            newlut->SetNumberOfTableValues(256);
-            newlut->SetRange(range);
-            newlut->SetHueRange(0.0, 0.8); // Red to purple
-            // Set NaN color
-            double meshColor[3];
-            vtkNew<vtkNamedColors> colors;
-            colors->GetColorRGB(NAN_COLOR, meshColor);
-            double nanColor[4] = {meshColor[0], meshColor[1], meshColor[2], 1.0};
-            newlut->SetNanColor(nanColor);
-            newlut->Build();
-            Mapper->SetLookupTable(newlut);
-            lut = newlut;
-        }
-        else
-        {
-            lut->SetRange(range);
-            lut->SetHueRange(0.0, 0.8); // Red to purple
-            // Set NaN color
-            double meshColor[3];
-            vtkNew<vtkNamedColors> colors;
-            colors->GetColorRGB(NAN_COLOR, meshColor);
-            double nanColor[4] = {meshColor[0], meshColor[1], meshColor[2], 1.0};
-            lut->SetNanColor(nanColor);
-            lut->Build();
-        }
-        Mapper->SetLookupTable(lut);
-        Mapper->SetScalarRange(range);
-        Bar->SetLookupTable(lut);
-        Bar->SetTitle(name.c_str());
-        Bar->SetNumberOfLabels(5);
-        Bar->SetUnconstrainedFontSize(true);
-        int *size = Win->GetSize();
-        int barWidth = std::max(80, size[0] / 10);  // 10% of window width, min 80px
-        int barHeight = std::max(200, size[1] / 2); // 50% of window height, min 200px
-        Bar->SetMaximumWidthInPixels(barWidth);
-        Bar->SetMaximumHeightInPixels(barHeight);
-        int fontSize = std::max(10, barHeight / 15);
-        Bar->GetLabelTextProperty()->SetFontSize(fontSize);
-        Bar->GetTitleTextProperty()->SetFontSize(fontSize + 2);
-    }
-
-    void OnKeyPress() override
-    {
-        /*
-         * Callback when the space key is pressed.
-         * It cycles through the scalars and updates the colorbar.
-         * Includes a "No Scalars" state.
-         */
-        std::string key = this->GetInteractor()->GetKeySym();
-        int n = ScalarNames.size();
-        if (key == "space" && n > 0)
-        {
-            Current = (Current + 1) % (n + (HasNoScalarsState ? 1 : 0));
-            if (HasNoScalarsState && Current == n)
-            {
-                Mapper->ScalarVisibilityOff();
-                Bar->SetVisibility(false);
-                Poly->GetPointData()->SetActiveScalars(nullptr);
-                std::string title = "VTK Viewer - No Scalars";
-                Win->SetWindowName(title.c_str());
-                UpdateColorbar("", false);
-                Win->Render();
-            }
-            else
-            {
-                const std::string &name = ScalarNames[Current];
-                Poly->GetPointData()->SetActiveScalars(name.c_str());
-                Mapper->SelectColorArray(name.c_str());
-                Mapper->SetScalarModeToUsePointData();
-                Mapper->SetColorModeToMapScalars();
-                Mapper->ScalarVisibilityOn();
-                Bar->SetVisibility(true);
-                UpdateColorbar(name, true);
-                std::string title = "VTK Viewer - " + name;
-                Win->SetWindowName(title.c_str());
-                Win->Render();
-            }
-        }
-        this->Superclass::OnKeyPress();
-    }
-
-    void OnConfigure() override
-    {
-        if (!ScalarNames.empty())
-        {
-            const std::string &name = ScalarNames[Current];
-            UpdateColorbar(name);
-            Win->Render();
-        }
-        this->Superclass::OnConfigure();
-    }
-
-private:
-    std::vector<std::string> ScalarNames;
-    vtkPolyDataMapper *Mapper = nullptr;
-    vtkPolyData *Poly = nullptr;
-    vtkRenderWindow *Win = nullptr;
-    vtkScalarBarActor *Bar = nullptr;
-    int Current = 0;
-    bool HasNoScalarsState = false;
-};
-vtkStandardNewMacro(ScalarCyclerStyle);
+    std::string s(buf, n);
+    // XML: starts with <?xml or <DIF or <
+    if (s.find("<?xml") == 0 || s.find("<DIF") == 0 || s.find('<') == 0)
+        return "xml";
+    // VTK: contains # vtk DataFile, <VTKFile, or VTK anywhere
+    if (s.find("# vtk DataFile") != std::string::npos ||
+        s.find("<VTKFile") != std::string::npos ||
+        s.find("VTK") != std::string::npos)
+        return "vtk";
+    return "unknown";
+}
 
 int main(int argc, char *argv[])
 {
     if (argc < 2)
     {
-        std::cerr << "Usage: " << argv[0] << " file.vtk" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <meshfile>\n";
         return 1;
     }
-    vtkNew<vtkGenericDataObjectReader> reader;
-    reader->SetFileName(argv[1]);
-    reader->Update();
-
-    vtkPolyData *poly = vtkPolyData::SafeDownCast(reader->GetOutput());
-    if (!poly)
+    std::string filename = argv[1];
+    std::string realFilename = filename;
+    std::string tmpFile;
+    std::string detectedFormat;
+    if (filename == "-")
     {
-        std::cerr << "Not a polydata file!" << std::endl;
+        detectedFormat = detectFormatFromStream(stdin, tmpFile, detectedFormat);
+        if (detectedFormat == "unknown")
+        {
+            std::cerr << "Could not detect mesh format from stdin" << std::endl;
+            return 4;
+        }
+        realFilename = tmpFile;
+        std::cerr << "[DEBUG] Detected format: " << detectedFormat << std::endl;
+    }
+    // List of available mesh parsers
+    std::vector<std::unique_ptr<MeshParser>> parsers;
+    parsers.emplace_back(std::make_unique<XMLMeshParser>());
+    parsers.emplace_back(std::make_unique<VTKMeshParser>());
+    // Find a parser that can handle the file
+    MeshParser *selected = nullptr;
+    if (!detectedFormat.empty())
+    {
+        for (auto &parser : parsers)
+        {
+            if ((detectedFormat == "xml" && dynamic_cast<XMLMeshParser *>(parser.get())) ||
+                (detectedFormat == "vtk" && dynamic_cast<VTKMeshParser *>(parser.get())))
+            {
+                selected = parser.get();
+                break;
+            }
+        }
+    }
+    else
+    {
+        for (auto &parser : parsers)
+        {
+            if (parser->canParse(realFilename))
+            {
+                selected = parser.get();
+                break;
+            }
+        }
+    }
+    if (!selected)
+    {
+        if (!tmpFile.empty())
+        {
+            std::cerr << "[DEBUG] First 200 bytes of stdin (for parser selection):\n";
+            FILE *f = fopen(tmpFile.c_str(), "rb");
+            if (f)
+            {
+                char head[201] = {0};
+                size_t n = fread(head, 1, 200, f);
+                std::cerr << std::string(head, n) << std::endl;
+                fclose(f);
+            }
+        }
+        std::cerr << "No suitable parser found for file: " << filename << std::endl;
         return 2;
     }
-
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputData(poly);
-
-    vtkNew<vtkActor> actor;
-    actor->SetMapper(mapper);
-
-    vtkNew<vtkNamedColors> colors;
-    actor->GetProperty()->SetColor(colors->GetColor3d(DEFAULT_MESH_COLOR).GetData());
-
-    vtkNew<vtkRenderer> renderer;
-    renderer->AddActor(actor);
-    renderer->SetBackground(colors->GetColor3d(BACKGROUND_COLOR).GetData());
-
-    // Add colorbar
-    vtkNew<vtkScalarBarActor> bar;
-    bar->SetTitle(COLORBAR_TITLE);
-    bar->SetNumberOfLabels(5);
-    renderer->AddActor2D(bar);
-
-    vtkNew<vtkRenderWindow> window;
-    window->AddRenderer(renderer);
-
-    int winWidth = 1200;
-    int winHeight = 900;
-
-    window->SetSize(winWidth, winHeight);
-    window->SetPosition(100, 100);
-    window->SetWindowName("VTK Viewer");
-
-    vtkNew<vtkRenderWindowInteractor> interactor;
-    interactor->SetRenderWindow(window);
-
-    // Gather all point scalar array names
-    std::vector<std::string> scalars;
-    vtkPointData *pd = poly->GetPointData();
-    for (int i = 0; i < pd->GetNumberOfArrays(); ++i)
+    // Parse the mesh(es)
+    std::vector<vtkSmartPointer<vtkPolyData>> polys = selected->parse(realFilename);
+    if (!tmpFile.empty())
+        unlink(tmpFile.c_str());
+    if (polys.empty())
     {
-        if (pd->GetArray(i))
-        {
-            scalars.push_back(pd->GetArray(i)->GetName());
-        }
+        std::cerr << "Failed to parse mesh: " << filename << std::endl;
+        return 3;
     }
-
-    vtkNew<ScalarCyclerStyle> style;
-    style->SetScalars(scalars, mapper, poly, window, bar);
-    interactor->SetInteractorStyle(style);
-
-    // Initialize with first scalar if no scalars are active by default
-    if (!scalars.empty())
-    {
-        const char *active = poly->GetPointData()->GetScalars() ? poly->GetPointData()->GetScalars()->GetName() : nullptr;
-        if (!active)
-        {
-
-            poly->GetPointData()->SetActiveScalars(scalars[0].c_str());
-            mapper->SelectColorArray(scalars[0].c_str());
-            mapper->SetScalarModeToUsePointData();
-            mapper->SetColorModeToMapScalars();
-            mapper->ScalarVisibilityOn();
-        }
-        style->UpdateColorbar(scalars[0], true);
-    }
-
-    window->Render();
-    interactor->Start();
+    // Names and colors for each mesh (distinct colors)
+    std::vector<std::string> names(polys.size(), filename);
+    std::vector<std::array<double, 3>> colorsHex;
+    for (size_t i = 0; i < polys.size(); ++i)
+        colorsHex.push_back(generateDistinctColor(static_cast<int>(i)));
+    // Render
+    MeshRenderer renderer;
+    renderer.setup(polys, names, colorsHex);
+    renderer.start();
     return 0;
 }
