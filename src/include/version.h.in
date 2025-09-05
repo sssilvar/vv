@@ -1,2 +1,3 @@
 #pragma once
 #define VV_VERSION "@PROJECT_VERSION@"
+#define VV_BUILD_DATE "@VV_BUILD_DATE@"

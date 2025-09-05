@@ -47,6 +47,7 @@ add_custom_target(run
     COMMENT "Running the application"
 )
 
+string(TIMESTAMP VV_BUILD_DATE "%Y-%m-%d")
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/src/include/version.h.in
   ${CMAKE_CURRENT_BINARY_DIR}/version.h
