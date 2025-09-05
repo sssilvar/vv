@@ -1,3 +1,4 @@
+#include "version.h"
 #include "MeshParser.h"
 #include "XMLMeshParser.h"
 #include "VTKMeshParser.h"
@@ -31,6 +32,11 @@ std::string detect_format(const char *buf, size_t n)
 
 int main(int argc, char *argv[])
 {
+    if (argc > 1 && std::string(argv[1]) == "--version")
+    {
+        std::cout << "vv version " << VV_VERSION << std::endl;
+        return 0;
+    }
     if (argc < 2)
     {
         std::cerr << "Usage: " << argv[0] << " <meshfile>\n";
