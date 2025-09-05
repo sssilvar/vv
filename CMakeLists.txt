@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(VtkViewer)
+project(VtkViewer VERSION 1.0.0)
 
 find_package(fmt CONFIG REQUIRED)
 find_package(VTK REQUIRED COMPONENTS
@@ -46,6 +46,13 @@ add_custom_target(run
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running the application"
 )
+
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/include/version.h.in
+  ${CMAKE_CURRENT_BINARY_DIR}/version.h
+  @ONLY
+)
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
