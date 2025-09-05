@@ -60,7 +60,3 @@ if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
 endif()
 
 install(TARGETS vv RUNTIME DESTINATION bin)
-
-add_custom_command(TARGET vv POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E echo "To use 'vv', add $ENV{HOME}/.local/bin to your PATH."
-)
