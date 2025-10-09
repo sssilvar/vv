@@ -2,6 +2,7 @@
 #include "MeshParser.h"
 #include "XMLMeshParser.h"
 #include "VTKMeshParser.h"
+#include "CartoMeshParser.h"
 #include "MeshRenderer.h"
 #include "mesh_utils.h"
 #include <vtkSmartPointer.h>
@@ -15,7 +16,7 @@
 #include <unistd.h>
 #include <cstring>
 
-// Detect mesh format from buffer (returns "xml", "vtk", or "unknown")
+// Detect mesh format from buffer (returns "xml", "vtk", "carto", or "unknown")
 std::string detect_format(const char *buf, size_t n)
 {
     std::string s(buf, n);
@@ -27,6 +28,9 @@ std::string detect_format(const char *buf, size_t n)
         s.find("<VTKFile") != std::string::npos ||
         s.find("VTK") != std::string::npos)
         return "vtk";
+    // CARTO: contains #TriangulatedMeshVersion
+    if (s.find("#TriangulatedMeshVersion") != std::string::npos)
+        return "carto";
     return "unknown";
 }
 
@@ -61,6 +65,7 @@ int main(int argc, char *argv[])
     std::vector<std::unique_ptr<MeshParser>> parsers;
     parsers.emplace_back(std::make_unique<XMLMeshParser>());
     parsers.emplace_back(std::make_unique<VTKMeshParser>());
+    parsers.emplace_back(std::make_unique<CartoMeshParser>());
     // Find a parser that can handle the file
     MeshParser *selected = nullptr;
     if (!detectedFormat.empty())
@@ -68,7 +73,8 @@ int main(int argc, char *argv[])
         for (auto &parser : parsers)
         {
             if ((detectedFormat == "xml" && dynamic_cast<XMLMeshParser *>(parser.get())) ||
-                (detectedFormat == "vtk" && dynamic_cast<VTKMeshParser *>(parser.get())))
+                (detectedFormat == "vtk" && dynamic_cast<VTKMeshParser *>(parser.get())) ||
+                (detectedFormat == "carto" && dynamic_cast<CartoMeshParser *>(parser.get())))
             {
                 selected = parser.get();
                 break;
