@@ -9,6 +9,7 @@
 #include <sstream>
 #include <vtkFloatArray.h>
 #include <vtkPointData.h>
+#include "mesh_utils.h"
 
 XMLMeshParser::~XMLMeshParser() = default;
 
@@ -66,8 +67,8 @@ std::vector<vtkSmartPointer<vtkPolyData>> XMLMeshParser::parse(const std::string
             continue;
         vtkNew<vtkPoints> pts;
         pts->SetNumberOfPoints(static_cast<vtkIdType>(verts.size() / 3));
-        for (vtkIdType i = 0; i < static_cast<vtkIdType>(verts.size() / 3); ++i)
-            pts->SetPoint(i, verts[3 * i + 0], verts[3 * i + 1], verts[3 * i + 2]);
+        for (vtkIdType vi = 0; vi < static_cast<vtkIdType>(verts.size() / 3); ++vi)
+            pts->SetPoint(vi, verts[3 * vi + 0], verts[3 * vi + 1], verts[3 * vi + 2]);
         vtkXMLDataElement *polyElem = vol->FindNestedElementWithName("Polygons");
         if (!polyElem)
             continue;
@@ -77,12 +78,8 @@ std::vector<vtkSmartPointer<vtkPolyData>> XMLMeshParser::parse(const std::string
         vtkNew<vtkCellArray> polysArr;
         vtkIdType tri[3];
         bool oneBased = true;
-        for (size_t j = 0; j < ids.size(); ++j)
-            if (ids[j] == 0)
-            {
-                oneBased = false;
-                break;
-            }
+        if (std::any_of(ids.begin(), ids.end(), [](vtkIdType v){ return v == 0; }))
+            oneBased = false;
         for (size_t j = 0; j < ids.size(); j += 3)
         {
             tri[0] = ids[j + 0] - (oneBased ? 1 : 0);
@@ -103,8 +100,8 @@ std::vector<vtkSmartPointer<vtkPolyData>> XMLMeshParser::parse(const std::string
                 an->SetName("Normals");
                 an->SetNumberOfComponents(3);
                 an->SetNumberOfTuples(static_cast<vtkIdType>(n.size() / 3));
-                for (vtkIdType i = 0; i < static_cast<vtkIdType>(n.size() / 3); ++i)
-                    an->SetTuple3(i, static_cast<float>(n[3 * i]), static_cast<float>(n[3 * i + 1]), static_cast<float>(n[3 * i + 2]));
+                for (vtkIdType ni = 0; ni < static_cast<vtkIdType>(n.size() / 3); ++ni)
+                    an->SetTuple3(ni, static_cast<float>(n[3 * ni]), static_cast<float>(n[3 * ni + 1]), static_cast<float>(n[3 * ni + 2]));
                 poly->GetPointData()->SetNormals(an);
                 poly->GetPointData()->AddArray(an);
             }
@@ -116,15 +113,6 @@ std::vector<vtkSmartPointer<vtkPolyData>> XMLMeshParser::parse(const std::string
 
 bool XMLMeshParser::canParse(const std::string &filename)
 {
-    // Simple extension check for now
-    auto ends_with = [](const std::string &str, const std::string &suffix)
-    {
-        return str.size() >= suffix.size() &&
-               str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
-    };
-    auto tolower = [](char c)
-    { return std::tolower(static_cast<unsigned char>(c)); };
-    std::string fname_lower(filename.size(), '\0');
-    std::transform(filename.begin(), filename.end(), fname_lower.begin(), tolower);
-    return fname_lower.find("model") != std::string::npos && fname_lower.find("groups") != std::string::npos;
+    std::string header = readHeader(filename, 200);
+    return header.find("xml") != std::string::npos && header.find("DIF") != std::string::npos;
 }

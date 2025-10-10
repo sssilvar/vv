@@ -1,5 +1,6 @@
 .vscode/
 build/
+.cache/
 
 # Created by https://www.toptal.com/developers/gitignore/api/macos,linux,c++,ninja,vcpkg,cmake
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,linux,c++,ninja,vcpkg,cmake

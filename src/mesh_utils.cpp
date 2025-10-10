@@ -1,67 +1,30 @@
 #include "mesh_utils.h"
+#include <cstdio>
+#include <string>
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 #include <cstring>
-#include <iostream>
 #include <array>
 #include <cmath>
 
-std::string detectFormatFromStream(FILE *in, std::string &tmpFileOut, std::string &detectedFormatOut, size_t maxBytes)
-{
-    char head[201] = {0};
-    size_t nhead = fread(head, 1, maxBytes, in);
-    std::string s(head, nhead);
-    // XML: starts with <?xml or <DIF or <
-    if (s.find("<?xml") == 0 || s.find("<DIF") == 0 || s.find('<') == 0)
-        detectedFormatOut = "xml";
-    // VTK: contains # vtk DataFile, <VTKFile, or VTK anywhere
-    else if (s.find("# vtk DataFile") != std::string::npos ||
-             s.find("<VTKFile") != std::string::npos ||
-             s.find("VTK") != std::string::npos)
-        detectedFormatOut = "vtk";
-    else
-        detectedFormatOut = "unknown";
-    // Write head + rest of in to a temp file
-    char tmpname[] = "/tmp/vvstdinXXXXXX";
-    int fd = mkstemp(tmpname);
-    if (fd == -1)
-    {
-        std::cerr << "Failed to create temp file for stdin" << std::endl;
-        tmpFileOut.clear();
-        return detectedFormatOut;
-    }
-    FILE *out = fdopen(fd, "wb");
-    if (!out)
-    {
-        std::cerr << "Failed to open temp file for writing" << std::endl;
-        close(fd);
-        unlink(tmpname);
-        tmpFileOut.clear();
-        return detectedFormatOut;
-    }
-    if (fwrite(head, 1, nhead, out) != nhead)
-    {
-        std::cerr << "Failed to write to temp file" << std::endl;
-        fclose(out);
-        unlink(tmpname);
-        tmpFileOut.clear();
-        return detectedFormatOut;
-    }
-    char buf[8192];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
-    {
-        if (fwrite(buf, 1, n, out) != n)
-        {
-            std::cerr << "Failed to write to temp file" << std::endl;
-            fclose(out);
-            unlink(tmpname);
-            tmpFileOut.clear();
-            return detectedFormatOut;
-        }
-    }
-    fclose(out);
-    tmpFileOut = tmpname;
-    return detectedFormatOut;
+std::string readHeader(FILE *f, size_t nbytes) {
+    if (!f) return {};
+    std::string s(nbytes, '\0');
+    size_t n = fread(&s[0], 1, nbytes, f);
+    s.resize(n);
+    return s;
+}
+std::string readHeader(const std::string& filename, size_t nbytes) {
+    if (filename == "-") return readHeader(stdin, nbytes);
+    FILE *f = fopen(filename.c_str(), "rb");
+    if (!f) return {};
+    std::string s = readHeader(f, nbytes);
+    fclose(f);
+    return s;
 }
 
 static inline std::array<double, 3> hsv2rgb(double h, double s, double v)
@@ -98,4 +61,42 @@ std::array<double, 3> generateDistinctColor(int i)
     double s = 0.95;
     double v = 1.0;
     return hsv2rgb(h, s, v);
+}
+
+std::string stdinToTempFile() {
+    std::string tmpPath;
+#ifdef _WIN32
+    char tmpName[L_tmpnam+1];
+    errno_t err = tmpnam_s(tmpName, L_tmpnam);
+    if (err != 0) return {};
+    tmpPath = tmpName;
+    FILE *out = fopen(tmpPath.c_str(), "wb");
+    if (!out) return {};
+#else
+    char tmpName[] = "/tmp/vvstdinXXXXXX";
+    int fd = mkstemp(tmpName);
+    if (fd == -1) return {};
+    FILE *out = fdopen(fd, "wb");
+    if (!out) {
+        close(fd);
+        unlink(tmpName);
+        return {};
+    }
+    tmpPath = tmpName;
+#endif
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            fclose(out);
+#ifdef _WIN32
+            remove(tmpPath.c_str());
+#else
+            unlink(tmpPath.c_str());
+#endif
+            return {};
+        }
+    }
+    fclose(out);
+    return tmpPath;
 }
