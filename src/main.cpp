@@ -16,27 +16,9 @@
 #include <unistd.h>
 #include <cstring>
 
-// Detect mesh format from buffer (returns "xml", "vtk", "carto", or "unknown")
-std::string detect_format(const char *buf, size_t n)
-{
-    std::string s(buf, n);
-    // XML: starts with <?xml or <DIF or <
-    if (s.find("<?xml") == 0 || s.find("<DIF") == 0 || s.find('<') == 0)
-        return "xml";
-    // VTK: contains # vtk DataFile, <VTKFile, or VTK anywhere
-    if (s.find("# vtk DataFile") != std::string::npos ||
-        s.find("<VTKFile") != std::string::npos ||
-        s.find("VTK") != std::string::npos)
-        return "vtk";
-    // CARTO: contains #TriangulatedMeshVersion
-    if (s.find("#TriangulatedMeshVersion") != std::string::npos)
-        return "carto";
-    return "unknown";
-}
-
 int main(int argc, char *argv[])
 {
-    if (argc > 1 && std::string(argv[1]) == "--version")
+    if (argc > 1 && (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v"))
     {
         std::cout << "vv version " << VV_VERSION << " (built " << VV_BUILD_DATE << ")" << std::endl;
         return 0;
@@ -49,70 +31,42 @@ int main(int argc, char *argv[])
     std::string filename = argv[1];
     std::string realFilename = filename;
     std::string tmpFile;
-    std::string detectedFormat;
-    if (filename == "-")
-    {
-        detectedFormat = detectFormatFromStream(stdin, tmpFile, detectedFormat);
-        if (detectedFormat == "unknown")
-        {
-            std::cerr << "Could not detect mesh format from stdin" << std::endl;
-            return 4;
+    if (filename == "-") {
+        tmpFile = stdinToTempFile();
+        if (tmpFile.empty()) {
+            std::cerr << "Failed to create temp file for stdin" << std::endl;
+            return 5;
         }
         realFilename = tmpFile;
-        std::cerr << "[DEBUG] Detected format: " << detectedFormat << std::endl;
+    } else {
+        if (access(filename.c_str(), F_OK) != 0) {
+            std::cerr << "Error: File does not exist: " << filename << std::endl;
+            return 1;
+        }
     }
     // List of available mesh parsers
     std::vector<std::unique_ptr<MeshParser>> parsers;
     parsers.emplace_back(std::make_unique<XMLMeshParser>());
     parsers.emplace_back(std::make_unique<VTKMeshParser>());
     parsers.emplace_back(std::make_unique<CartoMeshParser>());
-    // Find a parser that can handle the file
+    // Find a parser that can handle the file or stdin
     MeshParser *selected = nullptr;
-    if (!detectedFormat.empty())
+    for (auto &parser : parsers)
     {
-        for (auto &parser : parsers)
+        if (parser->canParse(realFilename))
         {
-            if ((detectedFormat == "xml" && dynamic_cast<XMLMeshParser *>(parser.get())) ||
-                (detectedFormat == "vtk" && dynamic_cast<VTKMeshParser *>(parser.get())) ||
-                (detectedFormat == "carto" && dynamic_cast<CartoMeshParser *>(parser.get())))
-            {
-                selected = parser.get();
-                break;
-            }
-        }
-    }
-    else
-    {
-        for (auto &parser : parsers)
-        {
-            if (parser->canParse(realFilename))
-            {
-                selected = parser.get();
-                break;
-            }
+            selected = parser.get();
+            break;
         }
     }
     if (!selected)
     {
-        if (!tmpFile.empty())
-        {
-            std::cerr << "[DEBUG] First 200 bytes of stdin (for parser selection):\n";
-            FILE *f = fopen(tmpFile.c_str(), "rb");
-            if (f)
-            {
-                char head[201] = {0};
-                size_t n = fread(head, 1, 200, f);
-                std::cerr << std::string(head, n) << std::endl;
-                fclose(f);
-            }
-        }
         std::cerr << "No suitable parser found for file: " << filename << std::endl;
         return 2;
     }
     // Parse the mesh(es)
     std::vector<vtkSmartPointer<vtkPolyData>> polys = selected->parse(realFilename);
-    if (!tmpFile.empty())
-        unlink(tmpFile.c_str());
+    if (!tmpFile.empty()) unlink(tmpFile.c_str());
     if (polys.empty())
     {
         std::cerr << "Failed to parse mesh: " << filename << std::endl;

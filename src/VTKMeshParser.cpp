@@ -1,35 +1,47 @@
 #include "VTKMeshParser.h"
 #include <vtkPolyDataReader.h>
+#include <vtkXMLPolyDataReader.h>
 #include <vtkSmartPointer.h>
 #include <vtkPolyData.h>
 #include <string>
 #include <iostream>
 #include <vtkPointData.h>
+#include "mesh_utils.h"
 
 VTKMeshParser::~VTKMeshParser() = default;
 
 std::vector<vtkSmartPointer<vtkPolyData>> VTKMeshParser::parse(const std::string &filename)
 {
     std::vector<vtkSmartPointer<vtkPolyData>> polys;
-    vtkNew<vtkPolyDataReader> reader;
-    reader->SetFileName(filename.c_str());
-    reader->Update();
-    vtkPolyData *poly = reader->GetOutput();
-    if (!poly)
+    // Try VTP (XML) format first
     {
-        std::cerr << "Failed to read VTK file: " << filename << std::endl;
-        return polys;
+        vtkNew<vtkXMLPolyDataReader> reader;
+        reader->SetFileName(filename.c_str());
+        reader->Update();
+        vtkPolyData *poly = reader->GetOutput();
+        if (poly && poly->GetNumberOfPoints() > 0) {
+            polys.push_back(poly);
+            return polys;
+        }
     }
-    polys.push_back(poly);
+    // Fall back to legacy VTK format
+    {
+        vtkNew<vtkPolyDataReader> reader;
+        reader->SetFileName(filename.c_str());
+        reader->Update();
+        vtkPolyData *poly = reader->GetOutput();
+        if (poly && poly->GetNumberOfPoints() > 0) {
+            polys.push_back(poly);
+            return polys;
+        }
+    }
+    std::cerr << "Failed to read VTK file: " << filename << std::endl;
     return polys;
 }
 
 bool VTKMeshParser::canParse(const std::string &filename)
 {
-    auto ends_with = [](const std::string &str, const std::string &suffix)
-    {
-        return str.size() >= suffix.size() &&
-               str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
-    };
-    return ends_with(filename, ".vtk");
+    std::string header = readHeader(filename, 200);
+    return header.find("# vtk DataFile") != std::string::npos ||
+           header.find("<VTKFile") != std::string::npos;
 }

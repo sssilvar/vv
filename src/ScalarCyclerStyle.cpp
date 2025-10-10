@@ -8,9 +8,7 @@
 #include <vtkScalarBarActor.h>
 #include <vtkTextProperty.h>
 #include <algorithm>
-#include <iostream>
 #include <vtkRenderWindowInteractor.h>
-#include <cmath>
 
 void ScalarCyclerStyle::SetScalars(const std::vector<std::string> &names,
                                    const std::vector<vtkPolyDataMapper *> &mappers,
@@ -82,7 +80,7 @@ void ScalarCyclerStyle::UpdateColorbar(const std::string &name, bool show, vtkPo
     Bar->SetTitle(name.c_str());
     Bar->SetNumberOfLabels(5);
     Bar->SetUnconstrainedFontSize(true);
-    int *size = Win->GetSize();
+    const int *size = Win->GetSize();
     int barWidth = std::max(80, size[0] / 10);
     int barHeight = std::max(200, size[1] / 2);
     Bar->SetMaximumWidthInPixels(barWidth);
@@ -115,7 +113,7 @@ void ScalarCyclerStyle::OnKeyPress()
             // Set unique color for each actor
             for (size_t i = 0; i < Actors.size(); ++i)
             {
-                std::array<double, 3> color = {0.5, 0.5, 0.5};
+                std::array<double, 3> color;
                 if (i < BaseColors.size())
                     color = BaseColors[i];
                 else
@@ -142,7 +140,7 @@ void ScalarCyclerStyle::OnKeyPress()
                     Mappers[i]->SetScalarModeToUsePointData();
                     Mappers[i]->SetColorModeToMapScalars();
                     Mappers[i]->ScalarVisibilityOn();
-                    if (Actors[i] && i < BaseColors.size())
+                    if (i < BaseColors.size() && Actors[i])
                         Actors[i]->GetProperty()->SetColor(BaseColors[i][0], BaseColors[i][1], BaseColors[i][2]);
                     if (!found)
                     {

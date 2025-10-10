@@ -11,6 +11,7 @@
 #include <fstream>
 #include <sstream>
 #include <cctype>
+#include "mesh_utils.h"
 
 
 CartoMeshParser::~CartoMeshParser() = default;
@@ -129,22 +130,6 @@ std::vector<vtkSmartPointer<vtkPolyData>> CartoMeshParser::parse(const std::stri
 
 bool CartoMeshParser::canParse(const std::string &filename)
 {
-    auto ends_with = [](const std::string &str, const std::string &suffix) {
-        return str.size() >= suffix.size() &&
-               str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
-    };
-    if (ends_with(filename, ".mesh")) {
-        return true;
-    }
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        return false;
-    }
-    std::string line;
-    if (std::getline(file, line)) {
-        if (line.find("#TriangulatedMeshVersion") != std::string::npos) {
-            return true;
-        }
-    }
-    return false;
+    std::string header = readHeader(filename, 200);
+    return header.find("#TriangulatedMeshVersion2.0") != std::string::npos;
 }
