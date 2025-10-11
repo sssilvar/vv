@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <unistd.h>
 #include <cstring>
+#include "FSurfMeshParser.h"
 
 int main(int argc, char *argv[])
 {
@@ -49,6 +50,7 @@ int main(int argc, char *argv[])
     parsers.emplace_back(std::make_unique<XMLMeshParser>());
     parsers.emplace_back(std::make_unique<VTKMeshParser>());
     parsers.emplace_back(std::make_unique<CartoMeshParser>());
+    parsers.emplace_back(std::make_unique<FSurfMeshParser>());
     // Find a parser that can handle the file or stdin
     MeshParser *selected = nullptr;
     for (auto &parser : parsers)

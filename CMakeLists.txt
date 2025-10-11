@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(VtkViewer VERSION 1.0.2)
+project(VtkViewer VERSION 1.0.3)
 
 find_package(fmt CONFIG REQUIRED)
 find_package(VTK REQUIRED COMPONENTS
