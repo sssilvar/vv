@@ -10,41 +10,40 @@
 #include <algorithm>
 #include <vtkRenderWindowInteractor.h>
 
-void ScalarCyclerStyle::SetScalars(const std::vector<std::string> &names,
-                                   const std::vector<vtkPolyDataMapper *> &mappers,
-                                   const std::vector<vtkPolyData *> &polys,
-                                   vtkRenderWindow *win,
-                                   vtkScalarBarActor *bar)
+extern const char* kVVWindowTitle;
+
+void ScalarCyclerStyle::initialize(const RendererContext& ctx,
+                                   const std::vector<std::string>& names,
+                                   const std::vector<vtkPolyDataMapper *>& mappers,
+                                   const std::vector<vtkPolyData *>& polys)
 {
-    this->ScalarNames = names;
-    this->Mappers = mappers;
-    this->Polys = polys;
-    this->Win = win;
-    this->Bar = bar;
-    this->HasNoScalarsState = true;
+    scalarNames = names;
+    this->mappers = mappers;
+    this->polys = polys;
+    window = ctx.window;
+    bar = ctx.bar;
+    hasNoScalarsState = true;
 }
 
 void ScalarCyclerStyle::UpdateColorbar(const std::string &name, bool show)
 {
-    // Use the first mesh and mapper if available
-    if (!Polys.empty() && !Mappers.empty())
-        UpdateColorbar(name, show, Polys[0], Mappers[0]);
+    if (!polys.empty() && !mappers.empty())
+        UpdateColorbar(name, show, polys[0], mappers[0]);
 }
 
 void ScalarCyclerStyle::UpdateColorbar(const std::string &name, bool show, vtkPolyData *poly, vtkPolyDataMapper *mapper)
 {
     if (!show)
     {
-        Bar->SetLookupTable(nullptr);
-        Bar->SetTitle("");
-        Bar->SetNumberOfLabels(0);
-        Bar->GetLabelTextProperty()->SetFontSize(1);
-        Bar->GetTitleTextProperty()->SetFontSize(1);
+        bar->SetLookupTable(nullptr);
+        bar->SetTitle("");
+        bar->SetNumberOfLabels(0);
+        bar->GetLabelTextProperty()->SetFontSize(1);
+        bar->GetTitleTextProperty()->SetFontSize(1);
         return;
     }
     auto arr = poly->GetPointData()->GetArray(name.c_str());
-    if (!arr)
-        return;
+    if (!arr) return;
     double range[2];
     arr->GetRange(range);
     vtkLookupTable *lut = vtkLookupTable::SafeDownCast(mapper->GetLookupTable());
@@ -76,87 +75,86 @@ void ScalarCyclerStyle::UpdateColorbar(const std::string &name, bool show, vtkPo
     }
     mapper->SetLookupTable(lut);
     mapper->SetScalarRange(range);
-    Bar->SetLookupTable(lut);
-    Bar->SetTitle(name.c_str());
-    Bar->SetNumberOfLabels(5);
-    Bar->SetUnconstrainedFontSize(true);
-    const int *size = Win->GetSize();
+    bar->SetLookupTable(lut);
+    bar->SetTitle(name.c_str());
+    bar->SetNumberOfLabels(5);
+    bar->SetUnconstrainedFontSize(true);
+    const int *size = window->GetSize();
     int barWidth = std::max(80, size[0] / 10);
     int barHeight = std::max(200, size[1] / 2);
-    Bar->SetMaximumWidthInPixels(barWidth);
-    Bar->SetMaximumHeightInPixels(barHeight);
+    bar->SetMaximumWidthInPixels(barWidth);
+    bar->SetMaximumHeightInPixels(barHeight);
     int fontSize = std::max(10, barHeight / 15);
-    Bar->GetLabelTextProperty()->SetFontSize(fontSize);
-    Bar->GetTitleTextProperty()->SetFontSize(fontSize + 2);
+    bar->GetLabelTextProperty()->SetFontSize(fontSize);
+    bar->GetTitleTextProperty()->SetFontSize(fontSize + 2);
 }
 
 void ScalarCyclerStyle::SetActors(const std::vector<vtkActor *> &actors, const std::vector<std::array<double, 3>> &baseColors)
 {
-    this->Actors = actors;
-    this->BaseColors = baseColors;
+    this->actors.clear();
+    for (auto *a : actors) this->actors.push_back(a);
+    this->baseColors = baseColors;
 }
 
 void ScalarCyclerStyle::OnKeyPress()
 {
     std::string key = this->GetInteractor()->GetKeySym();
-    int n = static_cast<int>(ScalarNames.size());
+    int n = static_cast<int>(scalarNames.size());
     if (key == "space" && n > 0)
     {
-        Current = (Current + 1) % (n + (HasNoScalarsState ? 1 : 0));
-        if (HasNoScalarsState && Current == n)
+        current = (current + 1) % (n + (hasNoScalarsState ? 1 : 0));
+        if (hasNoScalarsState && current == n)
         {
-            for (auto *mapper : Mappers)
+            for (auto *mapper : mappers)
                 mapper->ScalarVisibilityOff();
-            Bar->SetVisibility(false);
-            for (auto *poly : Polys)
+            bar->SetVisibility(false);
+            for (auto *poly : polys)
                 poly->GetPointData()->SetActiveScalars(nullptr);
-            // Set unique color for each actor
-            for (size_t i = 0; i < Actors.size(); ++i)
+            for (size_t i = 0; i < actors.size(); ++i)
             {
                 std::array<double, 3> color;
-                if (i < BaseColors.size())
-                    color = BaseColors[i];
+                if (i < baseColors.size())
+                    color = baseColors[i];
                 else
                     color = generateDistinctColor(static_cast<int>(i));
-                if (Actors[i])
-                    Actors[i]->GetProperty()->SetColor(color[0], color[1], color[2]);
+                if (actors[i])
+                    actors[i]->GetProperty()->SetColor(color[0], color[1], color[2]);
             }
-            Win->SetWindowName("VTK Viewer - No Scalars");
+            window->SetWindowName((std::string(kVVWindowTitle) + " - No Scalars").c_str());
             UpdateColorbar("", false);
-            Win->Render();
+            window->Render();
         }
         else
         {
-            const std::string &name = ScalarNames[Current];
-            // Set scalar for all meshes that have it
+            const std::string &name = scalarNames[current];
             bool found = false;
-            for (size_t i = 0; i < Polys.size(); ++i)
+            for (size_t i = 0; i < polys.size(); ++i)
             {
-                auto *arr = Polys[i]->GetPointData()->GetArray(name.c_str());
+                auto *arr = polys[i]->GetPointData()->GetArray(name.c_str());
                 if (arr)
                 {
-                    Polys[i]->GetPointData()->SetActiveScalars(name.c_str());
-                    Mappers[i]->SelectColorArray(name.c_str());
-                    Mappers[i]->SetScalarModeToUsePointData();
-                    Mappers[i]->SetColorModeToMapScalars();
-                    Mappers[i]->ScalarVisibilityOn();
-                    if (i < BaseColors.size() && Actors[i])
-                        Actors[i]->GetProperty()->SetColor(BaseColors[i][0], BaseColors[i][1], BaseColors[i][2]);
+                    polys[i]->GetPointData()->SetActiveScalars(name.c_str());
+                    mappers[i]->SelectColorArray(name.c_str());
+                    mappers[i]->SetScalarModeToUsePointData();
+                    mappers[i]->SetColorModeToMapScalars();
+                    mappers[i]->ScalarVisibilityOn();
+                    if (i < baseColors.size() && actors[i])
+                        actors[i]->GetProperty()->SetColor(baseColors[i][0], baseColors[i][1], baseColors[i][2]);
                     if (!found)
                     {
-                        Bar->SetVisibility(true);
-                        UpdateColorbar(name, true, Polys[i], Mappers[i]);
+                        bar->SetVisibility(true);
+                        UpdateColorbar(name, true, polys[i], mappers[i]);
                         found = true;
                     }
                 }
                 else
                 {
-                    Mappers[i]->ScalarVisibilityOff();
+                    mappers[i]->ScalarVisibilityOff();
                 }
             }
-            std::string title = "VTK Viewer - " + name;
-            Win->SetWindowName(title.c_str());
-            Win->Render();
+            std::string title = std::string(kVVWindowTitle) + " - " + name;
+            window->SetWindowName(title.c_str());
+            window->Render();
         }
     }
     this->Superclass::OnKeyPress();

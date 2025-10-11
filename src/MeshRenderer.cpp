@@ -2,7 +2,6 @@
 #include "ScalarCyclerStyle.h"
 #include <vtkNamedColors.h>
 #include <vtkPointData.h>
-#include <algorithm>
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
@@ -12,8 +11,9 @@
 #include <vtkProperty.h>
 #include <set>
 
-MeshRenderer::~MeshRenderer() = default;
+const char* kVVWindowTitle = "VV mesh viewer";
 
+MeshRenderer::~MeshRenderer() = default;
 MeshRenderer::MeshRenderer() {}
 
 void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>> &polys,
@@ -22,14 +22,15 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>> &polys,
 {
     renderer = vtkSmartPointer<vtkRenderer>::New();
 
-    bar = vtkSmartPointer<vtkScalarBarActor>::New();
-    bar->SetTitle("Scalars");
-    bar->SetNumberOfLabels(5);
-    renderer->AddActor2D(bar);
-    bar->SetVisibility(false);
+    context.window = vtkSmartPointer<vtkRenderWindow>::New();
+    context.bar = vtkSmartPointer<vtkScalarBarActor>::New();
+    context.bar->SetTitle("Scalars");
+    context.bar->SetNumberOfLabels(5);
+    renderer->AddActor2D(context.bar);
+    context.bar->SetVisibility(false);
 
     mappers.clear();
-    actors.clear();
+    context.actors.clear();
     for (size_t i = 0; i < polys.size(); ++i)
     {
         vtkNew<vtkPolyDataMapper> mapper;
@@ -41,20 +42,19 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>> &polys,
         actor->GetProperty()->SetOpacity(1.0);
         renderer->AddActor(actor);
         mappers.push_back(mapper);
-        actors.push_back(actor);
+        context.actors.push_back(actor);
     }
+    context.colorsHex = colorsHex;
 
-    window = vtkSmartPointer<vtkRenderWindow>::New();
-    window->AddRenderer(renderer);
+    context.window->AddRenderer(renderer);
     int screenWidth = 1200, screenHeight = 1024;
-    window->SetSize(screenWidth, screenHeight);
-    window->SetPosition(100, 100);
-    window->SetWindowName("VTK Viewer");
+    context.window->SetSize(screenWidth, screenHeight);
+    context.window->SetPosition(100, 100);
+    context.window->SetWindowName(kVVWindowTitle);
 
     interactor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
-    interactor->SetRenderWindow(window);
+    interactor->SetRenderWindow(context.window);
 
-    // Collect all unique scalar names from all meshes
     std::set<std::string> scalarNameSet;
     for (const auto &poly : polys)
     {
@@ -72,17 +72,16 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>> &polys,
         polyPtrs.push_back(polys[i].GetPointer());
     }
     std::vector<vtkActor *> actorPtrs;
-    for (size_t i = 0; i < actors.size(); ++i)
-        actorPtrs.push_back(actors[i].GetPointer());
+    for (size_t i = 0; i < context.actors.size(); ++i)
+        actorPtrs.push_back(context.actors[i].GetPointer());
     vtkNew<ScalarCyclerStyle> style;
     if (!polys.empty() && !mappers.empty())
     {
-        style->SetScalars(scalarNames, mapperPtrs, polyPtrs, window, bar);
+        style->initialize(context, scalarNames, mapperPtrs, polyPtrs);
         style->SetActors(actorPtrs, colorsHex);
     }
     interactor->SetInteractorStyle(style);
 
-    // If the first block has scalars, initialize the colorbar with the first one
     if (!polys.empty() && !scalarNames.empty())
     {
         const std::string &firstScalar = scalarNames[0];
@@ -100,7 +99,7 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>> &polys,
                 if (!found)
                 {
                     style->UpdateColorbar(firstScalar, true);
-                    bar->SetVisibility(true);
+                    context.bar->SetVisibility(true);
                     found = true;
                 }
             }
@@ -114,6 +113,6 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>> &polys,
 
 void MeshRenderer::start()
 {
-    window->Render();
+    context.window->Render();
     interactor->Start();
 }

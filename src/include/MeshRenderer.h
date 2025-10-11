@@ -10,6 +10,13 @@
 #include <vtkPolyDataMapper.h>
 #include <vtkActor.h>
 
+struct RendererContext {
+    vtkSmartPointer<vtkRenderWindow> window;
+    vtkSmartPointer<vtkScalarBarActor> bar;
+    std::vector<vtkSmartPointer<vtkActor>> actors;
+    std::vector<std::array<double, 3>> colorsHex;
+};
+
 class MeshRenderer
 {
 public:
@@ -20,11 +27,9 @@ public:
                const std::vector<std::array<double, 3>> &colorsHex);
     void start();
 
+    RendererContext context;
 private:
     vtkSmartPointer<vtkRenderer> renderer;
-    vtkSmartPointer<vtkRenderWindow> window;
     vtkSmartPointer<vtkRenderWindowInteractor> interactor;
-    vtkSmartPointer<vtkScalarBarActor> bar;
     std::vector<vtkSmartPointer<vtkPolyDataMapper>> mappers;
-    std::vector<vtkSmartPointer<vtkActor>> actors;
 };
