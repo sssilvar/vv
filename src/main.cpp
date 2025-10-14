@@ -16,22 +16,49 @@
 #include <unistd.h>
 #include <cstring>
 #include "FSurfMeshParser.h"
+#include <cxxopts.hpp>
+
+struct Args {
+    std::string meshfile;
+    bool version = false;
+    bool help = false;
+};
+
+Args parseArgs(int argc, char *argv[]) {
+    Args args;
+    cxxopts::Options options("vv", "A simple mesh viewer");
+    options.positional_help("<meshfile>");
+    options.add_options()
+        ("v,version", "Show version and exit", cxxopts::value<bool>(args.version))
+        ("h,help",    "Show help and exit",    cxxopts::value<bool>(args.help))
+        ("meshfile",  "Mesh file or '-'",      cxxopts::value<std::string>(args.meshfile));
+    options.parse_positional({"meshfile"});
+
+    auto result = options.parse(argc, argv);
+
+    if (args.help) {
+        std::cout << options.help() << '\n';
+        std::exit(0);
+    }
+    if (args.version) {
+        std::cout << "vv version " << VV_VERSION << " (built " << VV_BUILD_DATE << ")\n";
+        std::exit(0);
+    }
+    if (args.meshfile.empty()) {
+        std::cerr << "Usage: vv <meshfile>\n" << options.help() << '\n';
+        std::exit(1);
+    }
+    return args;
+}
 
 int main(int argc, char *argv[])
 {
-    if (argc > 1 && (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v"))
-    {
-        std::cout << "vv version " << VV_VERSION << " (built " << VV_BUILD_DATE << ")" << std::endl;
-        return 0;
-    }
-    if (argc < 2)
-    {
-        std::cerr << "Usage: " << argv[0] << " <meshfile>\n";
-        return 1;
-    }
-    std::string filename = argv[1];
+    Args args = parseArgs(argc, argv);
+    
+    std::string filename = args.meshfile;
     std::string realFilename = filename;
     std::string tmpFile;
+
     if (filename == "-") {
         tmpFile = stdinToTempFile();
         if (tmpFile.empty()) {
