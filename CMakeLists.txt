@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.10)
 project(VtkViewer VERSION 1.0.3)
 
 find_package(fmt CONFIG REQUIRED)
+find_package(cxxopts CONFIG REQUIRED)
 find_package(VTK REQUIRED COMPONENTS
   CommonCore
   CommonDataModel
@@ -33,6 +34,7 @@ target_link_libraries(vv PRIVATE
   VTK::RenderingOpenGL2
   VTK::InteractionStyle
   VTK::RenderingAnnotation
+  cxxopts::cxxopts
 )
 
 vtk_module_autoinit(
