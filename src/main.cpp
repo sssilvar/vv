@@ -20,6 +20,7 @@
 
 struct Args {
     std::string meshfile;
+    bool explode_view = false;
     bool version = false;
     bool help = false;
 };
@@ -29,6 +30,7 @@ Args parseArgs(int argc, char *argv[]) {
     cxxopts::Options options("vv", "A simple mesh viewer");
     options.positional_help("<meshfile>");
     options.add_options()
+        ("e,explode", "Explode scalar view", cxxopts::value<bool>(args.explode_view))
         ("v,version", "Show version and exit", cxxopts::value<bool>(args.version))
         ("h,help",    "Show help and exit",    cxxopts::value<bool>(args.help))
         ("meshfile",  "Mesh file or '-'",      cxxopts::value<std::string>(args.meshfile));
@@ -108,7 +110,12 @@ int main(int argc, char *argv[])
         colorsHex.push_back(generateDistinctColor(static_cast<int>(i)));
     // Render
     MeshRenderer renderer;
-    renderer.setup(polys, names, colorsHex);
-    renderer.start();
+    if (args.explode_view) {
+        renderer.setupFacetGrid(polys, names, colorsHex);
+        renderer.startFacetGrid();
+    } else {
+        renderer.setup(polys, names, colorsHex);
+        renderer.start();
+    }
     return 0;
 }

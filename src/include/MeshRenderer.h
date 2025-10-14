@@ -27,6 +27,11 @@ public:
                const std::vector<std::array<double, 3>> &colorsHex);
     void start();
 
+    void setupFacetGrid(const std::vector<vtkSmartPointer<vtkPolyData>>& polys,
+                       const std::vector<std::string>& names,
+                       const std::vector<std::array<double, 3>>& colorsHex);
+    void startFacetGrid();
+
     RendererContext context;
 private:
     vtkSmartPointer<vtkRenderer> renderer;
