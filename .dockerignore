@@ -1,0 +1,11 @@
+build/
+.vscode/
+.cache/
+.gitignore
+.git/
+.gitignore
+.git/
+.gitignore
+.git/
+vcpkg_installed/
+compile_commands.json

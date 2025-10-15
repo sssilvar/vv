@@ -7,6 +7,7 @@
 #include <string>
 #include <cstdint>
 #include <iostream>
+#include <cstring>
 
 bool FSurfMeshParser::canParse(const std::string &filename) {
     auto ends_with = [](const std::string &s, const std::string &sfx) {
@@ -45,9 +46,9 @@ std::vector<vtkSmartPointer<vtkPolyData>> FSurfMeshParser::parse(const std::stri
         f.read(reinterpret_cast<char*>(xyz), 12);
         for (int j = 0; j < 3; ++j) {
             uint32_t tmp;
-            std::memcpy(&tmp, xyz + j, 4);
+            memcpy(&tmp, xyz + j, 4);
             tmp = __builtin_bswap32(tmp);
-            std::memcpy(xyz + j, &tmp, 4);
+            memcpy(xyz + j, &tmp, 4);
         }
         pts->SetPoint(i, xyz[0], xyz[1], xyz[2]);
     }
