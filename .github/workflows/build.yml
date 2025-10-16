@@ -1,0 +1,94 @@
+name: Build Multi-Platform
+
+on:
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_FEATURE_FLAGS: "-compilertracking"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    name: Build Linux
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Update version for release
+      if: github.event_name == 'release'
+      run: |
+        VERSION="${{ github.event.release.tag_name }}"
+        VERSION=${VERSION#v}
+        echo "Updating version to $VERSION"
+        sed -i "s/project(VtkViewer VERSION [0-9]\+\.[0-9]\+\.[0-9]\+)/project(VtkViewer VERSION $VERSION)/" CMakeLists.txt
+        echo "Updated CMakeLists.txt:"
+        grep "project(VtkViewer" CMakeLists.txt
+
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: 'df2a2af2ea793d9f4acae227337e34a91a40ef3d'
+
+    - name: Setup Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          ninja-build \
+          pkg-config \
+          bison \
+          flex \
+          libxmu-dev \
+          libxi-dev \
+          libgl-dev \
+          libxt-dev \
+          libsm-dev \
+          libice-dev \
+          libxext-dev \
+          libxrender-dev \
+          libxrandr-dev \
+          libxcursor-dev \
+          libxinerama-dev \
+          libx11-dev \
+          mesa-common-dev \
+          freeglut3-dev
+
+    - name: Cache CMake build directory
+      uses: actions/cache@v4
+      with:
+        path: build
+        key: linux-cmake-${{ hashFiles('**/CMakeLists.txt', 'vcpkg.json', 'vcpkg-configuration.json') }}
+        restore-keys: |
+          linux-cmake-
+
+    - name: Configure CMake
+      run: |
+        cmake -Bbuild -S. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+          -DBUILD_SHARED_LIBS=OFF \
+          -GNinja \
+          -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
+
+    - name: Build project
+      run: cmake --build build --config Release -j$(nproc)
+
+    - name: Upload binary artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.event_name == 'release' && format('{0}-{1}', 'vv-linux-x64', github.event.release.tag_name) || 'vv-linux-x64' }}
+        path: build/vv
+        retention-days: ${{ github.event_name == 'release' && 90 || 30 }}
+
+    - name: Test binary
+      run: |
+        file build/vv
+        ldd build/vv || true
+        ./build/vv --help || echo "Help command returned $?"
