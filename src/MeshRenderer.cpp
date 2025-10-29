@@ -14,6 +14,7 @@
 #include <vtkRenderer.h>
 #include <vtkRendererCollection.h>
 #include <vtkScalarBarActor.h>
+#include <vtkTextProperty.h>
 
 const char *kVVWindowTitle = "VV mesh viewer";
 
@@ -119,21 +120,29 @@ void MeshRenderer::start() {
 
 void MeshRenderer::setupFacetGrid(
     const std::vector<vtkSmartPointer<vtkPolyData>> &polys,
-    const std::vector<std::string> &,
+    const std::vector<std::string> &names,
     const std::vector<std::array<double, 3>> &colorsHex) {
   if (polys.empty())
     return;
 
-  std::set<std::string> sset;
-  for (auto &p : polys) {
-    auto *pd = p->GetPointData();
-    for (int i = 0; i < pd->GetNumberOfArrays(); ++i)
-      if (auto *a = pd->GetArray(i))
-        if (a->GetName())
-          sset.insert(a->GetName());
+  // Collect all (mesh_index, scalar_name) pairs
+  struct MeshScalarPair {
+    size_t meshIndex;
+    std::string scalarName;
+    std::string meshName;
+  };
+  std::vector<MeshScalarPair> pairs;
+  for (size_t j = 0; j < polys.size(); ++j) {
+    auto *pd = polys[j]->GetPointData();
+    for (int i = 0; i < pd->GetNumberOfArrays(); ++i) {
+      if (auto *a = pd->GetArray(i)) {
+        if (a->GetName()) {
+          pairs.push_back({j, a->GetName(), names[j]});
+        }
+      }
+    }
   }
-  std::vector<std::string> scalars(sset.begin(), sset.end());
-  if (scalars.empty())
+  if (pairs.empty())
     return;
 
   context.window = vtkSmartPointer<vtkRenderWindow>::New();
@@ -143,34 +152,10 @@ void MeshRenderer::setupFacetGrid(
   context.window->SetSize(std::min(sw[0], 1400), std::min(sw[1], 1200));
   context.window->SetPosition(80, 60);
 
-  const int n = static_cast<int>(scalars.size());
+  const int n = static_cast<int>(pairs.size());
   const int cols =
       static_cast<int>(std::ceil(std::sqrt(static_cast<double>(n))));
   const int rows = static_cast<int>(std::ceil(static_cast<double>(n) / cols));
-
-  struct R {
-    double lo, hi;
-    bool ok;
-  };
-  std::vector<R> ranges(n, {0, 0, false});
-  for (int i = 0; i < n; ++i) {
-    double lo = 0, hi = 0;
-    bool any = false;
-    for (auto &p : polys)
-      if (auto *a = p->GetPointData()->GetArray(scalars[i].c_str())) {
-        double r[2];
-        a->GetRange(r);
-        if (!any) {
-          lo = r[0];
-          hi = r[1];
-          any = true;
-        } else {
-          lo = std::min(lo, r[0]);
-          hi = std::max(hi, r[1]);
-        }
-      }
-    ranges[i] = {lo, hi, any && hi > lo};
-  }
 
   mappers.clear();
   context.actors.clear();
@@ -186,11 +171,26 @@ void MeshRenderer::setupFacetGrid(
     ren->SetViewport(xmin, ymin, xmax, ymax);
     context.window->AddRenderer(ren);
 
-    vtkSmartPointer<vtkLookupTable> lut;
-    if (ranges[i].ok) {
-      lut = vtkSmartPointer<vtkLookupTable>::New();
+    const auto& pair = pairs[i];
+    auto& srcPoly = polys[pair.meshIndex];
+    
+    vtkNew<vtkPolyData> poly;
+    poly->ShallowCopy(srcPoly);
+    poly->GetPointData()->SetActiveScalars(pair.scalarName.c_str());
+    
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputData(poly);
+    mapper->SelectColorArray(pair.scalarName.c_str());
+    mapper->SetScalarModeToUsePointData();
+    mapper->SetColorModeToMapScalars();
+    
+    auto* arr = poly->GetPointData()->GetArray(pair.scalarName.c_str());
+    if (arr) {
+      double range[2];
+      arr->GetRange(range);
+      vtkNew<vtkLookupTable> lut;
       lut->SetNumberOfTableValues(256);
-      lut->SetRange(ranges[i].lo, ranges[i].hi);
+      lut->SetRange(range);
       lut->SetHueRange(0.0, 0.8);
       double meshColor[3];
       vtkNew<vtkNamedColors> colors;
@@ -198,54 +198,37 @@ void MeshRenderer::setupFacetGrid(
       double nanColor[4] = {meshColor[0], meshColor[1], meshColor[2], 1.0};
       lut->SetNanColor(nanColor);
       lut->Build();
-    }
-
-    for (size_t j = 0; j < polys.size(); ++j) {
-      auto& srcPoly = polys[j];
-      vtkNew<vtkPolyData> poly;
-      poly->ShallowCopy(srcPoly); // fix: each actor sees correct scalar
-      poly->GetPointData()->SetActiveScalars(scalars[i].c_str());
-      vtkNew<vtkPolyDataMapper> mapper;
-      mapper->SetInputData(poly);
-      mapper->SelectColorArray(scalars[i].c_str());
-      mapper->SetScalarModeToUsePointData();
-      mapper->SetColorModeToMapScalars();
-      auto* arr = poly->GetPointData()->GetArray(scalars[i].c_str());
-      if (arr) {
-          double range[2];
-          arr->GetRange(range);
-          vtkNew<vtkLookupTable> lut;
-          lut->SetNumberOfTableValues(256);
-          lut->SetRange(range);
-          lut->SetHueRange(0.0, 0.8);
-          double meshColor[3];
-          vtkNew<vtkNamedColors> colors;
-          colors->GetColorRGB("Grey", meshColor);
-          double nanColor[4] = {meshColor[0], meshColor[1], meshColor[2], 1.0};
-          lut->SetNanColor(nanColor);
-          lut->Build();
-          mapper->SetLookupTable(lut);
-          mapper->SetScalarRange(range);
-          mapper->ScalarVisibilityOn();
-      } else {
-          mapper->ScalarVisibilityOff();
-      }
-      auto color = (j < colorsHex.size()) ? colorsHex[j] : generateDistinctColor(static_cast<int>(j));
-      vtkNew<vtkActor> actor;
-      actor->SetMapper(mapper);
-      actor->GetProperty()->SetColor(color[0], color[1], color[2]);
-      ren->AddActor(actor);
-      mappers.push_back(mapper);
-      context.actors.push_back(actor);
-    }
-
-    if (lut) {
+      mapper->SetLookupTable(lut);
+      mapper->SetScalarRange(range);
+      mapper->ScalarVisibilityOn();
+      
       auto bar = vtkSmartPointer<vtkScalarBarActor>::New();
       bar->SetLookupTable(lut);
-      bar->SetTitle(scalars[i].c_str());
+      std::string basename = pair.meshName;
+      size_t lastSlash = basename.find_last_of("/\\");
+      if (lastSlash != std::string::npos) {
+        basename = basename.substr(lastSlash + 1);
+      }
+      bar->SetTitle((pair.scalarName + "\n(" + basename + ")").c_str());
       bar->SetNumberOfLabels(4);
+      bar->SetWidth(0.05);
+      bar->SetHeight(0.6);
+      bar->SetUnconstrainedFontSize(true);
+      bar->GetTitleTextProperty()->SetFontSize(24);
+      bar->GetLabelTextProperty()->SetFontSize(24);
       ren->AddActor2D(bar);
+      
+    } else {
+      mapper->ScalarVisibilityOff();
     }
+    
+    auto color = (pair.meshIndex < colorsHex.size()) ? colorsHex[pair.meshIndex] : generateDistinctColor(static_cast<int>(pair.meshIndex));
+    vtkNew<vtkActor> actor;
+    actor->SetMapper(mapper);
+    actor->GetProperty()->SetColor(color[0], color[1], color[2]);
+    ren->AddActor(actor);
+    mappers.push_back(mapper);
+    context.actors.push_back(actor);
   }
 
   vtkBoundingBox bbox;
