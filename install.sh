@@ -9,7 +9,6 @@ run() {
   eval "$@"
 }
 
-export VCPKG_ROOT=$(dirname "$(which vcpkg)")
 INSTALL_DIR=${INSTALL_DIR:-~/.local/bin}
 run "mkdir -p $INSTALL_DIR"
 

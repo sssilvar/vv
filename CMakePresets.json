@@ -26,7 +26,6 @@
         "strategy": "external"
       },
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_BUILD_TYPE": "Debug"
       }
     },
@@ -37,7 +36,6 @@
       "binaryDir": "${sourceDir}/build",
       "installDir": "${sourceDir}/build/install",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_BUILD_TYPE": "Release"
       }
     },
@@ -48,7 +46,6 @@
       "binaryDir": "${sourceDir}/build/debug",
       "installDir": "${sourceDir}/build/debug/install",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_BUILD_TYPE": "Debug"
       },
       "condition": {
@@ -69,7 +66,6 @@
       "binaryDir": "${sourceDir}/build",
       "installDir": "${sourceDir}/build/install",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_BUILD_TYPE": "Release"
       },
       "condition": {
@@ -90,7 +86,6 @@
       "binaryDir": "${sourceDir}/build/debug",
       "installDir": "${sourceDir}/build/install/debug",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_BUILD_TYPE": "Debug"
       },
       "condition": {
@@ -111,7 +106,6 @@
       "binaryDir": "${sourceDir}/build/",
       "installDir": "${sourceDir}/build/install/",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_BUILD_TYPE": "Release"
       },
       "condition": {

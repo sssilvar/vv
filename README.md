@@ -7,13 +7,11 @@
 For Debian/Ubuntu distributions:
 
 ```sh
-sudo apt install -y curl zip unzip tar pkg-config libxmu-dev libxi-dev libgl-dev libxt-dev libglvnd-dev libopengl-dev libglx-dev libegl-dev cmake ninja-build
+sudo apt install -y curl zip unzip tar pkg-config cmake ninja-build libvtk9-dev libxmu-dev libxi-dev libgl-dev libxt-dev libglvnd-dev libopengl-dev libglx-dev libegl-dev
 ```
 
-### vcpkg
-
-- Install [vcpkg](https://learn.microsoft.com/en-gb/vcpkg/get_started/get-started?pivots=shell-bash)
-- Ensure `VCPKG_ROOT` is set (usually to `$HOME/vcpkg`)
+`fmt` and `cxxopts` are fetched automatically by CMake when not installed.
+`VTK` must be available on the system so `find_package(VTK)` can resolve it.
 
 ## Build (with CMake presets)
 
@@ -26,6 +24,9 @@ cmake --build --preset=$PRESET  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cp build/compile_commands.json .  # Needed for C/C++ autocompletion and symbol search in VSCode
 ```
 
+The project builds a single Qt-based executable: `vv`.
+Required UI dependencies are Qt6 Widgets and `VTK::GUISupportQt`.
+
 To analyze your code for common issues and style problems, use:
 
 ```sh
@@ -37,7 +38,6 @@ cppcheck  --check-level=exhaustive  --enable=warning,style,performance,portabili
 No need to build (already done in install script).
 
 ```sh
-vcpkg install  # Downloads and builds dependencies
 ./install.sh
 ```
 
