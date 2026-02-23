@@ -2,14 +2,14 @@
 
 #include <string>
 #include <vector>
+#include <vtkDataSet.h>
+#include <vtkDataSetMapper.h>
 #include <vtkLookupTable.h>
-#include <vtkPolyData.h>
-#include <vtkPolyDataMapper.h>
 #include <vtkRenderWindow.h>
 #include <vtkScalarBarActor.h>
 #include <vtkSmartPointer.h>
 
-bool computeScalarGlobalRange(const std::vector<vtkPolyData*>& polys,
+bool computeScalarGlobalRange(const std::vector<vtkDataSet*>& meshes,
                               const std::string& scalarName,
                               double outRange[2]);
 
@@ -23,7 +23,7 @@ void updateScalarBar(vtkScalarBarActor* bar,
                      const std::string& title,
                      bool show);
 
-bool setMapperScalarFromPointData(vtkPolyData* poly,
-                                  vtkPolyDataMapper* mapper,
+bool setMapperScalarFromPointData(vtkDataSet* mesh,
+                                  vtkDataSetMapper* mapper,
                                   const std::string& scalarName,
                                   const double range[2]);

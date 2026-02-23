@@ -34,8 +34,8 @@ bool FSurfMeshParser::canParse(const std::string& filename) {
          ends_with(filename, ".white");
 }
 
-std::vector<vtkSmartPointer<vtkPolyData>> FSurfMeshParser::parse(const std::string& filename) {
-  std::vector<vtkSmartPointer<vtkPolyData>> polys;
+std::vector<vtkSmartPointer<vtkDataSet>> FSurfMeshParser::parse(const std::string& filename) {
+  std::vector<vtkSmartPointer<vtkDataSet>> polys;
   std::ifstream f(filename, std::ios::binary);
   if (!f) {
     std::cerr << "Could not open FreeSurfer surface file: " << filename << std::endl;

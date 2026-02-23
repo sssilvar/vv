@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 #include <vtkActor.h>
-#include <vtkPolyData.h>
-#include <vtkPolyDataMapper.h>
+#include <vtkDataSet.h>
+#include <vtkDataSetMapper.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRenderer.h>
@@ -29,7 +29,7 @@ public:
   ~MeshRenderer();
   void setRenderContext(vtkRenderWindow* externalWindow,
                         vtkRenderWindowInteractor* externalInteractor);
-  void setup(const std::vector<vtkSmartPointer<vtkPolyData>>& polys,
+  void setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
              const std::vector<std::string>& names,
              const std::vector<std::array<double, 3>>& colorsHex);
   void start();
@@ -47,7 +47,7 @@ public:
   bool getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo) const;
   bool setFacetPanelClipRange(size_t panelIndex, double minValue, double maxValue);
 
-  void setupFacetGrid(const std::vector<vtkSmartPointer<vtkPolyData>>& polys,
+  void setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
                       const std::vector<std::string>& names,
                       const std::vector<std::array<double, 3>>& colorsHex);
   void startFacetGrid();
@@ -57,14 +57,14 @@ public:
 private:
   vtkSmartPointer<vtkRenderer> renderer;
   vtkSmartPointer<vtkRenderWindowInteractor> interactor;
-  std::vector<vtkSmartPointer<vtkPolyData>> scenePolys;
-  std::vector<vtkSmartPointer<vtkPolyDataMapper>> mappers;
+  std::vector<vtkSmartPointer<vtkDataSet>> sceneMeshes;
+  std::vector<vtkSmartPointer<vtkDataSetMapper>> mappers;
   std::vector<std::string> availableScalars;
   std::string activeScalarName;
   double activeScalarGlobalRange[2] = {0.0, 1.0};
   double clipRange[2] = {0.0, 1.0};
   struct FacetPanelState {
-    vtkSmartPointer<vtkPolyDataMapper> mapper;
+    vtkSmartPointer<vtkDataSetMapper> mapper;
     std::string title;
     double globalRange[2] = {0.0, 1.0};
     double clipRange[2] = {0.0, 1.0};

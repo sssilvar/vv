@@ -7,15 +7,16 @@
 #include <set>
 #include <vtkActor.h>
 #include <vtkCamera.h>
+#include <vtkDataSetMapper.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
 #include <vtkPointData.h>
-#include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRenderer.h>
 #include <vtkRendererCollection.h>
+#include <vtkUnstructuredGrid.h>
 
 const char* kVVWindowTitle = "VV mesh viewer";
 
@@ -29,12 +30,12 @@ void MeshRenderer::setRenderContext(vtkRenderWindow* externalWindow,
   embeddedMode = (externalWindow != nullptr && externalInteractor != nullptr);
 }
 
-void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>>& polys,
+void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
                          const std::vector<std::string>& names,
                          const std::vector<std::array<double, 3>>& colorsHex) {
   (void)names;
   renderer = vtkSmartPointer<vtkRenderer>::New();
-  scenePolys = polys;
+  sceneMeshes = meshes;
   facetPanels.clear();
 
   if (!context.window) {
@@ -42,14 +43,17 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>>& polys,
   }
   mappers.clear();
   context.actors.clear();
-  for (size_t i = 0; i < polys.size(); ++i) {
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputData(polys[i]);
+  for (size_t i = 0; i < meshes.size(); ++i) {
+    vtkNew<vtkDataSetMapper> mapper;
+    mapper->SetInputData(meshes[i]);
     mapper->ScalarVisibilityOff();
     vtkNew<vtkActor> actor;
     actor->SetMapper(mapper);
     actor->GetProperty()->SetColor(colorsHex[i][0], colorsHex[i][1], colorsHex[i][2]);
     actor->GetProperty()->SetOpacity(1.0);
+    if (vtkUnstructuredGrid::SafeDownCast(meshes[i])) {
+      actor->GetProperty()->SetRepresentationToSurface();
+    }
     renderer->AddActor(actor);
     mappers.push_back(mapper);
     context.actors.push_back(actor);
@@ -78,8 +82,8 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkPolyData>>& polys,
   interactor->SetInteractorStyle(defaultStyle);
 
   std::set<std::string> scalarNameSet;
-  for (const auto& poly : polys) {
-    vtkPointData* pd = poly->GetPointData();
+  for (const auto& mesh : meshes) {
+    vtkPointData* pd = mesh->GetPointData();
     for (int i = 0; i < pd->GetNumberOfArrays(); ++i)
       if (pd->GetArray(i) && pd->GetArray(i)->GetName())
         scalarNameSet.insert(pd->GetArray(i)->GetName());
@@ -105,10 +109,10 @@ void MeshRenderer::start() {
 #include <vtkCommand.h>
 #include <vtkRendererCollection.h>
 
-void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkPolyData>>& polys,
+void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
                                   const std::vector<std::string>& names,
                                   const std::vector<std::array<double, 3>>& colorsHex) {
-  if (polys.empty())
+  if (meshes.empty())
     return;
 
   // Collect all (mesh_index, scalar_name) pairs
@@ -118,8 +122,8 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkPolyData>
     std::string meshName;
   };
   std::vector<MeshScalarPair> pairs;
-  for (size_t j = 0; j < polys.size(); ++j) {
-    auto* pd = polys[j]->GetPointData();
+  for (size_t j = 0; j < meshes.size(); ++j) {
+    auto* pd = meshes[j]->GetPointData();
     for (int i = 0; i < pd->GetNumberOfArrays(); ++i) {
       if (auto* a = pd->GetArray(i)) {
         if (a->GetName()) {
@@ -175,19 +179,16 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkPolyData>
     context.window->AddRenderer(ren);
 
     const auto& pair = pairs[i];
-    auto& srcPoly = polys[pair.meshIndex];
+    auto& srcMesh = meshes[pair.meshIndex];
+    srcMesh->GetPointData()->SetActiveScalars(pair.scalarName.c_str());
 
-    vtkNew<vtkPolyData> poly;
-    poly->ShallowCopy(srcPoly);
-    poly->GetPointData()->SetActiveScalars(pair.scalarName.c_str());
-
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputData(poly);
+    vtkNew<vtkDataSetMapper> mapper;
+    mapper->SetInputData(srcMesh);
     mapper->SelectColorArray(pair.scalarName.c_str());
     mapper->SetScalarModeToUsePointData();
     mapper->SetColorModeToMapScalars();
 
-    auto* arr = poly->GetPointData()->GetArray(pair.scalarName.c_str());
+    auto* arr = srcMesh->GetPointData()->GetArray(pair.scalarName.c_str());
     if (arr) {
       double range[2];
       arr->GetRange(range);
@@ -233,7 +234,7 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkPolyData>
   }
 
   vtkBoundingBox bbox;
-  for (auto& p : polys) {
+  for (auto& p : meshes) {
     double bb[6];
     p->GetBounds(bb);
     bbox.AddBounds(bb);
@@ -312,14 +313,14 @@ bool MeshRenderer::setActiveScalar(const std::string& scalarName) {
     return true;
   }
 
-  std::vector<vtkPolyData*> polyPtrs;
-  polyPtrs.reserve(scenePolys.size());
-  for (const auto& poly : scenePolys) {
-    polyPtrs.push_back(poly.GetPointer());
+  std::vector<vtkDataSet*> meshPtrs;
+  meshPtrs.reserve(sceneMeshes.size());
+  for (const auto& mesh : sceneMeshes) {
+    meshPtrs.push_back(mesh.GetPointer());
   }
 
   double range[2] = {0.0, 1.0};
-  if (!computeScalarGlobalRange(polyPtrs, scalarName, range)) {
+  if (!computeScalarGlobalRange(meshPtrs, scalarName, range)) {
     return false;
   }
 
@@ -330,9 +331,9 @@ bool MeshRenderer::setActiveScalar(const std::string& scalarName) {
   clipRange[1] = range[1];
 
   bool found = false;
-  for (size_t index = 0; index < scenePolys.size() && index < mappers.size(); ++index) {
+  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
     if (setMapperScalarFromPointData(
-            scenePolys[index], mappers[index], activeScalarName, clipRange)) {
+            sceneMeshes[index], mappers[index], activeScalarName, clipRange)) {
       found = true;
     }
   }
@@ -350,10 +351,10 @@ bool MeshRenderer::setActiveScalar(const std::string& scalarName) {
 
 void MeshRenderer::clearActiveScalar() {
   activeScalarName.clear();
-  for (size_t index = 0; index < scenePolys.size() && index < mappers.size(); ++index) {
+  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
     mappers[index]->ScalarVisibilityOff();
-    if (scenePolys[index] && scenePolys[index]->GetPointData()) {
-      scenePolys[index]->GetPointData()->SetActiveScalars(nullptr);
+    if (sceneMeshes[index] && sceneMeshes[index]->GetPointData()) {
+      sceneMeshes[index]->GetPointData()->SetActiveScalars(nullptr);
     }
   }
   if (context.window) {
@@ -394,9 +395,9 @@ bool MeshRenderer::setClipRange(double minValue, double maxValue) {
   clipRange[1] = maxValue;
 
   bool found = false;
-  for (size_t index = 0; index < scenePolys.size() && index < mappers.size(); ++index) {
+  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
     if (setMapperScalarFromPointData(
-            scenePolys[index], mappers[index], activeScalarName, clipRange)) {
+            sceneMeshes[index], mappers[index], activeScalarName, clipRange)) {
       found = true;
     }
   }

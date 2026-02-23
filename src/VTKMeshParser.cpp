@@ -24,8 +24,8 @@ VTKFileType detectVTKFileType(const std::string& filename) {
 
 VTKMeshParser::~VTKMeshParser() = default;
 
-std::vector<vtkSmartPointer<vtkPolyData>> VTKMeshParser::parse(const std::string& filename) {
-  std::vector<vtkSmartPointer<vtkPolyData>> polys;
+std::vector<vtkSmartPointer<vtkDataSet>> VTKMeshParser::parse(const std::string& filename) {
+  std::vector<vtkSmartPointer<vtkDataSet>> polys;
   VTKFileType type = detectVTKFileType(filename);
   if (type == VTKFileType::None) {
     std::cerr << "Unrecognized VTK file magic: " << filename << std::endl;

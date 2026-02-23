@@ -2,7 +2,7 @@
 
 #include <string>
 #include <vector>
-#include <vtkPolyData.h>
+#include <vtkDataSet.h>
 #include <vtkSmartPointer.h>
 
 struct MeshGroup {
@@ -11,7 +11,7 @@ struct MeshGroup {
 };
 
 struct LoadedMeshes {
-  std::vector<vtkSmartPointer<vtkPolyData>> polys;
+  std::vector<vtkSmartPointer<vtkDataSet>> meshes;
   std::vector<std::string> names;
   std::vector<std::string> partNames;
   std::vector<MeshGroup> groups;

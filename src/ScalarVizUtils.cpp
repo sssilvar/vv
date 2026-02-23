@@ -7,18 +7,18 @@
 #include <vtkPointData.h>
 #include <vtkTextProperty.h>
 
-bool computeScalarGlobalRange(const std::vector<vtkPolyData*>& polys,
+bool computeScalarGlobalRange(const std::vector<vtkDataSet*>& meshes,
                               const std::string& scalarName,
                               double outRange[2]) {
   bool foundAny = false;
   double minValue = std::numeric_limits<double>::max();
   double maxValue = std::numeric_limits<double>::lowest();
 
-  for (vtkPolyData* poly : polys) {
-    if (!poly || !poly->GetPointData()) {
+  for (vtkDataSet* mesh : meshes) {
+    if (!mesh || !mesh->GetPointData()) {
       continue;
     }
-    auto* arr = poly->GetPointData()->GetArray(scalarName.c_str());
+    auto* arr = mesh->GetPointData()->GetArray(scalarName.c_str());
     if (!arr) {
       continue;
     }
@@ -100,21 +100,21 @@ void updateScalarBar(vtkScalarBarActor* bar,
   bar->GetTitleTextProperty()->SetFontSize(fontSize + 2);
 }
 
-bool setMapperScalarFromPointData(vtkPolyData* poly,
-                                  vtkPolyDataMapper* mapper,
+bool setMapperScalarFromPointData(vtkDataSet* mesh,
+                                  vtkDataSetMapper* mapper,
                                   const std::string& scalarName,
                                   const double range[2]) {
-  if (!poly || !mapper || !poly->GetPointData()) {
+  if (!mesh || !mapper || !mesh->GetPointData()) {
     return false;
   }
 
-  auto* arr = poly->GetPointData()->GetArray(scalarName.c_str());
+  auto* arr = mesh->GetPointData()->GetArray(scalarName.c_str());
   if (!arr) {
     mapper->ScalarVisibilityOff();
     return false;
   }
 
-  poly->GetPointData()->SetActiveScalars(scalarName.c_str());
+  mesh->GetPointData()->SetActiveScalars(scalarName.c_str());
   mapper->SelectColorArray(scalarName.c_str());
   mapper->SetScalarModeToUsePointData();
   mapper->SetColorModeToMapScalars();

@@ -2,6 +2,7 @@
 
 #include "CartoMeshParser.h"
 #include "FSurfMeshParser.h"
+#include "LSDynaMeshParser.h"
 #include "MeshParser.h"
 #include "VTKMeshParser.h"
 #include "XMLMeshParser.h"
@@ -22,12 +23,12 @@ std::string basenameOf(const std::string& path) {
   return path.substr(slash + 1);
 }
 
-std::string partNameFromPoly(vtkPolyData* poly) {
-  if (!poly || !poly->GetFieldData()) {
+std::string partNameFromMesh(vtkDataSet* mesh) {
+  if (!mesh || !mesh->GetFieldData()) {
     return "";
   }
   auto* nameArray =
-      vtkStringArray::SafeDownCast(poly->GetFieldData()->GetAbstractArray("vv_part_name"));
+      vtkStringArray::SafeDownCast(mesh->GetFieldData()->GetAbstractArray("vv_part_name"));
   if (!nameArray || nameArray->GetNumberOfValues() == 0) {
     return "";
   }
@@ -48,6 +49,7 @@ std::vector<std::unique_ptr<MeshParser>> buildParsers() {
   parsers.emplace_back(std::make_unique<VTKMeshParser>());
   parsers.emplace_back(std::make_unique<CartoMeshParser>());
   parsers.emplace_back(std::make_unique<FSurfMeshParser>());
+  parsers.emplace_back(std::make_unique<LSDynaMeshParser>());
   return parsers;
 }
 
@@ -112,8 +114,8 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explod
       return result;
     }
 
-    std::vector<vtkSmartPointer<vtkPolyData>> polys = selected->parse(realFilename);
-    if (polys.empty()) {
+    std::vector<vtkSmartPointer<vtkDataSet>> parsedMeshes = selected->parse(realFilename);
+    if (parsedMeshes.empty()) {
       result.ok = false;
       result.exitCode = 3;
       result.error = "Failed to parse mesh: " + filename;
@@ -123,15 +125,15 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explod
     MeshGroup group;
     group.name = basenameOf(filename);
 
-    for (size_t partIndex = 0; partIndex < polys.size(); ++partIndex) {
-      auto& poly = polys[partIndex];
-      const size_t globalIndex = result.meshes.polys.size();
-      result.meshes.polys.push_back(poly);
+    for (size_t partIndex = 0; partIndex < parsedMeshes.size(); ++partIndex) {
+      auto& mesh = parsedMeshes[partIndex];
+      const size_t globalIndex = result.meshes.meshes.size();
+      result.meshes.meshes.push_back(mesh);
       result.meshes.names.push_back(filename);
-      const std::string parsedPartName = partNameFromPoly(poly);
+      const std::string parsedPartName = partNameFromMesh(mesh);
       if (!parsedPartName.empty()) {
         result.meshes.partNames.push_back(parsedPartName);
-      } else if (polys.size() == 1) {
+      } else if (parsedMeshes.size() == 1) {
         result.meshes.partNames.push_back(group.name);
       } else {
         result.meshes.partNames.push_back("Part " + std::to_string(partIndex + 1));

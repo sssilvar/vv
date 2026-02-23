@@ -36,8 +36,8 @@ static std::vector<vtkIdType> ParseIds(const std::string& s) {
   return v;
 }
 
-std::vector<vtkSmartPointer<vtkPolyData>> XMLMeshParser::parse(const std::string& filename) {
-  std::vector<vtkSmartPointer<vtkPolyData>> polys;
+std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string& filename) {
+  std::vector<vtkSmartPointer<vtkDataSet>> polys;
   vtkSmartPointer<vtkXMLDataElement> root = vtkSmartPointer<vtkXMLDataElement>::Take(
       vtkXMLUtilities::ReadElementFromFile(filename.c_str()));
   if (!root) {

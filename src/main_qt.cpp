@@ -11,6 +11,7 @@
 #include <QKeyEvent>
 #include <QMainWindow>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPointer>
 #include <QSignalBlocker>
 #include <QSurfaceFormat>
@@ -29,6 +30,7 @@
 #include <string>
 #include <vector>
 #include <vtkCamera.h>
+#include <vtkDataSet.h>
 #include <vtkDataArray.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkPointData.h>
@@ -66,13 +68,13 @@ QRect treeOverlayGeometry(const QWidget* viewport) {
 }
 
 std::vector<std::string>
-collectScalarUnion(const std::vector<vtkSmartPointer<vtkPolyData>>& polys) {
+collectScalarUnion(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
   std::set<std::string> names;
-  for (const auto& poly : polys) {
-    if (!poly || !poly->GetPointData()) {
+  for (const auto& mesh : meshes) {
+    if (!mesh || !mesh->GetPointData()) {
       continue;
     }
-    vtkPointData* pointData = poly->GetPointData();
+    vtkPointData* pointData = mesh->GetPointData();
     for (int arrayIndex = 0; arrayIndex < pointData->GetNumberOfArrays(); ++arrayIndex) {
       vtkDataArray* arr = pointData->GetArray(arrayIndex);
       if (!arr || !arr->GetName()) {
@@ -82,6 +84,25 @@ collectScalarUnion(const std::vector<vtkSmartPointer<vtkPolyData>>& polys) {
     }
   }
   return std::vector<std::string>(names.begin(), names.end());
+}
+
+QIcon partColorIcon(const std::array<double, 3>& rgb) {
+  constexpr int kSize = 12;
+  QPixmap pix(kSize, kSize);
+  pix.fill(Qt::transparent);
+
+  const int r = std::clamp(static_cast<int>(std::lround(rgb[0] * 255.0)), 0, 255);
+  const int g = std::clamp(static_cast<int>(std::lround(rgb[1] * 255.0)), 0, 255);
+  const int b = std::clamp(static_cast<int>(std::lround(rgb[2] * 255.0)), 0, 255);
+
+  QPainter painter(&pix);
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  painter.setPen(QPen(QColor(22, 22, 22, 220), 1.0));
+  painter.setBrush(QColor(r, g, b));
+  QPolygon poly;
+  poly << QPoint(2, kSize - 2) << QPoint(kSize / 2, 2) << QPoint(kSize - 2, kSize - 2);
+  painter.drawPolygon(poly);
+  return QIcon(pix);
 }
 } // namespace
 
@@ -283,12 +304,12 @@ int main(int argc, char* argv[]) {
     return loadResult.exitCode;
   }
 
-  auto& allPolys = loadResult.meshes.polys;
+  auto& allMeshes = loadResult.meshes.meshes;
   auto& allNames = loadResult.meshes.names;
 
   std::vector<std::array<double, 3>> colorsHex;
-  colorsHex.reserve(allPolys.size());
-  for (size_t i = 0; i < allPolys.size(); ++i)
+  colorsHex.reserve(allMeshes.size());
+  for (size_t i = 0; i < allMeshes.size(); ++i)
     colorsHex.push_back(generateDistinctColor(static_cast<int>(i)));
 
   // ── Qt + VTK setup ────────────────────────────────────────────
@@ -452,7 +473,7 @@ int main(int argc, char* argv[]) {
 
   const bool useFacetGrid = args.explode_view;
   if (useFacetGrid) {
-    renderer.setupFacetGrid(allPolys, allNames, colorsHex);
+    renderer.setupFacetGrid(allMeshes, allNames, colorsHex);
     renderer.startFacetGrid();
     colorBar->setVisible(false);
     partsTree->setVisible(false);
@@ -489,7 +510,7 @@ int main(int argc, char* argv[]) {
     layoutFacetColorBars();
     QTimer::singleShot(0, [&]() { layoutFacetColorBars(); });
   } else {
-    renderer.setup(allPolys, allNames, colorsHex);
+    renderer.setup(allMeshes, allNames, colorsHex);
     renderer.start();
 
     partsTree->clear();
@@ -505,6 +526,9 @@ int main(int argc, char* argv[]) {
         }
         auto* partItem = new QTreeWidgetItem(groupItem);
         partItem->setText(0, QString::fromStdString(loadResult.meshes.partNames[partIndex]));
+        if (partIndex < colorsHex.size()) {
+          partItem->setIcon(0, partColorIcon(colorsHex[partIndex]));
+        }
         partItem->setFlags(partItem->flags() | Qt::ItemIsUserCheckable);
         partItem->setCheckState(0, Qt::Checked);
         partItem->setData(0, Qt::UserRole, static_cast<qulonglong>(partIndex));
@@ -558,7 +582,7 @@ int main(int argc, char* argv[]) {
       renderer.setClipRange(lo, hi);
     });
 
-    scalarNames = collectScalarUnion(allPolys);
+    scalarNames = collectScalarUnion(allMeshes);
     if (!scalarNames.empty()) {
       applyScalarAtIndex(0);
     } else {

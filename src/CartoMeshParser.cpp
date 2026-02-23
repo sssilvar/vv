@@ -69,8 +69,8 @@ static bool parseTriangleLine(const std::string& line,
   return false;
 }
 
-std::vector<vtkSmartPointer<vtkPolyData>> CartoMeshParser::parse(const std::string& filename) {
-  std::vector<vtkSmartPointer<vtkPolyData>> polys;
+std::vector<vtkSmartPointer<vtkDataSet>> CartoMeshParser::parse(const std::string& filename) {
+  std::vector<vtkSmartPointer<vtkDataSet>> polys;
   std::ifstream file(filename);
   if (!file.is_open()) {
     return polys;
