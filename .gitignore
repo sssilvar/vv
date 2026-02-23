@@ -2,6 +2,15 @@
 build/
 .cache/
 
+### vcpkg ###
+# Vcpkg
+
+vcpkg-manifest-install.log
+
+## Manifest Mode
+vcpkg_installed/
+
+
 # Created by https://www.toptal.com/developers/gitignore/api/macos,linux,c++,ninja,cmake
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,linux,c++,ninja,cmake
 

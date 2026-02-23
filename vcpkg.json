@@ -1,0 +1,16 @@
+{
+  "name": "vv",
+  "version-string": "1.1.0",
+  "dependencies": [
+    "fmt",
+    "cxxopts",
+    { "name": "vtk", "features": [ "opengl", "qt" ] },
+
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": [ "widgets", "gui", "opengl", "network" ]
+    },
+    "qtsvg"
+  ]
+}
