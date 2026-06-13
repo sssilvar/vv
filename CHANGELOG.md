@@ -1,3 +1,35 @@
+# [1.2.0] - 2026-06-13
+
+### Added
+
+- Cell-data scalar support: Space now cycles point- **and** cell-data fields
+  (cell fields labelled `… (cells)`), in both the single view and the
+  `--explode` facet grid.
+- VTKHDF parser with temporal (time-series) playback: a media bar with
+  play/pause, scrub slider, speed multiplier, and loop; color range fixed
+  across the animation so the colormap stays stable.
+- `build.sh`: single entry point to configure, build, run static analysis
+  (`--cppcheck`, `--clang-tidy`, `--analyze`), check formatting, and install.
+- `.clang-tidy` and `.cppcheck-suppressions`: high-signal analysis configs
+  that filter Qt `moc`/autogen false positives; bug-class findings gated.
+- Vector-drawn playback icons (no dependency on system Unicode media glyphs).
+
+### Changed
+
+- `main()` refactored into a `ViewerWindow` `QMainWindow`; `main_qt.cpp`
+  retains only CLI/platform setup.
+- Release workflow now ships self-contained bundles (Linux AppImage, macOS
+  `vv.app` via `macdeployqt`, Windows zip via `windeployqt`) plus bare
+  binaries. CI trimmed to a fast cached Linux quality gate.
+- `install.sh` replaced by `./build.sh --install`.
+
+### Fixed
+
+- Hardened mesh loading: `std::filesystem` existence/removal, atomic temp-file
+  creation, LS-DYNA `*INCLUDE` cycle guard, FreeSurfer header/size/index
+  validation, and caught `cxxopts` parse errors.
+- Legacy VTK unstructured grids (e.g. ParaView-clipped meshes) now read.
+
 # [1.1.0] - 2026-04-24
 
 ### Added
