@@ -4,9 +4,13 @@
 #include "mesh_utils.h"
 
 #include <algorithm>
-#include <set>
+#include <iterator>
 #include <vtkActor.h>
+#include <vtkBoundingBox.h>
+#include <vtkCallbackCommand.h>
 #include <vtkCamera.h>
+#include <vtkCellData.h>
+#include <vtkCommand.h>
 #include <vtkDataSetMapper.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
@@ -19,6 +23,19 @@
 #include <vtkUnstructuredGrid.h>
 
 const char* kVVWindowTitle = "VV mesh viewer";
+
+namespace {
+
+std::vector<vtkDataSet*> rawMeshPointers(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
+  std::vector<vtkDataSet*> result;
+  result.reserve(meshes.size());
+  std::transform(meshes.begin(), meshes.end(), std::back_inserter(result), [](const auto& mesh) {
+    return mesh.GetPointer();
+  });
+  return result;
+}
+
+} // namespace
 
 MeshRenderer::~MeshRenderer() = default;
 MeshRenderer::MeshRenderer() {}
@@ -81,19 +98,9 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
   auto defaultStyle = vtkSmartPointer<vtkInteractorStyleTrackballCamera>::New();
   interactor->SetInteractorStyle(defaultStyle);
 
-  std::set<std::string> scalarNameSet;
-  for (const auto& mesh : meshes) {
-    vtkPointData* pd = mesh->GetPointData();
-    for (int i = 0; i < pd->GetNumberOfArrays(); ++i)
-      if (pd->GetArray(i) && pd->GetArray(i)->GetName())
-        scalarNameSet.insert(pd->GetArray(i)->GetName());
-  }
-
-  availableScalars.assign(scalarNameSet.begin(), scalarNameSet.end());
+  // Scalar selection is driven by the owning viewer (point and cell fields
+  // alike); start with geometry-only shading.
   clearActiveScalar();
-  if (!availableScalars.empty()) {
-    setActiveScalar(availableScalars.front());
-  }
 }
 
 void MeshRenderer::start() {
@@ -103,31 +110,33 @@ void MeshRenderer::start() {
   }
 }
 
-#include <vtkCallbackCommand.h>
-#include <vtkCamera.h>
-#include <vtkCollection.h>
-#include <vtkCommand.h>
-#include <vtkRendererCollection.h>
-
 void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
                                   const std::vector<std::string>& names,
                                   const std::vector<std::array<double, 3>>& colorsHex) {
+  (void)names;
   if (meshes.empty())
     return;
 
-  // Collect all (mesh_index, scalar_name) pairs
+  // Collect all (mesh_index, scalar_name, association) tuples — one facet per
+  // scalar, point and cell fields alike.
   struct MeshScalarPair {
     size_t meshIndex;
     std::string scalarName;
-    std::string meshName;
+    FieldAssociation association;
   };
   std::vector<MeshScalarPair> pairs;
   for (size_t j = 0; j < meshes.size(); ++j) {
-    auto* pd = meshes[j]->GetPointData();
-    for (int i = 0; i < pd->GetNumberOfArrays(); ++i) {
-      if (auto* a = pd->GetArray(i)) {
-        if (a->GetName()) {
-          pairs.push_back({j, a->GetName(), names[j]});
+    if (auto* pd = meshes[j]->GetPointData()) {
+      for (int i = 0; i < pd->GetNumberOfArrays(); ++i) {
+        if (auto* a = pd->GetArray(i); a && a->GetName()) {
+          pairs.push_back({j, a->GetName(), FieldAssociation::Point});
+        }
+      }
+    }
+    if (auto* cd = meshes[j]->GetCellData()) {
+      for (int i = 0; i < cd->GetNumberOfArrays(); ++i) {
+        if (auto* a = cd->GetArray(i); a && a->GetName()) {
+          pairs.push_back({j, a->GetName(), FieldAssociation::Cell});
         }
       }
     }
@@ -160,7 +169,7 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
     context.window->RemoveRenderer(existing);
   }
 
-  const int n = static_cast<int>(pairs.size());
+  const size_t n = pairs.size();
   const int cols = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(n))));
   const int rows = static_cast<int>(std::ceil(static_cast<double>(n) / cols));
 
@@ -169,8 +178,8 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
   facetPanels.clear();
   context.colorsHex = colorsHex;
 
-  for (int i = 0; i < n; ++i) {
-    const int r = i / cols, c = i % cols;
+  for (size_t i = 0; i < n; ++i) {
+    const int r = static_cast<int>(i) / cols, c = static_cast<int>(i) % cols;
     const double xmin = double(c) / cols, xmax = double(c + 1) / cols;
     const double ymin = 1.0 - double(r + 1) / rows, ymax = 1.0 - double(r) / rows;
 
@@ -180,19 +189,26 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
 
     const auto& pair = pairs[i];
     auto& srcMesh = meshes[pair.meshIndex];
-    srcMesh->GetPointData()->SetActiveScalars(pair.scalarName.c_str());
 
     vtkNew<vtkDataSetMapper> mapper;
     mapper->SetInputData(srcMesh);
     mapper->SelectColorArray(pair.scalarName.c_str());
-    mapper->SetScalarModeToUsePointData();
+    if (pair.association == FieldAssociation::Cell) {
+      mapper->SetScalarModeToUseCellFieldData();
+    } else {
+      mapper->SetScalarModeToUsePointFieldData();
+    }
     mapper->SetColorModeToMapScalars();
 
-    auto* arr = srcMesh->GetPointData()->GetArray(pair.scalarName.c_str());
+    auto* arr = arrayForAssociation(srcMesh, pair.scalarName, pair.association);
     if (arr) {
       double range[2];
       arr->GetRange(range);
-      auto lut = createDefaultLookupTable(range);
+      std::vector<vtkDataSet*> allPtrs = rawMeshPointers(meshes);
+      auto analysis = analyzeScalar(allPtrs, pair.scalarName, pair.association);
+      if (analysis.categorical && sharedCatAnalysis.categorical)
+        analysis = sharedCatAnalysis;
+      auto lut = buildLookupTable(analysis, range);
       mapper->SetLookupTable(lut);
       mapper->SetScalarRange(range);
       mapper->ScalarVisibilityOn();
@@ -200,6 +216,7 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
       FacetPanelState panel;
       panel.mapper = mapper;
       panel.title = pair.scalarName;
+      panel.analysis = std::move(analysis);
       panel.globalRange[0] = range[0];
       panel.globalRange[1] = range[1];
       panel.clipRange[0] = range[0];
@@ -257,11 +274,10 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
     ren->ResetCameraClippingRange(ub);
   }
 
-  static vtkSmartPointer<vtkCallbackCommand> camLinkCb;
-  if (!camLinkCb)
-    camLinkCb = vtkSmartPointer<vtkCallbackCommand>::New();
-  camLinkCb->SetClientData(context.window);
-  camLinkCb->SetCallback([](vtkObject* caller, unsigned long, void* cd, void*) {
+  if (!camLinkCb_)
+    camLinkCb_ = vtkSmartPointer<vtkCallbackCommand>::New();
+  camLinkCb_->SetClientData(context.window);
+  camLinkCb_->SetCallback([](vtkObject* caller, unsigned long, void* cd, void*) {
     auto* src = vtkCamera::SafeDownCast(caller);
     auto* win = static_cast<vtkRenderWindow*>(cd);
     if (!src || !win)
@@ -278,7 +294,7 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
 
   rens->InitTraversal(cookie);
   for (vtkRenderer* ren = rens->GetNextRenderer(cookie); ren; ren = rens->GetNextRenderer(cookie))
-    ren->GetActiveCamera()->AddObserver(vtkCommand::ModifiedEvent, camLinkCb);
+    ren->GetActiveCamera()->AddObserver(vtkCommand::ModifiedEvent, camLinkCb_);
 
   if (!interactor) {
     interactor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
@@ -303,28 +319,24 @@ void MeshRenderer::startFacetGrid() {
   }
 }
 
-const std::vector<std::string>& MeshRenderer::getScalarNames() const {
-  return availableScalars;
-}
-
-bool MeshRenderer::setActiveScalar(const std::string& scalarName) {
+bool MeshRenderer::setActiveScalar(const std::string& scalarName, FieldAssociation association) {
   if (scalarName.empty()) {
     clearActiveScalar();
     return true;
   }
 
-  std::vector<vtkDataSet*> meshPtrs;
-  meshPtrs.reserve(sceneMeshes.size());
-  for (const auto& mesh : sceneMeshes) {
-    meshPtrs.push_back(mesh.GetPointer());
-  }
+  std::vector<vtkDataSet*> meshPtrs = rawMeshPointers(sceneMeshes);
 
   double range[2] = {0.0, 1.0};
-  if (!computeScalarGlobalRange(meshPtrs, scalarName, range)) {
+  if (!computeScalarGlobalRange(meshPtrs, scalarName, association, range)) {
     return false;
   }
 
   activeScalarName = scalarName;
+  activeScalarAssociation = association;
+  activeScalarAnalysis = analyzeScalar(meshPtrs, scalarName, association);
+  if (activeScalarAnalysis.categorical && sharedCatAnalysis.categorical)
+    activeScalarAnalysis = sharedCatAnalysis;
   activeScalarGlobalRange[0] = range[0];
   activeScalarGlobalRange[1] = range[1];
   clipRange[0] = range[0];
@@ -332,8 +344,12 @@ bool MeshRenderer::setActiveScalar(const std::string& scalarName) {
 
   bool found = false;
   for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
-    if (setMapperScalarFromPointData(
-            sceneMeshes[index], mappers[index], activeScalarName, clipRange)) {
+    if (setMapperScalar(sceneMeshes[index],
+                        mappers[index],
+                        activeScalarName,
+                        activeScalarAssociation,
+                        clipRange,
+                        activeScalarAnalysis)) {
       found = true;
     }
   }
@@ -351,11 +367,65 @@ bool MeshRenderer::setActiveScalar(const std::string& scalarName) {
 
 void MeshRenderer::clearActiveScalar() {
   activeScalarName.clear();
+  activeScalarAnalysis = {};
   for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
     mappers[index]->ScalarVisibilityOff();
-    if (sceneMeshes[index] && sceneMeshes[index]->GetPointData()) {
+    if (!sceneMeshes[index]) {
+      continue;
+    }
+    if (sceneMeshes[index]->GetPointData()) {
       sceneMeshes[index]->GetPointData()->SetActiveScalars(nullptr);
     }
+    if (sceneMeshes[index]->GetCellData()) {
+      sceneMeshes[index]->GetCellData()->SetActiveScalars(nullptr);
+    }
+  }
+  if (context.window) {
+    context.window->Render();
+  }
+}
+
+void MeshRenderer::refreshAfterDataChange() {
+  // Hot path: called once per playback frame. The mapper's lookup table, scalar
+  // range and color-array selection were configured when the scalar was first
+  // applied and stay fixed across the animation — so we only re-flag the active
+  // array on the freshly swapped point data and re-render. Rebuilding the LUT here
+  // (as the initial apply does) would re-map and re-upload every frame for nothing.
+  for (size_t index = 0; index < sceneMeshes.size(); ++index) {
+    vtkDataSet* mesh = sceneMeshes[index];
+    if (!mesh) {
+      continue;
+    }
+    if (!activeScalarName.empty() &&
+        arrayForAssociation(mesh, activeScalarName, activeScalarAssociation)) {
+      if (activeScalarAssociation == FieldAssociation::Cell) {
+        mesh->GetCellData()->SetActiveScalars(activeScalarName.c_str());
+      } else {
+        mesh->GetPointData()->SetActiveScalars(activeScalarName.c_str());
+      }
+    }
+    mesh->Modified();
+  }
+  if (context.window) {
+    context.window->Render();
+  }
+}
+
+void MeshRenderer::setActiveScalarRange(double minValue, double maxValue) {
+  if (activeScalarName.empty() || minValue > maxValue) {
+    return;
+  }
+  activeScalarGlobalRange[0] = minValue;
+  activeScalarGlobalRange[1] = maxValue;
+  clipRange[0] = minValue;
+  clipRange[1] = maxValue;
+  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
+    setMapperScalar(sceneMeshes[index],
+                    mappers[index],
+                    activeScalarName,
+                    activeScalarAssociation,
+                    clipRange,
+                    activeScalarAnalysis);
   }
   if (context.window) {
     context.window->Render();
@@ -369,6 +439,20 @@ bool MeshRenderer::getActiveScalarGlobalRange(double outRange[2]) const {
   outRange[0] = activeScalarGlobalRange[0];
   outRange[1] = activeScalarGlobalRange[1];
   return true;
+}
+
+const ScalarAnalysis& MeshRenderer::getActiveScalarAnalysis() const {
+  return activeScalarAnalysis;
+}
+
+void MeshRenderer::setSharedCatAnalysis(const ScalarAnalysis& shared) {
+  sharedCatAnalysis = shared;
+}
+
+vtkLookupTable* MeshRenderer::getActiveLUT() const {
+  if (mappers.empty())
+    return nullptr;
+  return vtkLookupTable::SafeDownCast(mappers.front()->GetLookupTable());
 }
 
 void MeshRenderer::getClipRange(double outRange[2]) const {
@@ -396,8 +480,12 @@ bool MeshRenderer::setClipRange(double minValue, double maxValue) {
 
   bool found = false;
   for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
-    if (setMapperScalarFromPointData(
-            sceneMeshes[index], mappers[index], activeScalarName, clipRange)) {
+    if (setMapperScalar(sceneMeshes[index],
+                        mappers[index],
+                        activeScalarName,
+                        activeScalarAssociation,
+                        clipRange,
+                        activeScalarAnalysis)) {
       found = true;
     }
   }
@@ -406,10 +494,6 @@ bool MeshRenderer::setClipRange(double minValue, double maxValue) {
     context.window->Render();
   }
   return found;
-}
-
-size_t MeshRenderer::getPartCount() const {
-  return context.actors.size();
 }
 
 bool MeshRenderer::setPartVisible(size_t partIndex, bool visible) {
@@ -423,13 +507,6 @@ bool MeshRenderer::setPartVisible(size_t partIndex, bool visible) {
   return true;
 }
 
-bool MeshRenderer::isPartVisible(size_t partIndex) const {
-  if (partIndex >= context.actors.size() || !context.actors[partIndex]) {
-    return false;
-  }
-  return context.actors[partIndex]->GetVisibility() != 0;
-}
-
 size_t MeshRenderer::getFacetPanelCount() const {
   return facetPanels.size();
 }
@@ -440,6 +517,7 @@ bool MeshRenderer::getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo)
   }
   const FacetPanelState& panel = facetPanels[panelIndex];
   outInfo.title = panel.title;
+  outInfo.analysis = panel.analysis;
   outInfo.globalRange[0] = panel.globalRange[0];
   outInfo.globalRange[1] = panel.globalRange[1];
   outInfo.clipRange[0] = panel.clipRange[0];
@@ -449,6 +527,12 @@ bool MeshRenderer::getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo)
   outInfo.viewport[2] = panel.viewport[2];
   outInfo.viewport[3] = panel.viewport[3];
   return true;
+}
+
+vtkLookupTable* MeshRenderer::getFacetPanelLUT(size_t panelIndex) const {
+  if (panelIndex >= facetPanels.size())
+    return nullptr;
+  return vtkLookupTable::SafeDownCast(facetPanels[panelIndex].mapper->GetLookupTable());
 }
 
 bool MeshRenderer::setFacetPanelClipRange(size_t panelIndex, double minValue, double maxValue) {

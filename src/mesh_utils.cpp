@@ -10,13 +10,15 @@
 #endif
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <vector>
 
 std::string readHeader(FILE* f, size_t nbytes) {
   if (!f)
     return {};
   std::string s(nbytes, '\0');
-  size_t n = fread(&s[0], 1, nbytes, f);
+  size_t n = fread(s.data(), 1, nbytes, f);
   s.resize(n);
   return s;
 }
@@ -67,37 +69,42 @@ std::array<double, 3> generateDistinctColor(int i) {
 std::string stdinToTempFile() {
   std::string tmpPath;
 #ifdef _WIN32
-  char tmpName[L_tmpnam + 1];
-  errno_t err = tmpnam_s(tmpName, L_tmpnam);
-  if (err != 0)
+  // GetTempFileName creates the file atomically (no tmpnam race).
+  char tmpDir[MAX_PATH + 1];
+  const DWORD dirLen = GetTempPathA(MAX_PATH, tmpDir);
+  if (dirLen == 0 || dirLen > MAX_PATH)
+    return {};
+  char tmpName[MAX_PATH + 1];
+  if (GetTempFileNameA(tmpDir, "vv", 0, tmpName) == 0)
     return {};
   tmpPath = tmpName;
   FILE* out = fopen(tmpPath.c_str(), "wb");
-  if (!out)
+  if (!out) {
+    remove(tmpPath.c_str());
     return {};
+  }
 #else
-  char tmpName[] = "/tmp/vvstdinXXXXXX";
-  int fd = mkstemp(tmpName);
+  const char* tmpDir = getenv("TMPDIR");
+  std::string tmplStr = std::string(tmpDir && *tmpDir ? tmpDir : "/tmp") + "/vvstdinXXXXXX";
+  std::vector<char> tmpl(tmplStr.begin(), tmplStr.end());
+  tmpl.push_back('\0');
+  int fd = mkstemp(tmpl.data());
   if (fd == -1)
     return {};
   FILE* out = fdopen(fd, "wb");
   if (!out) {
     close(fd);
-    unlink(tmpName);
+    unlink(tmpl.data());
     return {};
   }
-  tmpPath = tmpName;
+  tmpPath = tmpl.data();
 #endif
   char buf[8192];
   size_t n;
   while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0) {
     if (fwrite(buf, 1, n, out) != n) {
       fclose(out);
-#ifdef _WIN32
       remove(tmpPath.c_str());
-#else
-      unlink(tmpPath.c_str());
-#endif
       return {};
     }
   }

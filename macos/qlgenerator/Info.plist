@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.vv.meshviewer.qlgenerator</string>
+  <key>CFBundleName</key>
+  <string>vv Quick Look</string>
+  <key>CFBundleVersion</key>
+  <string>1.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleExecutable</key>
+  <string>vv_ql</string>
+  <key>CFBundlePackageType</key>
+  <string>XPC!</string>
+  <key>QLSupportsConcurrentRequests</key>
+  <false/>
+  <key>QLNeedsToBeRunInMainThread</key>
+  <false/>
+  <key>QLPreviewHeight</key>
+  <integer>800</integer>
+  <key>QLPreviewWidth</key>
+  <integer>1000</integer>
+  <key>QLThumbnailMinimumSize</key>
+  <integer>17</integer>
+  <key>LSItemContentTypes</key>
+  <array>
+    <string>org.vtk.vtk-legacy</string>
+    <string>org.vtk.vtp</string>
+    <string>org.vtk.vtu</string>
+  </array>
+</dict>
+</plist>

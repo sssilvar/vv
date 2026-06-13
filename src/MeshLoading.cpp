@@ -2,14 +2,20 @@
 
 #include "CartoMeshParser.h"
 #include "FSurfMeshParser.h"
+#include "JsonMeshParser.h"
 #include "LSDynaMeshParser.h"
 #include "MeshParser.h"
+#include "TemporalSource.h"
+#include "VTKHDFMeshParser.h"
 #include "VTKMeshParser.h"
 #include "XMLMeshParser.h"
 #include "mesh_utils.h"
 
+#include <array>
+#include <filesystem>
 #include <memory>
-#include <unistd.h>
+#include <system_error>
+#include <vtkDataArray.h>
 #include <vtkFieldData.h>
 #include <vtkStringArray.h>
 
@@ -35,6 +41,21 @@ std::string partNameFromMesh(vtkDataSet* mesh) {
   return nameArray->GetValue(0);
 }
 
+bool partColorFromMesh(vtkDataSet* mesh, std::array<double, 3>& color) {
+  if (!mesh || !mesh->GetFieldData()) {
+    return false;
+  }
+  auto* colorArray = vtkDataArray::SafeDownCast(mesh->GetFieldData()->GetArray("vv_part_color"));
+  if (!colorArray || colorArray->GetNumberOfTuples() == 0 ||
+      colorArray->GetNumberOfComponents() < 3) {
+    return false;
+  }
+  double tuple[3] = {0.0, 0.0, 0.0};
+  colorArray->GetTuple(0, tuple);
+  color = {tuple[0], tuple[1], tuple[2]};
+  return true;
+}
+
 std::vector<std::string> filesToProcessFromArgs(const std::vector<std::string>& meshfiles,
                                                 bool explodeView) {
   if (explodeView) {
@@ -46,7 +67,9 @@ std::vector<std::string> filesToProcessFromArgs(const std::vector<std::string>& 
 std::vector<std::unique_ptr<MeshParser>> buildParsers() {
   std::vector<std::unique_ptr<MeshParser>> parsers;
   parsers.emplace_back(std::make_unique<XMLMeshParser>());
+  parsers.emplace_back(std::make_unique<VTKHDFMeshParser>());
   parsers.emplace_back(std::make_unique<VTKMeshParser>());
+  parsers.emplace_back(std::make_unique<JsonMeshParser>());
   parsers.emplace_back(std::make_unique<CartoMeshParser>());
   parsers.emplace_back(std::make_unique<FSurfMeshParser>());
   parsers.emplace_back(std::make_unique<LSDynaMeshParser>());
@@ -55,9 +78,12 @@ std::vector<std::unique_ptr<MeshParser>> buildParsers() {
 
 class TempFileCleanup {
 public:
-  ~TempFileCleanup() {
+  // std::filesystem::remove(path, error_code) is noexcept, so this never throws;
+  // clang-tidy can't model that, hence the suppression.
+  ~TempFileCleanup() { // NOLINT(bugprone-exception-escape)
     for (const std::string& tmpFile : tmpFiles_) {
-      unlink(tmpFile.c_str());
+      std::error_code ec;
+      std::filesystem::remove(tmpFile, ec);
     }
   }
 
@@ -91,7 +117,8 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explod
       realFilename = tmpFile;
       tmpCleanup.add(tmpFile);
     } else {
-      if (access(filename.c_str(), F_OK) != 0) {
+      std::error_code ec;
+      if (!std::filesystem::exists(filename, ec)) {
         result.ok = false;
         result.exitCode = 1;
         result.error = "Error: File does not exist: " + filename;
@@ -115,6 +142,14 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explod
     }
 
     std::vector<vtkSmartPointer<vtkDataSet>> parsedMeshes = selected->parse(realFilename);
+
+    // Capture temporal (playable) info if this file produced it.
+    if (const auto* hdfParser = dynamic_cast<const VTKHDFMeshParser*>(selected)) {
+      if (auto temporal = hdfParser->temporal(); temporal && temporal->playable()) {
+        result.temporal = temporal;
+      }
+    }
+
     if (parsedMeshes.empty()) {
       result.ok = false;
       result.exitCode = 3;
@@ -126,7 +161,7 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explod
     group.name = basenameOf(filename);
 
     for (size_t partIndex = 0; partIndex < parsedMeshes.size(); ++partIndex) {
-      auto& mesh = parsedMeshes[partIndex];
+      const auto& mesh = parsedMeshes[partIndex];
       const size_t globalIndex = result.meshes.meshes.size();
       result.meshes.meshes.push_back(mesh);
       result.meshes.names.push_back(filename);
@@ -138,6 +173,11 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explod
       } else {
         result.meshes.partNames.push_back("Part " + std::to_string(partIndex + 1));
       }
+
+      std::array<double, 3> parsedColor = {0.0, 0.0, 0.0};
+      const bool hasColor = partColorFromMesh(mesh, parsedColor);
+      result.meshes.partColors.push_back(parsedColor);
+      result.meshes.partHasColors.push_back(hasColor);
       group.partIndices.push_back(globalIndex);
     }
 

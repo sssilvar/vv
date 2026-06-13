@@ -4,9 +4,10 @@
 
 #include <iostream>
 #include <string>
+#include <vtkDataSet.h>
+#include <vtkDataSetReader.h>
 #include <vtkPointData.h>
 #include <vtkPolyData.h>
-#include <vtkPolyDataReader.h>
 #include <vtkSmartPointer.h>
 #include <vtkXMLPolyDataReader.h>
 
@@ -28,7 +29,7 @@ std::vector<vtkSmartPointer<vtkDataSet>> VTKMeshParser::parse(const std::string&
   std::vector<vtkSmartPointer<vtkDataSet>> polys;
   VTKFileType type = detectVTKFileType(filename);
   if (type == VTKFileType::None) {
-    std::cerr << "Unrecognized VTK file magic: " << filename << std::endl;
+    std::cerr << "Unrecognized VTK file magic: " << filename << '\n';
     return polys;
   }
   if (type == VTKFileType::XML) {
@@ -42,16 +43,18 @@ std::vector<vtkSmartPointer<vtkDataSet>> VTKMeshParser::parse(const std::string&
     }
   }
   if (type == VTKFileType::Legacy) {
-    vtkNew<vtkPolyDataReader> reader;
+    // Generic legacy reader auto-detects POLYDATA, UNSTRUCTURED_GRID, etc.
+    // Clipped meshes (e.g. from ParaView) become UNSTRUCTURED_GRID.
+    vtkNew<vtkDataSetReader> reader;
     reader->SetFileName(filename.c_str());
     reader->Update();
-    vtkPolyData* poly = reader->GetOutput();
-    if (poly && poly->GetNumberOfPoints() > 0) {
-      polys.push_back(poly);
+    vtkDataSet* ds = reader->GetOutput();
+    if (ds && ds->GetNumberOfPoints() > 0) {
+      polys.push_back(ds);
       return polys;
     }
   }
-  std::cerr << "Failed to read VTK file: " << filename << std::endl;
+  std::cerr << "Failed to read VTK file: " << filename << '\n';
   return polys;
 }
 

@@ -14,163 +14,62 @@ concurrency:
 env:
   CI: true
 
+# Fast quality gate: format, a warnings-as-errors build, and cppcheck — all on a
+# single Linux runner with ccache. Multi-OS packaging runs only on release tags
+# (see release.yml), so PRs are not blocked on slow cross-platform builds.
 jobs:
   quality:
     runs-on: ubuntu-22.04
-    name: Format + Warning-Clean Build
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install Linux dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          cmake \
-          ninja-build \
-          clang-format \
-          qtbase5-dev \
-          libfmt-dev \
-          libcxxopts-dev \
-          libvtk9-dev \
-          libvtk9-qt-dev \
-          pkg-config \
-          bison \
-          flex \
-          libxmu-dev \
-          libxi-dev \
-          libgl-dev \
-          libxt-dev \
-          libsm-dev \
-          libice-dev \
-          libxext-dev \
-          libxrender-dev \
-          libxrandr-dev \
-          libxcursor-dev \
-          libxinerama-dev \
-          libx11-dev \
-          mesa-common-dev \
-          freeglut3-dev
-
-    - name: Configure CMake
-      run: |
-        cmake -Bbuild -S. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-          -DVV_ENABLE_WARNINGS=ON \
-          -DVV_WARNINGS_AS_ERRORS=ON \
-          -GNinja
-
-    - name: Check formatting
-      run: |
-        cmake --build build --target format
-        git diff --exit-code
-
-    - name: Build
-      run: cmake --build build --config Release -j$(nproc)
-
-    - name: Test binary
-      run: |
-        file build/vv
-        ldd build/vv || true
-        ./build/vv --help
-
-  release-os-build:
-    name: Release OS Build ${{ matrix.target }}
-    needs: quality
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-          - target: x86_64-w64-mingw32
-            os: windows-latest
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-          - target: aarch64-apple-darwin
-            os: macos-14
-
+    name: Format + Warnings + cppcheck
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            ninja-build \
-            qtbase5-dev \
-            libvtk9-dev \
-            libvtk9-qt-dev \
-            libfmt-dev \
-            libcxxopts-dev
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache clang-format clang-tidy cppcheck \
+            qtbase5-dev libfmt-dev libcxxopts-dev nlohmann-json3-dev \
+            libvtk9-dev libvtk9-qt-dev \
+            libgl-dev libglx-dev libxt-dev
 
-      - name: Install macOS dependencies
-        if: runner.os == 'macOS'
-        run: |
-          brew update
-          for pkg in cmake ninja vtk qt fmt cxxopts; do
-            brew list --versions "$pkg" >/dev/null || brew install "$pkg"
-          done
-
-      - name: Set up MSYS2 (Windows)
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-qt6-base
-            mingw-w64-x86_64-vtk
-            mingw-w64-x86_64-nlohmann-json
+          key: ccache-${{ github.workflow }}-ubuntu-22.04
+          max-size: 500M
 
-      - name: Configure CMake (Linux)
-        if: runner.os == 'Linux'
+      - name: Configure
         run: |
-          cmake -S . -B build \
-            -GNinja \
+          cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DVV_ENABLE_WARNINGS=ON \
             -DVV_WARNINGS_AS_ERRORS=ON
 
-      - name: Configure CMake (macOS)
-        if: runner.os == 'macOS'
+      - name: Check formatting
         run: |
-          QT_PREFIX="$(brew --prefix qt)"
-          VTK_PREFIX="$(brew --prefix vtk)"
-          cmake -S . -B build \
-            -GNinja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DVV_ENABLE_WARNINGS=ON \
-            -DVV_WARNINGS_AS_ERRORS=ON \
-            -DCMAKE_PREFIX_PATH="$QT_PREFIX;$VTK_PREFIX"
+          cmake --build build --target format
+          git diff --exit-code
 
-      - name: Configure CMake (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: |
-          cmake -S . -B build \
-            -GNinja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DVV_ENABLE_WARNINGS=ON \
-            -DVV_WARNINGS_AS_ERRORS=ON \
-            -DCMAKE_PREFIX_PATH="/mingw64"
+      - name: Build (warnings as errors)
+        run: cmake --build build -j"$(nproc)"
 
-      - name: Build (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: cmake --build build --config Release -j4
+      # Static analysis via build.sh so local and CI share the exact same flags,
+      # suppressions, and version probes (build already done above; --no-build
+      # just regenerates compile_commands and runs the analyzer).
+      - name: cppcheck (gate)
+        run: ./build.sh --no-build --cppcheck
 
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: cmake --build build --config Release -j4
+      # clang-tidy is advisory in CI: the runner's clang-tidy version differs from
+      # developers' and can surface version-specific findings, so it reports
+      # without blocking the merge. `build.sh --analyze` gates it locally.
+      - name: clang-tidy (advisory)
+        continue-on-error: true
+        run: ./build.sh --no-build --clang-tidy
+
+      - name: Smoke test
+        run: ./build/vv --version

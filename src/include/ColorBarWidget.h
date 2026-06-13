@@ -2,8 +2,12 @@
 
 #include <QColor>
 #include <QLineEdit>
+#include <QObject>
+#include <QString>
 #include <QWidget>
 #include <QtGlobal>
+#include <utility>
+#include <vector>
 
 /// A vertical colorbar widget with draggable clip handles, inspired by
 /// the mapping-system UIs of CARTO and RHYTHMIA.
@@ -28,12 +32,13 @@ public:
   /// Title displayed above the bar (e.g. scalar name).
   void setTitle(const QString& title);
 
-  double clipLower() const {
-    return clipMin_;
-  }
-  double clipUpper() const {
-    return clipMax_;
-  }
+  /// Switch to categorical (indexed) display mode.
+  /// Entries are (value, color, label) sorted by value ascending.
+  /// Clip handles are hidden; min/max labels still shown.
+  void setCategorical(const std::vector<std::pair<QString, QColor>>& entries);
+
+  /// Restore continuous gradient mode.
+  void clearCategorical();
 
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
@@ -63,6 +68,10 @@ private:
   double clipMax_ = 1.0;
   QString title_;
 
+  // categorical mode
+  bool categorical_ = false;
+  std::vector<std::pair<QString, QColor>> catEntries_; // (label, color), bottom→top order
+
   // ── interaction state ─────────────────────────────────────────────
   enum Handle { None, Lower, Upper };
   Handle dragHandle_ = None;
@@ -75,7 +84,6 @@ private:
   double valueToY(double value) const;
   double yToValue(double y) const;
   Handle hitTestHandle(const QPointF& pos, double tolerance = 10.0) const;
-  QColor colorForValue(double value) const;
   void emitClipChanged();
   void showInlineEditor(Handle handle);
   void commitInlineEditor();

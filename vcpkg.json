@@ -1,0 +1,13 @@
+{
+  "name": "vtkviewer",
+  "version": "1.1.0",
+  "dependencies": [
+    {
+      "name": "vtk",
+      "features": [ "qt", "opengl" ]
+    },
+    "fmt",
+    "cxxopts",
+    "nlohmann-json"
+  ]
+}
