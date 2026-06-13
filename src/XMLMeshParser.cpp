@@ -41,7 +41,7 @@ std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string&
   vtkSmartPointer<vtkXMLDataElement> root = vtkSmartPointer<vtkXMLDataElement>::Take(
       vtkXMLUtilities::ReadElementFromFile(filename.c_str()));
   if (!root) {
-    std::cerr << "Failed to read XML: " << filename << std::endl;
+    std::cerr << "Failed to read XML: " << filename << '\n';
     return polys;
   }
   vtkXMLDataElement* body = root->FindNestedElementWithName("DIFBody");
@@ -49,7 +49,7 @@ std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string&
     body = root;
   vtkXMLDataElement* vols = body->FindNestedElementWithName("Volumes");
   if (!vols) {
-    std::cerr << "No <Volumes> in XML: " << filename << std::endl;
+    std::cerr << "No <Volumes> in XML: " << filename << '\n';
     return polys;
   }
   for (int i = 0; i < vols->GetNumberOfNestedElements(); ++i) {
@@ -64,8 +64,10 @@ std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string&
       continue;
     vtkNew<vtkPoints> pts;
     pts->SetNumberOfPoints(static_cast<vtkIdType>(verts.size() / 3));
-    for (vtkIdType vi = 0; vi < static_cast<vtkIdType>(verts.size() / 3); ++vi)
-      pts->SetPoint(vi, verts[3 * vi + 0], verts[3 * vi + 1], verts[3 * vi + 2]);
+    for (vtkIdType vi = 0; vi < static_cast<vtkIdType>(verts.size() / 3); ++vi) {
+      const size_t vi3 = static_cast<size_t>(vi) * 3;
+      pts->SetPoint(vi, verts[vi3], verts[vi3 + 1], verts[vi3 + 2]);
+    }
     vtkXMLDataElement* polyElem = vol->FindNestedElementWithName("Polygons");
     if (!polyElem)
       continue;
@@ -104,9 +106,10 @@ std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string&
         an->SetNumberOfComponents(3);
         an->SetNumberOfTuples(static_cast<vtkIdType>(n.size() / 3));
         for (vtkIdType ni = 0; ni < static_cast<vtkIdType>(n.size() / 3); ++ni) {
-          const float tuple[3] = {static_cast<float>(n[3 * ni]),
-                                  static_cast<float>(n[3 * ni + 1]),
-                                  static_cast<float>(n[3 * ni + 2])};
+          const size_t ni3 = static_cast<size_t>(ni) * 3;
+          const float tuple[3] = {static_cast<float>(n[ni3]),
+                                  static_cast<float>(n[ni3 + 1]),
+                                  static_cast<float>(n[ni3 + 2])};
           an->SetTypedTuple(ni, tuple);
         }
         poly->GetPointData()->SetNormals(an);

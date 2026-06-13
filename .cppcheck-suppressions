@@ -1,0 +1,24 @@
+# cppcheck suppressions for vv.
+# Format: <id>[:<file>[:<line>]] — see `cppcheck --help`.
+
+# Generated Qt moc/autogen translation units live under build/ and are not our
+# code. They trip preprocessorErrorDirective ("doesn't include <QObject>") and
+# similar because cppcheck evaluates them without Qt's moc context.
+*:build/*
+*:*/build/*
+*:*moc_*.cpp
+*:*mocs_compilation.cpp
+
+# Public widget/API methods (e.g. PlaybackBar::isPlaying) are intentionally part
+# of the class surface even when the current callers don't use them all.
+unusedFunction
+
+# Third-party headers we cannot fix; not worth the noise.
+missingIncludeSystem
+
+# cppcheck's own informational notices.
+checkersReport
+
+# Subjective style rule: a short, clear raw loop is often more readable than an
+# <algorithm> call with a lambda. We don't enforce this.
+useStlAlgorithm

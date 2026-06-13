@@ -1,9 +1,8 @@
 .vscode/
 build/
 .cache/
-
-# Created by https://www.toptal.com/developers/gitignore/api/macos,linux,c++,ninja,cmake
-# Edit at https://www.toptal.com/developers/gitignore?templates=macos,linux,c++,ninja,cmake
+# Created by https://www.toptal.com/developers/gitignore/api/macos,linux,c++,ninja,cmake,windows,vcpkg
+# Edit at https://www.toptal.com/developers/gitignore?templates=macos,linux,c++,ninja,cmake,windows,vcpkg
 
 ### C++ ###
 # Prerequisites
@@ -45,8 +44,7 @@ CMakeCache.txt
 CMakeFiles
 CMakeScripts
 Testing
-**/Makefile
-!Makefile
+Makefile
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
@@ -111,4 +109,38 @@ Temporary Items
 .ninja_deps
 .ninja_log
 
-# End of https://www.toptal.com/developers/gitignore/api/macos,linux,c++,ninja,cmake
+### vcpkg ###
+# Vcpkg
+
+vcpkg-manifest-install.log
+
+## Manifest Mode
+vcpkg_installed/
+
+### Windows ###
+# Windows thumbnail cache files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+
+# Dump file
+*.stackdump
+
+# Folder config file
+[Dd]esktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows Installer files
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+# End of https://www.toptal.com/developers/gitignore/api/macos,linux,c++,ninja,cmake,windows,vcpkg

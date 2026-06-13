@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>vv</string>
+  <key>CFBundleDisplayName</key>
+  <string>VV Mesh Viewer</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.vv.meshviewer</string>
+  <key>CFBundleVersion</key>
+  <string>@PROJECT_VERSION@</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@PROJECT_VERSION@</string>
+  <key>CFBundleExecutable</key>
+  <string>vv</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleSignature</key>
+  <string>????</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+
+  <!-- Export custom UTIs so Finder knows about these types -->
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.vtk.vtk-legacy</string>
+      <key>UTTypeDescription</key>
+      <string>VTK Legacy Mesh</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>vtk</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.vtk.vtp</string>
+      <key>UTTypeDescription</key>
+      <string>VTK XML PolyData</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.xml</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>vtp</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.vtk.vtu</string>
+      <key>UTTypeDescription</key>
+      <string>VTK XML Unstructured Grid</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.xml</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>vtu</string></array>
+      </dict>
+    </dict>
+  </array>
+
+  <!-- Declare which document types this app can open -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>VTK Mesh File</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>org.vtk.vtk-legacy</string>
+        <string>org.vtk.vtp</string>
+        <string>org.vtk.vtu</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>vtk</string>
+        <string>vtp</string>
+        <string>vtu</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

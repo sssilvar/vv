@@ -4,10 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 env:
   CI: true
 
+# Builds self-contained, deployable bundles (Qt + VTK included) for each OS, plus
+# the bare binary for users who already have the runtime via a package manager.
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -18,43 +21,39 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-            archive: tar.gz
-            artifact_name: vv
-          - target: x86_64-w64-mingw32
-            os: windows-latest
-            archive: zip
-            artifact_name: vv.exe
           - target: x86_64-apple-darwin
             os: macos-15-intel
-            archive: tar.gz
-            artifact_name: vv
           - target: aarch64-apple-darwin
             os: macos-14
-            archive: tar.gz
-            artifact_name: vv
+          - target: x86_64-windows
+            os: windows-latest
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: ccache
+        if: runner.os != 'Windows'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-release-${{ matrix.target }}
+          max-size: 500M
+
+      # ── dependencies ───────────────────────────────────────────────
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            ninja-build \
-            qtbase5-dev \
-            libvtk9-dev \
-            libvtk9-qt-dev \
-            libfmt-dev \
-            libcxxopts-dev
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache imagemagick file \
+            qtbase5-dev libfmt-dev libcxxopts-dev nlohmann-json3-dev \
+            libvtk9-dev libvtk9-qt-dev \
+            libgl-dev libglx-dev libxt-dev libfuse2
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: |
           brew update
-          for pkg in cmake ninja vtk qt fmt cxxopts; do
+          for pkg in cmake ninja vtk qt fmt cxxopts nlohmann-json; do
             brew list --versions "$pkg" >/dev/null || brew install "$pkg"
           done
 
@@ -68,83 +67,113 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-ccache
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-vtk
+            mingw-w64-x86_64-fmt
+            mingw-w64-x86_64-cxxopts
             mingw-w64-x86_64-nlohmann-json
 
-      - name: Configure CMake (Linux)
+      # ── configure + build ──────────────────────────────────────────
+      - name: Configure + build (Linux)
         if: runner.os == 'Linux'
         run: |
-          cmake -S . -B build \
-            -GNinja \
+          cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DVV_ENABLE_WARNINGS=ON \
-            -DVV_WARNINGS_AS_ERRORS=ON
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build -j"$(nproc)"
 
-      - name: Configure CMake (macOS)
+      - name: Configure + build (macOS)
         if: runner.os == 'macOS'
         run: |
-          QT_PREFIX="$(brew --prefix qt)"
-          VTK_PREFIX="$(brew --prefix vtk)"
-          cmake -S . -B build \
-            -GNinja \
+          cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DVV_ENABLE_WARNINGS=ON \
-            -DVV_WARNINGS_AS_ERRORS=ON \
-            -DCMAKE_PREFIX_PATH="$QT_PREFIX;$VTK_PREFIX"
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix vtk)"
+          cmake --build build -j"$(sysctl -n hw.ncpu)"
 
-      - name: Configure CMake (Windows)
+      - name: Configure + build (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
-          cmake -S . -B build \
-            -GNinja \
+          cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DVV_ENABLE_WARNINGS=ON \
-            -DVV_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_PREFIX_PATH="/mingw64"
+          cmake --build build -j"$(nproc)"
 
-      - name: Build (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: cmake --build build --config Release -j4
+      # ── package: deployable bundle ─────────────────────────────────
+      - name: Package Linux AppImage
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          cmake --install build --prefix AppDir/usr
+          mkdir -p AppDir/usr/share/applications \
+                   AppDir/usr/share/icons/hicolor/256x256/apps
+          printf '%s\n' \
+            '[Desktop Entry]' 'Type=Application' 'Name=vv' \
+            'GenericName=Mesh Viewer' 'Exec=vv %F' 'Icon=vv' \
+            'Categories=Graphics;Science;' 'Terminal=false' \
+            > AppDir/usr/share/applications/vv.desktop
+          convert -size 256x256 xc:'#1e1e1e' \
+            -gravity center -pointsize 120 -fill '#5096FA' -annotate 0 'vv' \
+            AppDir/usr/share/icons/hicolor/256x256/apps/vv.png
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+          export QMAKE=/usr/bin/qmake
+          export OUTPUT="vv-${GITHUB_REF_NAME}-${{ matrix.target }}.AppImage"
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --plugin qt --output appimage
+          mkdir -p dist && mv vv*.AppImage dist/
+          # bare binary too
+          tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}-bin.tar.gz" -C build vv
 
-      - name: Build (Windows)
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          MACDEPLOYQT="$(brew --prefix qt)/bin/macdeployqt"
+          "$MACDEPLOYQT" build/vv.app -verbose=1
+          mkdir -p dist
+          ditto -c -k --keepParent build/vv.app \
+            "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}.app.zip"
+          tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}-bin.tar.gz" \
+            -C build/vv.app/Contents/MacOS vv
+
+      - name: Package Windows zip
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: cmake --build build --config Release -j4
-
-      - name: Package (tar.gz)
-        if: matrix.archive == 'tar.gz'
         run: |
+          set -e
+          STAGE="vv-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "stage/$STAGE"
+          cp build/vv.exe "stage/$STAGE/"
+          # windeployqt copies Qt DLLs + plugins (platforms/, styles/, …) into the
+          # staging dir alongside the exe.
+          windeployqt --no-compiler-runtime "stage/$STAGE/vv.exe"
+          # Then copy the remaining MinGW/VTK runtime DLLs the binary links against.
+          ldd "stage/$STAGE/vv.exe" | awk '/mingw64/ {print $3}' | sort -u | \
+            while read -r dll; do cp -n "$dll" "stage/$STAGE/" 2>/dev/null || true; done
           mkdir -p dist
-          tar -czvf "dist/vv-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" -C build ${{ matrix.artifact_name }}
+          (cd stage && powershell -Command "Compress-Archive -Path '$STAGE' -DestinationPath '../dist/$STAGE.zip'")
 
-      - name: Package (zip)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $binary = "build/vv.exe"
-          if (!(Test-Path $binary)) {
-            $binary = "build/Release/vv.exe"
-          }
-          Compress-Archive -Path $binary -DestinationPath "dist/vv-${{ github.ref_name }}-${{ matrix.target }}.zip"
-
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: vv-${{ matrix.target }}
-          path: dist/vv-${{ github.ref_name }}-${{ matrix.target }}.*
+          path: dist/*
 
   release:
     name: Create Release
     needs: build
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:

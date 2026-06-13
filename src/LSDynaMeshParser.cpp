@@ -6,8 +6,10 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -128,16 +130,18 @@ void parseNodeLine(const std::string& line, std::vector<RawNode>& out) {
 
 // Parse one *ELEMENT_SOLID* block: eid, pid then 4+ node ids. Use first 4 only (tet).
 // Skip $# comment lines. If we stop on a * line, put it in nextLine for caller to reuse.
-void parseSolidBlock(std::ifstream& f, bool /*ortho*/, std::vector<Tet>& out, std::string* nextLine) {
+bool parseSolidBlock(std::ifstream& f,
+                     bool /*ortho*/,
+                     std::vector<Tet>& out,
+                     std::string& nextLine) {
   std::string line1, line2;
   while (std::getline(f, line1)) {
     const std::string t1 = trim(line1);
     if (t1.empty() || t1[0] == '$')
       continue;
     if (t1[0] == '*') {
-      if (nextLine)
-        *nextLine = line1;
-      return;
+      nextLine = line1;
+      return true;
     }
     int eid = 0;
     int pid = 0;
@@ -151,9 +155,8 @@ void parseSolidBlock(std::ifstream& f, bool /*ortho*/, std::vector<Tet>& out, st
       if (t2.empty() || t2[0] == '$')
         continue;
       if (t2[0] == '*') {
-        if (nextLine)
-          *nextLine = line2;
-        return;
+        nextLine = line2;
+        return true;
       }
       Tet tet;
       tet.pid = pid;
@@ -175,9 +178,10 @@ void parseSolidBlock(std::ifstream& f, bool /*ortho*/, std::vector<Tet>& out, st
       break;
     }
   }
+  return false;
 }
 
-void parsePartBlock(std::ifstream& f, std::vector<PartInfo>& out, std::string* nextLine) {
+bool parsePartBlock(std::ifstream& f, std::vector<PartInfo>& out, std::string& nextLine) {
   std::string line;
   std::string name;
   bool haveName = false;
@@ -187,9 +191,8 @@ void parsePartBlock(std::ifstream& f, std::vector<PartInfo>& out, std::string* n
     if (t.empty() || t[0] == '$')
       continue;
     if (t[0] == '*') {
-      if (nextLine)
-        *nextLine = line;
-      return;
+      nextLine = line;
+      return true;
     }
 
     if (!haveName) {
@@ -208,16 +211,30 @@ void parsePartBlock(std::ifstream& f, std::vector<PartInfo>& out, std::string* n
       p.name = name;
       out.push_back(p);
     }
-    return;
+    return false;
   }
+  return false;
 }
 
 // Stream-parse one file; merge into nodes/elems/parts. Resolve *INCLUDE in place.
+// `visited` holds canonical paths of files already parsed so include cycles
+// (a.k → b.k → a.k) terminate instead of recursing forever.
 void parseFile(const std::string& filepath,
                const std::string& baseDir,
                std::vector<RawNode>& nodes,
                std::vector<Tet>& elems,
-               std::vector<PartInfo>& parts) {
+               std::vector<PartInfo>& parts,
+               std::unordered_set<std::string>& visited) {
+  std::error_code ec;
+  std::string canonical = std::filesystem::weakly_canonical(filepath, ec).string();
+  if (ec || canonical.empty()) {
+    canonical = filepath;
+  }
+  if (!visited.insert(canonical).second) {
+    std::cerr << "LSDyna: skipping already-included file " << filepath << "\n";
+    return;
+  }
+
   std::ifstream f(filepath);
   if (!f) {
     std::cerr << "LSDyna: cannot open " << filepath << "\n";
@@ -246,7 +263,7 @@ void parseFile(const std::string& filepath,
         incList.push_back((t[0] == '/') ? t : baseDir + "/" + t);
       }
       for (const auto& inc : incList)
-        parseFile(inc, dirOf(inc), nodes, elems, parts);
+        parseFile(inc, dirOf(inc), nodes, elems, parts, visited);
       continue;
     }
     if (t == "*NODE") {
@@ -262,8 +279,7 @@ void parseFile(const std::string& filepath,
     if (startsWith(t, "*ELEMENT_SOLID")) {
       bool ortho = t.find("ORTHO") != std::string::npos;
       std::string next;
-      parseSolidBlock(f, ortho, elems, &next);
-      if (!next.empty()) {
+      if (parseSolidBlock(f, ortho, elems, next)) {
         line = std::move(next);
         reuseLine = true;
       }
@@ -271,8 +287,7 @@ void parseFile(const std::string& filepath,
     }
     if (t == "*PART") {
       std::string next;
-      parsePartBlock(f, parts, &next);
-      if (!next.empty()) {
+      if (parsePartBlock(f, parts, next)) {
         line = std::move(next);
         reuseLine = true;
       }
@@ -299,9 +314,9 @@ std::vector<vtkSmartPointer<vtkDataSet>> LSDynaMeshParser::parse(const std::stri
   elems.reserve(65536);
   std::vector<PartInfo> parts;
 
-  parseFile(filename, dirOf(filename), rawNodes, elems, parts);
+  std::unordered_set<std::string> visited;
+  parseFile(filename, dirOf(filename), rawNodes, elems, parts, visited);
 
-  std::cerr << "LSDyna: after parse nodes=" << rawNodes.size() << " elems=" << elems.size() << "\n";
   if (rawNodes.empty() || elems.empty())
     return result;
 
@@ -322,8 +337,10 @@ std::vector<vtkSmartPointer<vtkDataSet>> LSDynaMeshParser::parse(const std::stri
 
   std::vector<int> pids;
   pids.reserve(elemsByPid.size());
-  for (const auto& kv : elemsByPid)
-    pids.push_back(kv.first);
+  std::transform(elemsByPid.begin(),
+                 elemsByPid.end(),
+                 std::back_inserter(pids),
+                 [](const auto& kv) { return kv.first; });
   std::sort(pids.begin(), pids.end());
 
   for (int pid : pids) {

@@ -86,8 +86,31 @@ void ColorBarWidget::setTitle(const QString& title) {
   update();
 }
 
+void ColorBarWidget::setCategorical(const std::vector<std::pair<QString, QColor>>& entries) {
+  categorical_ = true;
+  catEntries_ = entries;
+  update();
+}
+
+void ColorBarWidget::clearCategorical() {
+  categorical_ = false;
+  catEntries_.clear();
+  update();
+}
+
 QSize ColorBarWidget::sizeHint() const {
-  return {90, 340};
+  int width = 90;
+  if (!title_.isEmpty()) {
+    QFont bold = font();
+    bold.setBold(true);
+    width = std::max(width, QFontMetrics(bold).horizontalAdvance(title_) + 8);
+  }
+  for (const auto& entry : catEntries_) {
+    width =
+        std::max(width, fontMetrics().horizontalAdvance(entry.first) + kBarLeft + kBarWidth + 14);
+  }
+  width = std::clamp(width, 90, 180);
+  return {width, 340};
 }
 QSize ColorBarWidget::minimumSizeHint() const {
   return {72, 180};
@@ -141,14 +164,6 @@ ColorBarWidget::Handle ColorBarWidget::hitTestHandle(const QPointF& pos, double 
   return None;
 }
 
-QColor ColorBarWidget::colorForValue(double value) const {
-  if (globalMax_ <= globalMin_)
-    return QColor(128, 128, 128);
-  double t = std::clamp((value - globalMin_) / (globalMax_ - globalMin_), 0.0, 1.0);
-  // Match VTK default rainbow: hue 0.0 → 0.8
-  return QColor::fromHsvF(t * 0.8, 1.0, 1.0);
-}
-
 void ColorBarWidget::emitClipChanged() {
   emit clipRangeChanged(clipMin_, clipMax_);
 }
@@ -163,7 +178,7 @@ void ColorBarWidget::showInlineEditor(Handle handle) {
   const int x = static_cast<int>(bar.right() + kHandleW + 4);
   const int w = 58;
   const int h = 22;
-  const int top = std::clamp(static_cast<int>(y - h / 2), 2, height() - h - 2);
+  const int top = std::clamp(static_cast<int>(y - h / 2.0), 2, height() - h - 2);
   inlineEditor_->setGeometry(x, top, w, h);
   inlineEditor_->setText(QString::number(handle == Upper ? clipMax_ : clipMin_, 'f', 2));
   inlineEditor_->setVisible(true);
@@ -201,19 +216,70 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
   const QRectF bar = barRect();
   const QFont base = font();
   const QFontMetrics fm(base);
-  const QColor txtCol = palette().text().color();
+  const QColor txtCol = Qt::white;
+  const QColor txtShadow(0, 0, 0, 220);
+  auto drawTextRect = [&](const QRectF& rect, int flags, const QString& text) {
+    p.setPen(txtShadow);
+    p.drawText(rect.translated(1.0, 1.0), flags, text);
+    p.setPen(txtCol);
+    p.drawText(rect, flags, text);
+  };
+  auto drawTextPoint = [&](const QPointF& point, const QString& text) {
+    p.setPen(txtShadow);
+    p.drawText(point + QPointF(1.0, 1.0), text);
+    p.setPen(txtCol);
+    p.drawText(point, text);
+  };
 
   // ── title ─────────────────────────────────────────────────────
   if (!title_.isEmpty()) {
     QFont bold = base;
     bold.setBold(true);
     p.setFont(bold);
-    p.setPen(txtCol);
     const QRectF titleRect(2.0, kTitleTopPad, width() - 4.0, fm.height());
     const QString elided =
         QFontMetrics(bold).elidedText(title_, Qt::ElideRight, static_cast<int>(titleRect.width()));
-    p.drawText(titleRect, Qt::AlignHCenter, elided);
+    drawTextRect(titleRect, Qt::AlignHCenter, elided);
     p.setFont(base);
+  }
+
+  // ── categorical (indexed) mode ─────────────────────────────────
+  if (categorical_ && !catEntries_.empty()) {
+    const int n = static_cast<int>(catEntries_.size());
+    const double swatchH = bar.height() / n;
+
+    QFont small = base;
+    small.setPointSizeF(base.pointSizeF() * 0.82);
+    p.setFont(small);
+    QFontMetrics sfm(small);
+
+    for (int i = 0; i < n; ++i) {
+      // catEntries_ is stored top→bottom (highest value first)
+      const auto& [label, color] = catEntries_[static_cast<size_t>(i)];
+      const double y = bar.top() + i * swatchH;
+      const QRectF swatch(bar.left(), y, kBarWidth, swatchH);
+      p.fillRect(swatch, color);
+      p.setPen(QPen(QColor(0, 0, 0, 180), 0.5));
+      p.drawRect(swatch);
+
+      // value label to the right
+      const QRectF labelRect(bar.right() + 4, y, width() - bar.right() - 6, swatchH);
+      drawTextRect(labelRect,
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   sfm.elidedText(label, Qt::ElideRight, static_cast<int>(labelRect.width())));
+    }
+
+    // min / max flanking labels (outside bar, same as continuous mode)
+    p.setFont(small);
+    drawTextRect(
+        QRectF(
+            bar.left(), bar.top() - sfm.height() - kLabelGap, width() - bar.left(), sfm.height()),
+        Qt::AlignLeft | Qt::AlignBottom,
+        QString::number(globalMax_, 'g', 4));
+    drawTextRect(QRectF(bar.left(), bar.bottom() + kLabelGap, width() - bar.left(), sfm.height()),
+                 Qt::AlignLeft | Qt::AlignTop,
+                 QString::number(globalMin_, 'g', 4));
+    return; // skip gradient, handles, ticks
   }
 
   // ── gradient bar ──────────────────────────────────────────────
@@ -233,13 +299,14 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
         mappedValue = clipMin_;
 
       const double t = (mappedValue - clipMin_) / clipSpan;
-      grad.setColorAt(pos, QColor::fromHsvF(std::clamp(t, 0.0, 1.0) * 0.8, 1.0, 1.0));
+      grad.setColorAt(
+          pos, QColor::fromHsvF(static_cast<float>(std::clamp(t, 0.0, 1.0) * 0.8), 1.0f, 1.0f));
     }
     p.fillRect(bar, grad);
   }
 
   // ── bar outline ───────────────────────────────────────────────
-  p.setPen(QPen(palette().mid().color(), 1));
+  p.setPen(QPen(QColor(0, 0, 0, 220), 1));
   p.setBrush(Qt::NoBrush);
   p.drawRect(bar);
 
@@ -249,7 +316,7 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
     if (range > 0) {
       double step = niceTickStep(range, 6);
       double first = std::ceil(clipMin_ / step) * step;
-      p.setPen(QPen(txtCol, 0.5));
+      p.setPen(QPen(txtCol, 0.75));
       for (double v = first; v <= clipMax_ + step * 0.001; v += step) {
         double y = valueToY(v);
         if (y < bar.top() + 1 || y > bar.bottom() - 1)
@@ -264,19 +331,18 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
     QFont small = base;
     small.setPointSizeF(base.pointSizeF() * 0.85);
     p.setFont(small);
-    p.setPen(txtCol);
     QFontMetrics sfm(small);
 
     // max label just above bar
-    p.drawText(
+    drawTextRect(
         QRectF(
             bar.left(), bar.top() - sfm.height() - kLabelGap, width() - bar.left(), sfm.height()),
         Qt::AlignLeft | Qt::AlignBottom,
         QString::number(globalMax_, 'g', 4));
     // min label just below bar
-    p.drawText(QRectF(bar.left(), bar.bottom() + kLabelGap, width() - bar.left(), sfm.height()),
-               Qt::AlignLeft | Qt::AlignTop,
-               QString::number(globalMin_, 'g', 4));
+    drawTextRect(QRectF(bar.left(), bar.bottom() + kLabelGap, width() - bar.left(), sfm.height()),
+                 Qt::AlignLeft | Qt::AlignTop,
+                 QString::number(globalMin_, 'g', 4));
     p.setFont(base);
   }
 
@@ -302,10 +368,9 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
     hf.setBold(on);
     hf.setPointSizeF(base.pointSizeF() * 0.9);
     p.setFont(hf);
-    p.setPen(txtCol);
     QFontMetrics hfm(hf);
-    p.drawText(QPointF(rx + kHandleW + 3, y + hfm.ascent() / 2.0 - 1),
-               QString::number(value, 'f', 2));
+    drawTextPoint(QPointF(rx + kHandleW + 3, y + hfm.ascent() / 2.0 - 1),
+                  QString::number(value, 'f', 2));
     p.setFont(base);
   };
 
@@ -315,6 +380,10 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
 
 // ── mouse interaction ───────────────────────────────────────────────
 void ColorBarWidget::mousePressEvent(QMouseEvent* ev) {
+  if (categorical_) {
+    QWidget::mousePressEvent(ev);
+    return;
+  }
   if (inlineEditor_ && inlineEditor_->isVisible()) {
     commitInlineEditor();
   }
@@ -332,6 +401,10 @@ void ColorBarWidget::mousePressEvent(QMouseEvent* ev) {
 }
 
 void ColorBarWidget::mouseMoveEvent(QMouseEvent* ev) {
+  if (categorical_) {
+    QWidget::mouseMoveEvent(ev);
+    return;
+  }
   if (dragHandle_ != None) {
     double v = yToValue(mouseLocalPos(ev).y());
     if (dragHandle_ == Upper)
@@ -368,6 +441,10 @@ void ColorBarWidget::mouseReleaseEvent(QMouseEvent* ev) {
 }
 
 void ColorBarWidget::mouseDoubleClickEvent(QMouseEvent* ev) {
+  if (categorical_) {
+    QWidget::mouseDoubleClickEvent(ev);
+    return;
+  }
   Handle h = hitTestHandle(mouseLocalPos(ev));
   if (h != None) {
     showInlineEditor(h);

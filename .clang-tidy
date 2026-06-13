@@ -1,0 +1,52 @@
+# clang-tidy configuration for vv.
+#
+# Pragmatic check set for a Qt + VTK C++17 codebase: catch real bugs and obvious
+# modernization/perf wins, but silence checks that fight the frameworks (VTK's
+# vtkNew/raw-pointer idioms, Qt's parent-owned `new`, C-array VTK APIs).
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  modernize-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  -modernize-use-nodiscard,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -readability-braces-around-statements,
+  -readability-implicit-bool-conversion,
+  -readability-named-parameter,
+  -readability-uppercase-literal-suffix,
+  -readability-math-missing-parentheses,
+  -portability-avoid-pragma-once,
+  -performance-enum-size,
+  -modernize-return-braced-init-list,
+  -modernize-use-emplace,
+  -modernize-use-equals-default,
+  -modernize-loop-convert,
+  -modernize-avoid-c-style-cast,
+  -modernize-use-auto,
+  -readability-isolate-declaration,
+  -readability-qualified-auto,
+  -readability-simplify-boolean-expr,
+  -readability-use-std-min-max,
+  -readability-container-size-empty,
+  -readability-use-concise-preprocessor-directives,
+  -readability-redundant-casting,
+  -bugprone-float-loop-counter,
+  -clang-analyzer-security.FloatLoopCounter,
+  -performance-inefficient-string-concatenation
+
+# Only diagnose our own headers, not VTK/Qt system headers.
+HeaderFilterRegex: 'src/include/.*\.h$'
+
+# Real bug-class findings fail CI; modernize/readability stay advisory so a newer
+# clang-tidy adding stricter style checks doesn't unexpectedly break the build.
+WarningsAsErrors: 'bugprone-*,clang-analyzer-*,performance-*,portability-*'
+
+FormatStyle: file

@@ -7,6 +7,7 @@ set(CMAKE_AUTOMOC ON)
 option(VV_FETCH_DEPS "Fetch fmt and cxxopts with CMake when missing" ON)
 option(VV_ENABLE_WARNINGS "Enable strict compiler warnings" ON)
 option(VV_WARNINGS_AS_ERRORS "Treat warnings as errors" ON)
+option(VV_QT_WINDOWS_DEPLOY "Run Qt windeployqt after vv links (Windows)" ON)
 
 if(VV_FETCH_DEPS)
   include(FetchContent)
@@ -67,6 +68,8 @@ find_package(VTK QUIET COMPONENTS
   CommonColor
   IOLegacy
   IOXML
+  IOImage
+  IOHDF
   FiltersCore
   RenderingCore
   RenderingOpenGL2
@@ -79,10 +82,13 @@ find_package(VTK QUIET COMPONENTS
 if(NOT VTK_FOUND)
   message(FATAL_ERROR
     "VTK was not found. Install VTK development files and reconfigure. "
-    "Examples: macOS (brew): brew install vtk; Ubuntu/Debian: sudo apt install libvtk9-dev. "
+    "Examples: macOS (brew): brew install vtk; "
+    "Ubuntu/Debian: sudo apt install libvtk9-dev libvtk9-qt-dev "
+    "(libvtk9-qt-dev is required for GUISupportQt). "
     "If VTK is installed in a non-standard location, set CMAKE_PREFIX_PATH or VTK_DIR."
   )
 endif()
+message(STATUS "VTK ${VTK_VERSION} found")
 
 if(TARGET Qt5::Core)
   set(QT_VERSION_MAJOR 5)
@@ -95,14 +101,51 @@ else()
   find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 endif()
 
-file(GLOB VV_ALL_SOURCES "src/*.cpp")
-set(VV_CORE_SOURCES ${VV_ALL_SOURCES})
-list(REMOVE_ITEM VV_CORE_SOURCES
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/main_qt.cpp"
+set(VV_CORE_SOURCES
+  src/CartoMeshParser.cpp
+  src/ColorBarWidget.cpp
+  src/FSurfMeshParser.cpp
+  src/JsonMeshParser.cpp
+  src/LSDynaMeshParser.cpp
+  src/MeshLoading.cpp
+  src/MeshParser.cpp
+  src/MeshRenderer.cpp
+  src/PlaybackBar.cpp
+  src/ScalarVizUtils.cpp
+  src/TemporalSource.cpp
+  src/VTKHDFMeshParser.cpp
+  src/VTKMeshParser.cpp
+  src/ViewerWindow.cpp
+  src/XMLMeshParser.cpp
+  src/mesh_utils.cpp
 )
 
-add_executable(vv src/main_qt.cpp ${VV_CORE_SOURCES} src/include/ColorBarWidget.h)
+set(VV_HEADERS
+  src/include/CartoMeshParser.h
+  src/include/ColorBarWidget.h
+  src/include/FSurfMeshParser.h
+  src/include/JsonMeshParser.h
+  src/include/LSDynaMeshParser.h
+  src/include/MeshLoading.h
+  src/include/MeshParser.h
+  src/include/MeshRenderer.h
+  src/include/PlaybackBar.h
+  src/include/ScalarVizUtils.h
+  src/include/TemporalSource.h
+  src/include/VTKHDFMeshParser.h
+  src/include/VTKMeshParser.h
+  src/include/ViewerWindow.h
+  src/include/XMLMeshParser.h
+  src/include/mesh_utils.h
+)
+
+add_executable(vv src/main_qt.cpp ${VV_CORE_SOURCES} ${VV_HEADERS})
 target_include_directories(vv PRIVATE src/include)
+
+if(MSVC)
+  target_compile_options(vv PRIVATE /EHsc)
+  target_compile_definitions(vv PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 
 if(VV_ENABLE_WARNINGS)
   if(MSVC)
@@ -119,6 +162,9 @@ if(VV_ENABLE_WARNINGS)
       -Wformat=2
       -Wnull-dereference
       -Wdouble-promotion
+      -Wconversion
+      -Wsign-conversion
+      -Wimplicit-fallthrough
     )
     if(VV_WARNINGS_AS_ERRORS)
       target_compile_options(vv PRIVATE -Werror)
@@ -127,12 +173,15 @@ if(VV_ENABLE_WARNINGS)
 endif()
 
 target_link_libraries(vv PRIVATE fmt::fmt)
+target_link_libraries(vv PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(vv PRIVATE
   VTK::CommonCore
   VTK::CommonDataModel
   VTK::CommonColor
   VTK::IOLegacy
   VTK::IOXML
+  VTK::IOImage
+  VTK::IOHDF
   VTK::FiltersCore
   VTK::RenderingCore
   VTK::RenderingOpenGL2
@@ -147,6 +196,57 @@ vtk_module_autoinit(
   TARGETS vv
   MODULES ${VTK_LIBRARIES}
 )
+
+# Windows + Qt: put plugins (platforms/qwindows.dll, etc.) next to vv.exe.
+# vcpkg: windeployqt does not understand vcpkg's Qt layout ("Unable to find the platform plugin");
+# copy the installed plugins tree instead. Non-vcpkg Qt: windeployqt is the usual tool.
+if(WIN32 AND VV_QT_WINDOWS_DEPLOY AND QT_VERSION_MAJOR EQUAL 6)
+  if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    # vcpkg qtbase installs plugin roots as <triplet>/Qt6/plugins (see tools/Qt6/bin/qt.conf), not <triplet>/plugins.
+    set(_vv_vcpkg_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+    if(EXISTS "${_vv_vcpkg_root}/Qt6/plugins")
+      set(_vv_qt_plugins "${_vv_vcpkg_root}/Qt6/plugins")
+    elseif(EXISTS "${_vv_vcpkg_root}/plugins")
+      set(_vv_qt_plugins "${_vv_vcpkg_root}/plugins")
+    else()
+      set(_vv_qt_plugins "${_vv_vcpkg_root}/Qt6/plugins")
+    endif()
+    add_custom_command(
+      TARGET vv
+      POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${_vv_qt_plugins}" "$<TARGET_FILE_DIR:vv>/plugins"
+      COMMENT "Deploy Qt plugins next to vv (from vcpkg installed tree)"
+    )
+  else()
+    set(_vv_windeployqt_hints "")
+    if(DEFINED Qt6_DIR)
+      list(APPEND _vv_windeployqt_hints "${Qt6_DIR}/../../../tools/Qt6/bin")
+      list(APPEND _vv_windeployqt_hints "${Qt6_DIR}/../../../bin")
+    endif()
+    foreach(_p IN LISTS CMAKE_PREFIX_PATH)
+      list(APPEND _vv_windeployqt_hints "${_p}/tools/Qt6/bin" "${_p}/bin")
+    endforeach()
+    find_program(
+      VV_WINDEPLOYQT_EXECUTABLE
+      NAMES windeployqt windeployqt.exe
+      HINTS ${_vv_windeployqt_hints}
+      DOC "Qt deployment tool (ships with Qt)"
+    )
+    if(VV_WINDEPLOYQT_EXECUTABLE)
+      add_custom_command(
+        TARGET vv
+        POST_BUILD
+        COMMAND "${VV_WINDEPLOYQT_EXECUTABLE}" "$<TARGET_FILE:vv>" --no-compiler-runtime
+        COMMENT "Qt windeployqt: deploy Qt DLLs and plugins beside vv"
+      )
+    else()
+      message(
+        WARNING
+        "windeployqt not found; Windows runs may fail to load Qt without manual deployment."
+      )
+    endif()
+  endif()
+endif()
 
 add_custom_target(run
     COMMAND $<TARGET_FILE:vv>
@@ -185,3 +285,41 @@ if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
 endif()
 
 install(TARGETS vv RUNTIME DESTINATION bin)
+
+# ── macOS: bundle + Quick Look generator ─────────────────────────────
+if(APPLE)
+  set_target_properties(vv PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist.in"
+  )
+
+  # QLGenerator: ObjC plugin that calls `vv --thumbnail` and serves the PNG to Quick Look.
+  add_library(vv_ql MODULE
+    "${CMAKE_CURRENT_SOURCE_DIR}/macos/qlgenerator/GeneratePreviewForURL.m"
+  )
+  set_target_properties(vv_ql PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "qlgenerator"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/qlgenerator/Info.plist"
+    OUTPUT_NAME "vv_ql"
+    AUTOMOC OFF
+  )
+  target_compile_options(vv_ql PRIVATE -fobjc-arc -Wno-deprecated-declarations)
+  target_link_libraries(vv_ql PRIVATE
+    "-framework CoreFoundation"
+    "-framework QuickLook"
+    "-framework Foundation"
+    "-framework CoreGraphics"
+  )
+
+  # Copy the .qlgenerator bundle into vv.app after both targets are built.
+  add_dependencies(vv vv_ql)
+  add_custom_command(TARGET vv POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "$<TARGET_BUNDLE_DIR:vv>/Contents/Library/QuickLook"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "$<TARGET_BUNDLE_DIR:vv_ql>"
+      "$<TARGET_BUNDLE_DIR:vv>/Contents/Library/QuickLook/vv.qlgenerator"
+    COMMENT "Embedding vv.qlgenerator into app bundle"
+  )
+endif()
