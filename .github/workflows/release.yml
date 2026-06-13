@@ -119,15 +119,21 @@ jobs:
             'GenericName=Mesh Viewer' 'Exec=vv %F' 'Icon=vv' \
             'Categories=Graphics;Science;' 'Terminal=false' \
             > AppDir/usr/share/applications/vv.desktop
+          # Plain solid-colour placeholder icon (no text → no font dependency;
+          # ImageMagick on the runner has no 'helvetica'). Drop a real icon here
+          # later if desired.
           convert -size 256x256 xc:'#1e1e1e' \
-            -gravity center -pointsize 120 -fill '#5096FA' -annotate 0 'vv' \
             AppDir/usr/share/icons/hicolor/256x256/apps/vv.png
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy*.AppImage
           export QMAKE=/usr/bin/qmake
           export OUTPUT="vv-${GITHUB_REF_NAME}-${{ matrix.target }}.AppImage"
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir --plugin qt --output appimage
+          # GitHub runners lack a usable FUSE; run the AppImage tools by extracting
+          # them instead of mounting.
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/vv \
+            --plugin qt --output appimage
           mkdir -p dist && mv vv*.AppImage dist/
           # bare binary too
           tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}-bin.tar.gz" -C build vv
