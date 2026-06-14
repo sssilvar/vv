@@ -4,6 +4,10 @@ project(VtkViewer VERSION 1.2.0)
 
 set(CMAKE_AUTOMOC ON)
 
+# Assets and Icons
+set(ASSETS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons")
+set(GENERATED_ASSETS_DIR "${ASSETS_DIR}/generated")
+
 option(VV_FETCH_DEPS "Fetch fmt and cxxopts with CMake when missing" ON)
 option(VV_ENABLE_WARNINGS "Enable strict compiler warnings" ON)
 option(VV_WARNINGS_AS_ERRORS "Treat warnings as errors" ON)
@@ -140,6 +144,13 @@ set(VV_HEADERS
 )
 
 add_executable(vv src/main_qt.cpp ${VV_CORE_SOURCES} ${VV_HEADERS})
+
+if(WIN32)
+  set(VV_ICON_RC "${GENERATED_ASSETS_DIR}/vv_icon.rc")
+  file(WRITE "${VV_ICON_RC}" "IDI_ICON1 ICON \"${GENERATED_ASSETS_DIR}/vv_icon.ico\"\n")
+  target_sources(vv PRIVATE "${VV_ICON_RC}")
+endif()
+
 target_include_directories(vv PRIVATE src/include)
 
 if(MSVC)
@@ -291,6 +302,7 @@ if(APPLE)
   set_target_properties(vv PROPERTIES
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist.in"
+    MACOSX_BUNDLE_ICON_FILE vv_icon.icns
   )
 
   # QLGenerator: ObjC plugin that calls `vv --thumbnail` and serves the PNG to Quick Look.
@@ -312,14 +324,13 @@ if(APPLE)
     "-framework CoreGraphics"
   )
 
-  # Copy the .qlgenerator bundle into vv.app after both targets are built.
+  # Copy resources into vv.app after both targets are built.
   add_dependencies(vv vv_ql)
   add_custom_command(TARGET vv POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-      "$<TARGET_BUNDLE_DIR:vv>/Contents/Library/QuickLook"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "$<TARGET_BUNDLE_DIR:vv_ql>"
-      "$<TARGET_BUNDLE_DIR:vv>/Contents/Library/QuickLook/vv.qlgenerator"
-    COMMENT "Embedding vv.qlgenerator into app bundle"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:vv>/Contents/Resources"
+    COMMAND ${CMAKE_COMMAND} -E copy "${GENERATED_ASSETS_DIR}/vv_icon.icns" "$<TARGET_BUNDLE_DIR:vv>/Contents/Resources/"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:vv>/Contents/Library/QuickLook"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "$<TARGET_BUNDLE_DIR:vv_ql>" "$<TARGET_BUNDLE_DIR:vv>/Contents/Library/QuickLook/vv.qlgenerator"
+    COMMENT "Embedding icon and qlgenerator into app bundle"
   )
 endif()

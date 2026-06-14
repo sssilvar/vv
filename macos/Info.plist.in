@@ -23,6 +23,9 @@
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
 
+  <key>CFBundleIconFile</key>
+  <string>${MACOSX_BUNDLE_ICON_FILE}</string>
+
   <!-- Export custom UTIs so Finder knows about these types -->
   <key>UTExportedTypeDeclarations</key>
   <array>
