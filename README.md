@@ -184,7 +184,7 @@ preinstalled:
 
 - **Linux** — `.AppImage` (via `linuxdeploy` + the Qt plugin)
 - **macOS** — zipped `vv.app` (via `macdeployqt`)
-- **Windows** — `.zip` with `vv.exe`, Qt plugins, and the linked MinGW/VTK DLLs
+- **Windows** — portable `.exe` (via `scripts/package-windows.sh`; unpacks to `%LOCALAPPDATA%\vv\` on first run)
 
 Bare-binary archives are also published for users who already have the runtime
 from a package manager.

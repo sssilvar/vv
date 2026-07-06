@@ -70,10 +70,12 @@ jobs:
             mingw-w64-x86_64-ccache
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-vtk
+            mingw-w64-x86_64-fast_float
             mingw-w64-x86_64-hdf5
             mingw-w64-x86_64-fmt
             mingw-w64-x86_64-cxxopts
             mingw-w64-x86_64-nlohmann-json
+            mingw-w64-x86_64-nsis
 
       # ── configure + build ──────────────────────────────────────────
       - name: Configure + build (Linux)
@@ -150,22 +152,17 @@ jobs:
           tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}-bin.tar.gz" \
             -C build/vv.app/Contents/MacOS vv
 
-      - name: Package Windows zip
+      - name: Package Windows portable exe
         if: runner.os == 'Windows'
         shell: msys2 {0}
+        # Staging, smoke test, and the portable-exe build all live in
+        # scripts/package-windows.sh so the exact packaging is runnable locally
+        # (from an MSYS2 MINGW64 shell) before a tag is pushed. Produces a
+        # single portable .exe.
         run: |
           set -e
-          STAGE="vv-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "stage/$STAGE"
-          cp build/vv.exe "stage/$STAGE/"
-          # windeployqt copies Qt DLLs + plugins (platforms/, styles/, …) into the
-          # staging dir alongside the exe.
-          windeployqt --no-compiler-runtime "stage/$STAGE/vv.exe"
-          # Then copy the remaining MinGW/VTK runtime DLLs the binary links against.
-          ldd "stage/$STAGE/vv.exe" | awk '/mingw64/ {print $3}' | sort -u | \
-            while read -r dll; do cp -n "$dll" "stage/$STAGE/" 2>/dev/null || true; done
-          mkdir -p dist
-          (cd stage && powershell -Command "Compress-Archive -Path '$STAGE' -DestinationPath '../dist/$STAGE.zip'")
+          ./scripts/package-windows.sh \
+            --stage-name "vv-${GITHUB_REF_NAME}-${{ matrix.target }}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

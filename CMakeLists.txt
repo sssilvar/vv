@@ -66,6 +66,11 @@ if(TARGET nlohmann_json AND NOT TARGET nlohmann_json::nlohmann_json)
   add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
 endif()
 
+# MSYS2's vtk package links against system fast_float but its exported
+# VTK::fast_float target only requires FastFloat::fast_float without finding
+# it, so find it ourselves first.
+find_package(fast_float CONFIG QUIET)
+
 find_package(VTK QUIET COMPONENTS
   CommonCore
   CommonDataModel
