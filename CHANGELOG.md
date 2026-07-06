@@ -1,3 +1,11 @@
+# [1.3.0] - 2026-07-07
+
+### Changed
+
+- Windows release packaging now produces a single portable `.exe`
+  (`scripts/package-windows.sh` + `scripts/vv-portable.nsi`) instead of a
+  `.zip`, self-extracting to `%LOCALAPPDATA%\vv\` on first run.
+
 # [1.2.0] - 2026-06-13
 
 ### Added
