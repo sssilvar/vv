@@ -365,6 +365,34 @@ bool MeshRenderer::setActiveScalar(const std::string& scalarName, FieldAssociati
   return true;
 }
 
+void MeshRenderer::colorByFixedCategorical(const std::string& scalarName,
+                                           FieldAssociation association,
+                                           vtkLookupTable* lut,
+                                           const double range[2]) {
+  if (sceneMeshes.empty() || mappers.empty() || !sceneMeshes.front() || !lut) {
+    return;
+  }
+  activeScalarName = scalarName;
+  activeScalarAssociation = association;
+  vtkDataSet* mesh = sceneMeshes.front();
+  vtkDataSetMapper* mapper = mappers.front();
+  if (association == FieldAssociation::Cell) {
+    mesh->GetCellData()->SetActiveScalars(scalarName.c_str());
+    mapper->SetScalarModeToUseCellFieldData();
+  } else {
+    mesh->GetPointData()->SetActiveScalars(scalarName.c_str());
+    mapper->SetScalarModeToUsePointFieldData();
+  }
+  mapper->SelectColorArray(scalarName.c_str());
+  mapper->SetColorModeToMapScalars();
+  mapper->ScalarVisibilityOn();
+  mapper->SetLookupTable(lut);
+  mapper->SetScalarRange(range[0], range[1]);
+  if (context.window) {
+    context.window->Render();
+  }
+}
+
 void MeshRenderer::clearActiveScalar() {
   activeScalarName.clear();
   activeScalarAnalysis = {};

@@ -45,6 +45,13 @@ public:
   void setSharedCatAnalysis(const ScalarAnalysis& shared);
 
   bool setActiveScalar(const std::string& scalarName, FieldAssociation association);
+  // Color the primary mesh by a categorical array using an externally-owned LUT,
+  // bypassing per-scalar analysis so the value→color mapping stays fixed while
+  // the array is edited (annotation mode).
+  void colorByFixedCategorical(const std::string& scalarName,
+                               FieldAssociation association,
+                               vtkLookupTable* lut,
+                               const double range[2]);
   void clearActiveScalar();
   // Re-apply the current scalar mapping after the underlying mesh data changed
   // (e.g. a new playback frame was shallow-copied in), keeping the color range
@@ -70,6 +77,10 @@ public:
   void startFacetGrid();
 
   RendererContext context;
+
+  // Annotation mode needs the renderer (for picking) and the primary dataset.
+  vtkRenderer* getRenderer() const { return renderer; }
+  vtkDataSet* getPrimaryMesh() const { return sceneMeshes.empty() ? nullptr : sceneMeshes.front(); }
 
 private:
   vtkSmartPointer<vtkRenderer> renderer;
