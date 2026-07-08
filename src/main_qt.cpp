@@ -40,6 +40,7 @@ struct Args {
   std::vector<std::string> meshfiles;
   bool explode_view = false;
   bool common_cat_lut = false;
+  bool annotate = false;
   bool version = false;
   bool help = false;
   std::string thumbnail_output; // non-empty → offscreen render to PNG and exit
@@ -55,6 +56,9 @@ Args parseArgs(int argc, char* argv[], bool requireFiles = true) {
       "C,common-cat-lut",
       "Share one categorical colormap across all categorical scalars for cross-scalar comparison",
       cxxopts::value<bool>(args.common_cat_lut))(
+      "a,annotate",
+      "Annotation mode: paint a per-cell 'label' array with a surface brush",
+      cxxopts::value<bool>(args.annotate))(
       "v,version", "Show version and exit", cxxopts::value<bool>(args.version))(
       "h,help", "Show help and exit", cxxopts::value<bool>(args.help))(
       "T,thumbnail",
@@ -251,6 +255,10 @@ int main(int argc, char* argv[]) try {
   ViewerOptions viewerOptions;
   viewerOptions.explodeView = args.explode_view;
   viewerOptions.commonCatLut = args.common_cat_lut;
+  viewerOptions.annotate = args.annotate && !args.explode_view;
+  if (args.annotate && args.explode_view) {
+    std::cerr << "Warning: --annotate is not supported with --explode; ignoring --annotate.\n";
+  }
 
   ViewerWindow window(std::move(loadResult), viewerOptions);
   window.show();

@@ -9,6 +9,15 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QDir>
+#include <QButtonGroup>
+#include <QFileDialog>
+#include <QLabel>
+#include <QMessageBox>
+#include <QPainterPath>
+#include <QShortcut>
+#include <QSlider>
+#include <QStatusBar>
+#include <QToolButton>
 #include <QEvent>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -31,6 +40,17 @@
 #include <utility>
 #include <vtkCamera.h>
 #include <vtkCellData.h>
+#include <vtkActor.h>
+#include <vtkCellPicker.h>
+#include <vtkDataSetMapper.h>
+#include <vtkExtractCells.h>
+#include <vtkIdList.h>
+#include <vtkProperty.h>
+#include <vtkIntArray.h>
+#include <vtkPolyData.h>
+#include <vtkUnstructuredGrid.h>
+#include <vtkXMLPolyDataWriter.h>
+#include <vtkXMLUnstructuredGridWriter.h>
 #include <vtkDataArray.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkLookupTable.h>
@@ -152,6 +172,21 @@ QIcon partColorIcon(const std::array<double, 3>& rgb) {
   return QIcon(pix);
 }
 
+// Small circle cursor for paint mode. ponytail: fixed size, not mapped to the
+// ring-based brush (rings aren't pixels); it just signals "brush, not camera".
+QCursor makeBrushCursor() {
+  constexpr int kSize = 20;
+  QPixmap pix(kSize, kSize);
+  pix.fill(Qt::transparent);
+  QPainter painter(&pix);
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  painter.setPen(QPen(QColor(20, 20, 20, 200), 2.0));
+  painter.drawEllipse(2, 2, kSize - 4, kSize - 4);
+  painter.setPen(QPen(QColor(255, 255, 255, 220), 1.0));
+  painter.drawEllipse(2, 2, kSize - 4, kSize - 4);
+  return QCursor(pix, kSize / 2, kSize / 2);
+}
+
 // Swatch list for a categorical scalar: analysis unique values + LUT colors,
 // highest value first (top of the bar).
 std::vector<std::pair<QString, QColor>> categoricalEntries(vtkLookupTable* lut,
@@ -192,10 +227,14 @@ public:
                           QWidget* overlayTree,
                           std::function<void()> onSpaceCycle,
                           std::function<void()> onViewportResize,
+                          std::function<bool(QMouseEvent*)> onPointerEvent,
+                          std::function<void(bool active, bool erase)> onPaintHold,
                           QObject* parent = nullptr)
       : QObject(parent), vtkRoot_(vtkRoot), overlayColorBar_(overlayColorBar),
         overlayTree_(overlayTree), onSpaceCycle_(std::move(onSpaceCycle)),
-        onViewportResize_(std::move(onViewportResize)) {}
+        onViewportResize_(std::move(onViewportResize)),
+        onPointerEvent_(std::move(onPointerEvent)),
+        onPaintHold_(std::move(onPaintHold)) {}
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override {
@@ -223,6 +262,18 @@ protected:
     }
     if (insideOverlay) {
       return QObject::eventFilter(watched, event);
+    }
+
+    // Annotation gets first dibs on pointer events so a paint stroke is not also
+    // interpreted as a camera rotate/dolly by VTK. Only the raw render surface
+    // paints — events on child overlays (the annotation bar's swatches, slider,
+    // save button) must pass through to those widgets.
+    if (onPointerEvent_ && widget == vtkRoot &&
+        (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseMove ||
+         event->type() == QEvent::MouseButtonRelease)) {
+      if (onPointerEvent_(static_cast<QMouseEvent*>(event))) {
+        return true;
+      }
     }
 
     switch (event->type()) {
@@ -302,11 +353,27 @@ protected:
         QApplication::quit();
         return true;
       }
+      // Hold 'a' to paint, 'e' to erase; ignore X11 auto-repeat so the hold sticks.
+      if (!ke->isAutoRepeat() && onPaintHold_ &&
+          (ke->key() == Qt::Key_A || ke->key() == Qt::Key_E)) {
+        onPaintHold_(true, ke->key() == Qt::Key_E);
+        return true;
+      }
+      break;
+    }
+    case QEvent::KeyRelease: {
+      auto* ke = static_cast<QKeyEvent*>(event);
+      if (!ke->isAutoRepeat() && onPaintHold_ &&
+          (ke->key() == Qt::Key_A || ke->key() == Qt::Key_E)) {
+        onPaintHold_(false, false);
+        return true;
+      }
       break;
     }
     case QEvent::ShortcutOverride: {
       auto* ke = static_cast<QKeyEvent*>(event);
-      if (ke->key() == Qt::Key_Space || ke->key() == Qt::Key_Q) {
+      if (ke->key() == Qt::Key_Space || ke->key() == Qt::Key_Q ||
+          ke->key() == Qt::Key_A || ke->key() == Qt::Key_E) {
         ke->accept();
         return true;
       }
@@ -324,7 +391,96 @@ private:
   QPointer<QWidget> overlayTree_;
   std::function<void()> onSpaceCycle_;
   std::function<void()> onViewportResize_;
+  std::function<bool(QMouseEvent*)> onPointerEvent_;
+  std::function<void(bool active, bool erase)> onPaintHold_;
 };
+
+// Number of paintable labels (1..kNumLabels); value 0 is "unlabeled". Kept at 9
+// so the categorical LUT uses the distinct tab10 palette.
+constexpr int kNumLabels = 9;
+
+QRect annotationBarGeometry(const QWidget* viewport, const QWidget* bar) {
+  const int width = bar->sizeHint().width();
+  const int height = bar->sizeHint().height();
+  const int x = std::max(kPlaybackBarMargin, (viewport->width() - width) / 2);
+  const int y = std::max(kPlaybackBarMargin, viewport->height() - height - kPlaybackBarMargin);
+  return QRect(x, y, width, height);
+}
+
+enum class AnnotGlyph { Pencil, Save };
+
+QIcon makeAnnotIcon(AnnotGlyph glyph) {
+  QIcon icon;
+  for (const int scale : {1, 2}) {
+    const int px = 24 * scale;
+    QPixmap pix(px, px);
+    pix.fill(Qt::transparent);
+    QPainter painter(&pix);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.scale(scale, scale);
+    QPainterPath path;
+    if (glyph == AnnotGlyph::Pencil) {
+      path.moveTo(16.0, 4.0); // diagonal pencil body
+      path.lineTo(20.0, 8.0);
+      path.lineTo(8.0, 20.0);
+      path.lineTo(4.0, 16.0);
+      path.closeSubpath();
+      QPainterPath tip; // graphite tip at the lower-left corner
+      tip.moveTo(4.0, 16.0);
+      tip.lineTo(8.0, 20.0);
+      tip.lineTo(4.0, 20.0);
+      tip.closeSubpath();
+      path = path.united(tip);
+    } else {
+      path.addRect(QRectF(10.5, 4.0, 3.0, 7.0)); // down-arrow into a tray = save
+      QPainterPath head;
+      head.moveTo(7.0, 10.0);
+      head.lineTo(17.0, 10.0);
+      head.lineTo(12.0, 16.0);
+      head.closeSubpath();
+      path = path.united(head);
+      path.addRect(QRectF(5.0, 17.5, 14.0, 2.5));
+    }
+    painter.fillPath(path, QColor(232, 232, 232));
+    painter.end();
+    icon.addPixmap(pix);
+  }
+  return icon;
+}
+
+// Grow a set of cells outward from `seed` over shared-vertex adjacency, up to
+// `rings` expansion steps (ring 0 = just the seed cell). This walks the mesh
+// surface: the far side of a thin sheet shares no vertices with the near side,
+// so paint never jumps the gap the way a 3-D sphere brush would.
+std::vector<vtkIdType> growCells(vtkDataSet* ds, vtkIdType seed, int rings) {
+  std::vector<vtkIdType> out;
+  if (!ds || seed < 0) {
+    return out;
+  }
+  std::set<vtkIdType> visited{seed};
+  std::vector<vtkIdType> frontier{seed};
+  out.push_back(seed);
+  auto cellPts = vtkSmartPointer<vtkIdList>::New();
+  auto ptCells = vtkSmartPointer<vtkIdList>::New();
+  for (int ring = 0; ring < rings && !frontier.empty(); ++ring) {
+    std::vector<vtkIdType> next;
+    for (vtkIdType cell : frontier) {
+      ds->GetCellPoints(cell, cellPts);
+      for (vtkIdType i = 0; i < cellPts->GetNumberOfIds(); ++i) {
+        ds->GetPointCells(cellPts->GetId(i), ptCells);
+        for (vtkIdType j = 0; j < ptCells->GetNumberOfIds(); ++j) {
+          const vtkIdType nb = ptCells->GetId(j);
+          if (visited.insert(nb).second) {
+            next.push_back(nb);
+            out.push_back(nb);
+          }
+        }
+      }
+    }
+    frontier.swap(next);
+  }
+  return out;
+}
 
 } // namespace
 
@@ -367,6 +523,12 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult, const ViewerOptions& optio
       partsTree_,
       [this]() { cycleScalar(); },
       [this]() { onViewportResize(); },
+      options_.annotate ? std::function<bool(QMouseEvent*)>(
+                              [this](QMouseEvent* e) { return handleAnnotatePointer(e); })
+                        : nullptr,
+      options_.annotate ? std::function<void(bool, bool)>(
+                              [this](bool active, bool erase) { setPaintHold(active, erase); })
+                        : nullptr,
       this));
 
   QTimer::singleShot(0, this, [this]() {
@@ -378,6 +540,9 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult, const ViewerOptions& optio
     setupFacetMode();
   } else {
     setupNormalMode();
+    if (options_.annotate) {
+      setupAnnotateMode();
+    }
   }
 
   vtkWidget_->setFocus();
@@ -635,6 +800,380 @@ void ViewerWindow::applyPlayTimerInterval() {
   playTimer_->setInterval(std::max(1, static_cast<int>(std::round(1000.0 / fps))));
 }
 
+// ── annotation mode ─────────────────────────────────────────────────────
+void ViewerWindow::ensureLabelArray() {
+  vtkDataSet* mesh = renderer_.getPrimaryMesh();
+  if (!mesh) {
+    return;
+  }
+  labelArray_ = vtkIntArray::SafeDownCast(mesh->GetCellData()->GetArray("label"));
+  if (!labelArray_) {
+    auto arr = vtkSmartPointer<vtkIntArray>::New();
+    arr->SetName("label");
+    arr->SetNumberOfComponents(1);
+    arr->SetNumberOfTuples(mesh->GetNumberOfCells());
+    arr->FillComponent(0, 0.0);
+    mesh->GetCellData()->AddArray(arr);
+    labelArray_ = arr;
+  }
+  // GetPointCells (used by the surface brush BFS) needs the reverse links built.
+  if (auto* pd = vtkPolyData::SafeDownCast(mesh)) {
+    pd->BuildLinks();
+  } else if (auto* ug = vtkUnstructuredGrid::SafeDownCast(mesh)) {
+    ug->BuildLinks();
+  }
+}
+
+void ViewerWindow::setupAnnotateMode() {
+  ensureLabelArray();
+  picker_ = vtkSmartPointer<vtkCellPicker>::New();
+  picker_->SetTolerance(0.0005);
+
+  // Fixed value→color LUT so a value keeps its color while the array is edited.
+  std::set<double> domain;
+  for (int v = 0; v <= kNumLabels; ++v) {
+    domain.insert(static_cast<double>(v));
+  }
+  labelLut_ = createCategoricalLookupTable(domain);
+  labelLut_->SetTableValue(0, 0.6, 0.6, 0.6, 1.0); // value 0 = unlabeled → grey
+  labelLut_->Modified();
+  applyLabelColoring();
+
+  // Floating bar: pencil toggle, one color swatch per label, brush size, save.
+  annotationBar_ = new QWidget(vtkWidget_);
+  annotationBar_->setObjectName("annotationBar");
+  annotationBar_->setAttribute(Qt::WA_StyledBackground, true);
+  annotationBar_->setFocusPolicy(Qt::NoFocus);
+  annotationBar_->setStyleSheet(
+      "QWidget#annotationBar { background: rgba(20,20,20,200); border-radius: 8px; }"
+      "QToolButton { background: rgba(255,255,255,18); color: #E8E8E8; border: none;"
+      "  border-radius: 4px; padding: 3px; }"
+      "QToolButton:hover { background: rgba(255,255,255,40); }"
+      "QToolButton:checked { background: rgba(80,150,250,160); }"
+      "QLabel { color: #D8D8D8; font-size: 12px; }"
+      "QSlider::groove:horizontal { height: 4px; background: rgba(255,255,255,50);"
+      "  border-radius: 2px; }"
+      "QSlider::handle:horizontal { width: 12px; margin: -5px 0; border-radius: 6px;"
+      "  background: #E8E8E8; }"
+      "QSlider::sub-page:horizontal { background: #5096FA; border-radius: 2px; }");
+
+  auto* row = new QHBoxLayout(annotationBar_);
+  row->setContentsMargins(10, 6, 10, 6);
+  row->setSpacing(8);
+
+  pencilButton_ = new QToolButton(annotationBar_);
+  pencilButton_->setIcon(makeAnnotIcon(AnnotGlyph::Pencil));
+  pencilButton_->setIconSize(QSize(20, 20));
+  pencilButton_->setCheckable(true);
+  pencilButton_->setChecked(false); // navigation by default; click (or 'a') to paint
+  pencilButton_->setFocusPolicy(Qt::NoFocus);
+  pencilButton_->setToolTip(
+      QStringLiteral("Paint (a) — off = rotate. 'e' toggles erase; right-drag also erases."));
+  row->addWidget(pencilButton_);
+  const QCursor brushCursor = makeBrushCursor();
+  QObject::connect(pencilButton_, &QToolButton::toggled, this,
+                   [this, brushCursor](bool on) {
+                     vtkWidget_->setCursor(on ? brushCursor : QCursor(Qt::ArrowCursor));
+                   });
+  vtkWidget_->setCursor(Qt::ArrowCursor);
+  // Toolbar is a child of vtkWidget_, so it inherits the brush cursor; force arrow.
+  annotationBar_->setCursor(Qt::ArrowCursor);
+
+  auto* swatches = new QButtonGroup(this);
+  swatches->setExclusive(true);
+  for (int v = 0; v <= kNumLabels; ++v) { // v == 0 is the eraser (grey / unlabeled)
+    double rgb[3];
+    labelLut_->GetColor(static_cast<double>(v), rgb);
+    const QColor color = QColor::fromRgbF(static_cast<float>(rgb[0]),
+                                          static_cast<float>(rgb[1]),
+                                          static_cast<float>(rgb[2]));
+    auto* sw = new QToolButton(annotationBar_);
+    sw->setCheckable(true);
+    sw->setFixedSize(22, 22);
+    sw->setFocusPolicy(Qt::NoFocus);
+    sw->setToolTip(v == 0 ? QStringLiteral("Erase") : QString::number(v));
+    sw->setStyleSheet(QStringLiteral("QToolButton { background: %1; border: 2px solid "
+                                     "rgba(0,0,0,0); border-radius: 4px; }"
+                                     "QToolButton:checked { border: 2px solid white; }")
+                          .arg(color.name()));
+    swatches->addButton(sw, v);
+    row->addWidget(sw);
+    if (v == currentLabel_) {
+      sw->setChecked(true);
+    }
+  }
+  QObject::connect(swatches, &QButtonGroup::idClicked, this, [this](int id) { currentLabel_ = id; });
+
+  row->addWidget(new QLabel(QStringLiteral("Brush"), annotationBar_));
+  brushSlider_ = new QSlider(Qt::Horizontal, annotationBar_);
+  brushSlider_->setRange(0, 15);
+  brushSlider_->setValue(3);
+  brushSlider_->setFixedWidth(90);
+  brushSlider_->setFocusPolicy(Qt::NoFocus);
+  brushSlider_->setToolTip(QStringLiteral("Brush size: surface rings around the picked cell."));
+  row->addWidget(brushSlider_);
+
+  auto* saveButton = new QToolButton(annotationBar_);
+  saveButton->setIcon(makeAnnotIcon(AnnotGlyph::Save));
+  saveButton->setIconSize(QSize(20, 20));
+  saveButton->setFocusPolicy(Qt::NoFocus);
+  saveButton->setToolTip(QStringLiteral("Save annotations to .vtp/.vtu"));
+  row->addWidget(saveButton);
+  QObject::connect(saveButton, &QToolButton::clicked, this, [this]() { saveAnnotations(); });
+
+  annotationBar_->show();
+  annotationBar_->raise();
+  QTimer::singleShot(0, this, [this]() {
+    annotationBar_->setGeometry(annotationBarGeometry(vtkWidget_, annotationBar_));
+    annotationBar_->raise();
+  });
+
+  // 'a'/'e' are handled as press-and-hold in VtkMouseFilter, not QShortcuts.
+  auto bumpBrush = [this](int delta) {
+    if (brushSlider_) {
+      brushSlider_->setValue(brushSlider_->value() + delta);
+    }
+  };
+  for (const auto key : {Qt::Key_Plus, Qt::Key_Equal}) { // '=' so + needs no Shift
+    QObject::connect(new QShortcut(QKeySequence(key), this), &QShortcut::activated, this,
+                     [bumpBrush]() { bumpBrush(+1); });
+  }
+  for (const auto key : {Qt::Key_Minus, Qt::Key_Underscore}) {
+    QObject::connect(new QShortcut(QKeySequence(key), this), &QShortcut::activated, this,
+                     [bumpBrush]() { bumpBrush(-1); });
+  }
+  auto* undo = new QShortcut(QKeySequence(QKeySequence::Undo), this); // Cmd/Ctrl+Z
+  QObject::connect(undo, &QShortcut::activated, this, [this]() { undoStroke(); });
+}
+
+// Press-and-hold from VtkMouseFilter: arm paint (erase = label 0) while held,
+// disarm on release. Clicking pencilButton stays as a sticky lock.
+void ViewerWindow::setPaintHold(bool active, bool erase) {
+  if (!pencilButton_) {
+    return;
+  }
+  eraseMode_ = active && erase;
+  pencilButton_->setChecked(active);
+  if (!active) {
+    clearBrushPreview();
+  }
+}
+
+void ViewerWindow::togglePaint() {
+  if (pencilButton_) {
+    pencilButton_->setChecked(!pencilButton_->isChecked());
+  }
+}
+
+bool ViewerWindow::handleAnnotatePointer(QMouseEvent* event) {
+  if (!pencilButton_ || !pencilButton_->isChecked()) {
+    return false;
+  }
+  switch (event->type()) {
+  case QEvent::MouseButtonPress:
+    if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
+      painting_ = true;
+      currentStroke_.clear();
+      clearBrushPreview();
+      paintAtWidgetPos(event->localPos(), eraseMode_ || event->button() == Qt::RightButton);
+      return true;
+    }
+    return false;
+  case QEvent::MouseMove:
+    if (painting_ && (event->buttons() & (Qt::LeftButton | Qt::RightButton))) {
+      paintAtWidgetPos(event->localPos(), eraseMode_ || (event->buttons() & Qt::RightButton) != 0);
+      return true;
+    }
+    updateBrushPreview(event->localPos()); // hover with no button: show the footprint
+    return false;
+  case QEvent::MouseButtonRelease:
+    if (painting_) {
+      painting_ = false;
+      if (!currentStroke_.empty()) {
+        undoStack_.push_back(std::move(currentStroke_));
+        currentStroke_.clear();
+        constexpr size_t kMaxUndo = 50;
+        if (undoStack_.size() > kMaxUndo) {
+          undoStack_.erase(undoStack_.begin());
+        }
+      }
+      return true;
+    }
+    return false;
+  default:
+    return false;
+  }
+}
+
+void ViewerWindow::paintAtWidgetPos(const QPointF& pos, bool erase) {
+  vtkRenderer* ren = renderer_.getRenderer();
+  vtkDataSet* mesh = renderer_.getPrimaryMesh();
+  if (!ren || !mesh || !labelArray_ || !picker_) {
+    return;
+  }
+  const double ratio = vtkWidget_->devicePixelRatioF();
+  const double x = pos.x() * ratio;
+  const double y = (vtkWidget_->height() - pos.y()) * ratio; // Qt top-left → VTK bottom-left
+  if (picker_->Pick(x, y, 0.0, ren) == 0) {
+    return;
+  }
+  const vtkIdType cell = picker_->GetCellId();
+  if (cell < 0) {
+    return;
+  }
+  const int value = erase ? 0 : currentLabel_;
+  bool changed = false;
+  for (vtkIdType c : growCells(mesh, cell, brushSlider_->value())) {
+    if (c < 0 || c >= labelArray_->GetNumberOfTuples()) {
+      continue;
+    }
+    const int prev = labelArray_->GetValue(c);
+    if (prev == value) {
+      continue;
+    }
+    currentStroke_.emplace_back(static_cast<long long>(c), prev);
+    labelArray_->SetValue(c, value);
+    changed = true;
+  }
+  if (!changed) {
+    return;
+  }
+  // Fixed LUT covers every value, so edits recolor live — no LUT rebuild needed.
+  labelArray_->Modified();
+  if (renderer_.context.window) {
+    renderer_.context.window->Render();
+  }
+}
+
+void ViewerWindow::updateBrushPreview(const QPointF& pos) {
+  vtkRenderer* ren = renderer_.getRenderer();
+  vtkDataSet* mesh = renderer_.getPrimaryMesh();
+  if (!ren || !mesh || !picker_ || !labelLut_) {
+    clearBrushPreview();
+    return;
+  }
+  const double ratio = vtkWidget_->devicePixelRatioF();
+  const double x = pos.x() * ratio;
+  const double y = (vtkWidget_->height() - pos.y()) * ratio;
+  if (picker_->Pick(x, y, 0.0, ren) == 0 || picker_->GetCellId() < 0) {
+    clearBrushPreview();
+    return;
+  }
+
+  const std::vector<vtkIdType> ids = growCells(mesh, picker_->GetCellId(), brushSlider_->value());
+  auto idList = vtkSmartPointer<vtkIdList>::New();
+  idList->SetNumberOfIds(static_cast<vtkIdType>(ids.size()));
+  for (size_t i = 0; i < ids.size(); ++i) {
+    idList->SetId(static_cast<vtkIdType>(i), ids[i]);
+  }
+  auto extract = vtkSmartPointer<vtkExtractCells>::New();
+  extract->SetInputData(mesh);
+  extract->SetCellList(idList);
+  extract->Update();
+
+  if (!previewActor_) {
+    previewActor_ = vtkSmartPointer<vtkActor>::New();
+    auto mapper = vtkSmartPointer<vtkDataSetMapper>::New();
+    mapper->ScalarVisibilityOff();
+    mapper->SetResolveCoincidentTopologyToPolygonOffset(); // draw over the mesh, no z-fight
+    previewActor_->SetMapper(mapper);
+    previewActor_->GetProperty()->SetOpacity(0.5);
+    previewActor_->GetProperty()->SetLighting(false);
+    ren->AddActor(previewActor_);
+  }
+  vtkDataSetMapper::SafeDownCast(previewActor_->GetMapper())->SetInputData(extract->GetOutput());
+
+  double rgb[3];
+  labelLut_->GetColor(static_cast<double>(eraseMode_ ? 0 : currentLabel_), rgb);
+  previewActor_->GetProperty()->SetColor(rgb);
+  previewActor_->VisibilityOn();
+  if (renderer_.context.window) {
+    renderer_.context.window->Render();
+  }
+}
+
+void ViewerWindow::clearBrushPreview() {
+  if (previewActor_ && previewActor_->GetVisibility()) {
+    previewActor_->VisibilityOff();
+    if (renderer_.context.window) {
+      renderer_.context.window->Render();
+    }
+  }
+}
+
+void ViewerWindow::undoStroke() {
+  if (!labelArray_ || undoStack_.empty()) {
+    return;
+  }
+  for (const auto& [cell, prev] : undoStack_.back()) {
+    if (cell >= 0 && cell < labelArray_->GetNumberOfTuples()) {
+      labelArray_->SetValue(static_cast<vtkIdType>(cell), prev);
+    }
+  }
+  undoStack_.pop_back();
+  labelArray_->Modified();
+  if (renderer_.context.window) {
+    renderer_.context.window->Render();
+  }
+}
+
+void ViewerWindow::applyLabelColoring() {
+  const double range[2] = {0.0, static_cast<double>(kNumLabels)};
+  renderer_.colorByFixedCategorical("label", FieldAssociation::Cell, labelLut_, range);
+  colorBar_->setVisible(false); // the swatches are the legend
+}
+
+void ViewerWindow::saveAnnotations() {
+  vtkDataSet* mesh = renderer_.getPrimaryMesh();
+  if (!mesh) {
+    return;
+  }
+  auto* pd = vtkPolyData::SafeDownCast(mesh);
+  auto* ug = vtkUnstructuredGrid::SafeDownCast(mesh);
+  if (!pd && !ug) {
+    QMessageBox::warning(this, QStringLiteral("Save failed"),
+                         QStringLiteral("Only polydata/unstructured-grid meshes can be saved."));
+    return;
+  }
+
+  const bool poly = pd != nullptr;
+  QString suggested;
+  if (!load_.meshes.names.empty()) {
+    QFileInfo fi(QStringFromUtf8(load_.meshes.names.front()));
+    suggested = fi.dir().filePath(fi.completeBaseName() +
+                                  (poly ? QStringLiteral(".labeled.vtp")
+                                        : QStringLiteral(".labeled.vtu")));
+  }
+  const QString filter =
+      poly ? QStringLiteral("VTK PolyData (*.vtp)") : QStringLiteral("VTK UnstructuredGrid (*.vtu)");
+  const QString path = QFileDialog::getSaveFileName(this, "Save annotations", suggested, filter);
+  if (path.isEmpty()) {
+    return;
+  }
+
+  const std::string p = path.toUtf8().toStdString();
+  int ok = 0;
+  if (poly) {
+    auto w = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
+    w->SetFileName(p.c_str());
+    w->SetInputData(pd);
+    w->SetDataModeToBinary(); // VTK 9.1's reader can't read its own appended-mode output
+    ok = w->Write();
+  } else {
+    auto w = vtkSmartPointer<vtkXMLUnstructuredGridWriter>::New();
+    w->SetFileName(p.c_str());
+    w->SetInputData(ug);
+    w->SetDataModeToBinary(); // VTK 9.1's reader can't read its own appended-mode output
+    ok = w->Write();
+  }
+  if (ok == 0) {
+    QMessageBox::warning(this, QStringLiteral("Save failed"),
+                         QStringLiteral("Could not write ") + path);
+  } else {
+    statusBar()->showMessage(QStringLiteral("Saved ") + path, 4000);
+  }
+}
+
 // ── scalar handling ────────────────────────────────────────────────────
 void ViewerWindow::applyNoScalar() {
   renderer_.clearActiveScalar();
@@ -727,6 +1266,10 @@ void ViewerWindow::onViewportResize() {
   if (playbackBar_) {
     playbackBar_->setGeometry(playbackBarGeometry(vtkWidget_));
     playbackBar_->raise();
+  }
+  if (annotationBar_) {
+    annotationBar_->setGeometry(annotationBarGeometry(vtkWidget_, annotationBar_));
+    annotationBar_->raise();
   }
 }
 

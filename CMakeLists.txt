@@ -80,6 +80,7 @@ find_package(VTK QUIET COMPONENTS
   IOImage
   IOHDF
   FiltersCore
+  FiltersExtraction
   RenderingCore
   RenderingOpenGL2
   InteractionStyle
@@ -199,6 +200,7 @@ target_link_libraries(vv PRIVATE
   VTK::IOImage
   VTK::IOHDF
   VTK::FiltersCore
+  VTK::FiltersExtraction
   VTK::RenderingCore
   VTK::RenderingOpenGL2
   VTK::InteractionStyle
