@@ -28,29 +28,28 @@ bool isMeshPart(const json& value) {
          value["vertices"].is_array() && value["indices"].is_array();
 }
 
-bool looksLikeJsonMesh(const json& value) {
-  if (isMeshPart(value)) {
-    return true;
-  }
-  if (value.is_object() && value.contains("surface")) {
-    const auto& surface = value["surface"];
-    return surface.is_array() && !surface.empty() &&
-           std::all_of(surface.begin(), surface.end(), isMeshPart);
-  }
-  if (!value.is_array() || value.empty()) {
-    return false;
-  }
-  return std::all_of(value.begin(), value.end(), isMeshPart);
-}
-
 const json* meshPartArray(const json& root) {
   if (root.is_array()) {
     return &root;
   }
-  if (root.is_object() && root.contains("surface") && root["surface"].is_array()) {
-    return &root["surface"];
+  if (!root.is_object()) {
+    return nullptr;
+  }
+  for (const char* key : {"surface", "surfaces"}) {
+    if (root.contains(key) && root[key].is_array()) {
+      return &root[key];
+    }
   }
   return nullptr;
+}
+
+bool looksLikeJsonMesh(const json& value) {
+  if (isMeshPart(value)) {
+    return true;
+  }
+  const json* parts = meshPartArray(value);
+  return parts != nullptr && !parts->empty() &&
+         std::all_of(parts->begin(), parts->end(), isMeshPart);
 }
 
 std::string partName(const json& part) {
