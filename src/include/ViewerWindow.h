@@ -4,6 +4,7 @@
 #include "MeshRenderer.h"
 #include "ScalarVizUtils.h"
 
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QPointer>
 #include <array>
@@ -74,6 +75,7 @@ private:
   void onViewportResize();
   void showFrame(int step);
   void applyPlayTimerInterval();
+  void restartPlayClock();
 
   // ── state ─────────────────────────────────────────────────────────
   MeshLoadResult load_;
@@ -96,6 +98,8 @@ private:
   std::map<std::string, std::array<double, 2>> temporalRangeCache_;
   QPointer<PlaybackBar> playbackBar_;
   QTimer* playTimer_ = nullptr;
+  QElapsedTimer playClock_;
+  int playAnchorStep_ = 0;
   int currentPlaybackStep_ = 0;
 
   // Annotation state (only populated in --annotate mode).

@@ -1,10 +1,12 @@
 #include "PlaybackBar.h"
 
+#include <QAction>
+#include <QActionGroup>
 #include <QColor>
-#include <QComboBox>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
+#include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -14,6 +16,7 @@
 #include <QSlider>
 #include <QString>
 #include <QToolButton>
+#include <QTransform>
 #include <algorithm>
 
 namespace {
@@ -24,7 +27,7 @@ namespace {
 constexpr int kIconBox = 24;
 const QColor kIconColor(232, 232, 232); // matches the bar's text color
 
-enum class Glyph { Play, Pause, Loop };
+enum class Glyph { Play, Pause, Prev, Next, Loop };
 
 QPainterPath glyphPath(Glyph glyph) {
   QPainterPath path;
@@ -39,6 +42,19 @@ QPainterPath glyphPath(Glyph glyph) {
   case Glyph::Pause: {
     path.addRoundedRect(QRectF(7.5, 6.0, 3.5, 12.0), 1.2, 1.2);
     path.addRoundedRect(QRectF(13.0, 6.0, 3.5, 12.0), 1.2, 1.2);
+    break;
+  }
+  case Glyph::Prev:
+  case Glyph::Next: {
+    // Triangle against a bar, mirrored for Prev.
+    QPainterPath shape;
+    shape.moveTo(17.5, 6.0);
+    shape.lineTo(17.5, 18.0);
+    shape.lineTo(8.5, 12.0);
+    shape.closeSubpath();
+    shape.addRoundedRect(QRectF(5.5, 6.0, 2.6, 12.0), 1.0, 1.0);
+    path = glyph == Glyph::Next ? QTransform().translate(24.0, 0.0).scale(-1.0, 1.0).map(shape)
+                                : shape;
     break;
   }
   case Glyph::Loop: {
@@ -107,12 +123,8 @@ PlaybackBar::PlaybackBar(int numSteps, QWidget* parent)
                 "QToolButton:hover { background: rgba(255,255,255,40); }"
                 "QToolButton:checked { background: rgba(80,150,250,160); color: white; }"
                 "QLabel { color: #D8D8D8; font-size: 12px; }"
-                "QComboBox {"
-                "  background: rgba(255,255,255,18); color: #E8E8E8;"
-                "  border: none; border-radius: 4px; padding: 2px 6px;"
-                "}"
-                "QComboBox QAbstractItemView { background: #202020; color: #E8E8E8; "
-                "selection-background-color: #5096FA; }"
+                "QMenu { background: #202020; color: #E8E8E8; border: 1px solid #3A3A3A; }"
+                "QMenu::item:selected { background: #5096FA; }"
                 "QSlider::groove:horizontal { height: 4px; background: rgba(255,255,255,50); "
                 "border-radius: 2px; }"
                 "QSlider::handle:horizontal {"
@@ -124,12 +136,19 @@ PlaybackBar::PlaybackBar(int numSteps, QWidget* parent)
   row->setContentsMargins(10, 6, 10, 6);
   row->setSpacing(8);
 
-  playButton_ = new QToolButton(this);
-  playButton_->setIcon(makeGlyphIcon(Glyph::Play));
-  playButton_->setIconSize(QSize(18, 18));
-  playButton_->setToolTip("Play/Pause");
-  playButton_->setFocusPolicy(Qt::NoFocus);
-  row->addWidget(playButton_);
+  auto makeButton = [this, row](Glyph glyph, const char* tip) {
+    auto* button = new QToolButton(this);
+    button->setIcon(makeGlyphIcon(glyph));
+    button->setIconSize(QSize(18, 18));
+    button->setToolTip(QString::fromLatin1(tip));
+    button->setFocusPolicy(Qt::NoFocus);
+    row->addWidget(button);
+    return button;
+  };
+
+  prevButton_ = makeButton(Glyph::Prev, "Previous frame");
+  playButton_ = makeButton(Glyph::Play, "Play/Pause");
+  nextButton_ = makeButton(Glyph::Next, "Next frame");
 
   slider_ = new QSlider(Qt::Horizontal, this);
   slider_->setMinimum(0);
@@ -140,26 +159,40 @@ PlaybackBar::PlaybackBar(int numSteps, QWidget* parent)
   row->addWidget(slider_, 1);
 
   readout_ = new QLabel(this);
-  readout_->setMinimumWidth(140);
+  readout_->setMinimumWidth(150);
   readout_->setAlignment(Qt::AlignCenter);
   row->addWidget(readout_);
 
-  speedBox_ = new QComboBox(this);
-  speedBox_->setFocusPolicy(Qt::NoFocus);
-  for (const char* label : {"0.25x", "0.5x", "1x", "2x", "4x", "8x"}) {
-    speedBox_->addItem(QString::fromLatin1(label));
-  }
-  speedBox_->setCurrentIndex(2); // 1x
-  row->addWidget(speedBox_);
+  speedButton_ = new QToolButton(this);
+  speedButton_->setText(QStringLiteral("1x"));
+  speedButton_->setToolTip(QStringLiteral("Playback speed"));
+  speedButton_->setFocusPolicy(Qt::NoFocus);
+  row->addWidget(speedButton_);
 
-  loopButton_ = new QToolButton(this);
-  loopButton_->setIcon(makeGlyphIcon(Glyph::Loop));
-  loopButton_->setIconSize(QSize(18, 18));
-  loopButton_->setToolTip("Loop");
+  auto* speedMenu = new QMenu(speedButton_);
+  auto* speedGroup = new QActionGroup(speedMenu);
+  for (const double multiplier : {1.0, 2.0, 4.0, 8.0, 12.0}) {
+    const QString label = QStringLiteral("%1x").arg(multiplier);
+    QAction* action = speedMenu->addAction(label);
+    action->setCheckable(true);
+    action->setChecked(multiplier == speed_);
+    speedGroup->addAction(action);
+    connect(action, &QAction::triggered, this, [this, multiplier, label]() {
+      speed_ = multiplier;
+      speedButton_->setText(label);
+      emit speedChanged(speed_);
+    });
+  }
+  // Drop *up*: the bar sits at the bottom of the viewport, so a menu opened
+  // downwards would fall outside the window.
+  connect(speedButton_, &QToolButton::clicked, this, [this, speedMenu]() {
+    const QSize hint = speedMenu->sizeHint();
+    speedMenu->popup(speedButton_->mapToGlobal(QPoint(0, -hint.height())));
+  });
+
+  loopButton_ = makeButton(Glyph::Loop, "Loop");
   loopButton_->setCheckable(true);
   loopButton_->setChecked(true);
-  loopButton_->setFocusPolicy(Qt::NoFocus);
-  row->addWidget(loopButton_);
 
   updateReadout(0, 0.0);
 
@@ -167,10 +200,9 @@ PlaybackBar::PlaybackBar(int numSteps, QWidget* parent)
     setPlaying(!playing_);
     emit playToggled(playing_);
   });
+  connect(prevButton_, &QToolButton::clicked, this, [this]() { stepBy(-1); });
+  connect(nextButton_, &QToolButton::clicked, this, [this]() { stepBy(1); });
   connect(slider_, &QSlider::valueChanged, this, [this](int value) { emit stepRequested(value); });
-  connect(speedBox_, &QComboBox::currentTextChanged, this, [this]() {
-    emit speedChanged(speedMultiplier());
-  });
   connect(loopButton_, &QToolButton::toggled, this, [this](bool on) { emit loopToggled(on); });
 }
 
@@ -179,21 +211,13 @@ int PlaybackBar::currentStep() const {
 }
 
 double PlaybackBar::speedMultiplier() const {
-  switch (speedBox_->currentIndex()) {
-  case 0:
-    return 0.25;
-  case 1:
-    return 0.5;
-  case 2:
-    return 1.0;
-  case 3:
-    return 2.0;
-  case 4:
-    return 4.0;
-  case 5:
-    return 8.0;
-  default:
-    return 1.0;
+  return speed_;
+}
+
+void PlaybackBar::stepBy(int delta) {
+  const int target = std::clamp(currentStep() + delta, 0, numSteps_ - 1);
+  if (target != currentStep()) {
+    emit stepRequested(target);
   }
 }
 

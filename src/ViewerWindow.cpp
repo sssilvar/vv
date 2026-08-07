@@ -8,27 +8,28 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
-#include <QDir>
 #include <QButtonGroup>
-#include <QFileDialog>
-#include <QLabel>
-#include <QMessageBox>
-#include <QPainterPath>
-#include <QShortcut>
-#include <QSlider>
-#include <QStatusBar>
-#include <QToolButton>
+#include <QDir>
+#include <QElapsedTimer>
 #include <QEvent>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QKeyEvent>
+#include <QLabel>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPointer>
+#include <QShortcut>
 #include <QSignalBlocker>
+#include <QSlider>
+#include <QStatusBar>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVTKOpenGLNativeWidget.h>
 #include <QWheelEvent>
@@ -38,25 +39,25 @@
 #include <functional>
 #include <set>
 #include <utility>
+#include <vtkActor.h>
 #include <vtkCamera.h>
 #include <vtkCellData.h>
-#include <vtkActor.h>
 #include <vtkCellPicker.h>
+#include <vtkDataArray.h>
 #include <vtkDataSetMapper.h>
 #include <vtkExtractCells.h>
+#include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkIdList.h>
-#include <vtkProperty.h>
 #include <vtkIntArray.h>
+#include <vtkLookupTable.h>
+#include <vtkPointData.h>
 #include <vtkPolyData.h>
+#include <vtkProperty.h>
+#include <vtkRenderer.h>
+#include <vtkRendererCollection.h>
 #include <vtkUnstructuredGrid.h>
 #include <vtkXMLPolyDataWriter.h>
 #include <vtkXMLUnstructuredGridWriter.h>
-#include <vtkDataArray.h>
-#include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkLookupTable.h>
-#include <vtkPointData.h>
-#include <vtkRenderer.h>
-#include <vtkRendererCollection.h>
 
 namespace {
 
@@ -74,6 +75,7 @@ constexpr int kTreeOverlayMaxHeight = 340;
 constexpr int kFacetBarMargin = 6;
 constexpr int kFacetBarMinWidth = 68;
 constexpr int kFacetBarMaxWidth = 140;
+constexpr double kPlaybackBaseFps = 15.0;
 constexpr int kPlaybackBarMargin = 16;
 constexpr int kPlaybackBarMaxWidth = 760;
 constexpr int kPlaybackBarHeight = 44;
@@ -232,8 +234,7 @@ public:
                           QObject* parent = nullptr)
       : QObject(parent), vtkRoot_(vtkRoot), overlayColorBar_(overlayColorBar),
         overlayTree_(overlayTree), onSpaceCycle_(std::move(onSpaceCycle)),
-        onViewportResize_(std::move(onViewportResize)),
-        onPointerEvent_(std::move(onPointerEvent)),
+        onViewportResize_(std::move(onViewportResize)), onPointerEvent_(std::move(onPointerEvent)),
         onPaintHold_(std::move(onPaintHold)) {}
 
 protected:
@@ -372,8 +373,8 @@ protected:
     }
     case QEvent::ShortcutOverride: {
       auto* ke = static_cast<QKeyEvent*>(event);
-      if (ke->key() == Qt::Key_Space || ke->key() == Qt::Key_Q ||
-          ke->key() == Qt::Key_A || ke->key() == Qt::Key_E) {
+      if (ke->key() == Qt::Key_Space || ke->key() == Qt::Key_Q || ke->key() == Qt::Key_A ||
+          ke->key() == Qt::Key_E) {
         ke->accept();
         return true;
       }
@@ -743,18 +744,29 @@ void ViewerWindow::setupPlayback() {
 
   playTimer_ = new QTimer(this);
 
+  // Playback is clock-driven, not tick-driven: each timeout jumps to the frame the
+  // elapsed time calls for. If decoding or rendering cannot keep up (high speeds,
+  // heavy meshes) frames are dropped instead of queueing up, so the animation runs
+  // at the requested rate rather than in slow motion.
   QObject::connect(playTimer_, &QTimer::timeout, this, [this, numSteps]() {
-    int next = playbackBar_->currentStep() + 1;
+    const double elapsed = double(playClock_.elapsed()) / 1000.0;
+    const int advance =
+        static_cast<int>(elapsed * kPlaybackBaseFps * playbackBar_->speedMultiplier());
+    int next = playAnchorStep_ + advance;
     if (next >= numSteps) {
-      if (playbackBar_->loopEnabled()) {
-        next = 0;
-      } else {
+      if (!playbackBar_->loopEnabled()) {
         playTimer_->stop();
         playbackBar_->setPlaying(false);
+        showFrame(numSteps - 1);
         return;
       }
+      next %= numSteps;
+      playAnchorStep_ = next;
+      playClock_.restart();
     }
-    showFrame(next);
+    if (next != currentPlaybackStep_) {
+      showFrame(next);
+    }
   });
 
   QObject::connect(playbackBar_, &PlaybackBar::playToggled, this, [this, numSteps](bool playing) {
@@ -763,6 +775,7 @@ void ViewerWindow::setupPlayback() {
       if (playbackBar_->currentStep() >= numSteps - 1) {
         showFrame(0);
       }
+      restartPlayClock();
       applyPlayTimerInterval();
       playTimer_->start();
     } else {
@@ -770,10 +783,13 @@ void ViewerWindow::setupPlayback() {
     }
   });
 
-  QObject::connect(
-      playbackBar_, &PlaybackBar::stepRequested, this, [this](int step) { showFrame(step); });
+  QObject::connect(playbackBar_, &PlaybackBar::stepRequested, this, [this](int step) {
+    showFrame(step);
+    restartPlayClock();
+  });
 
   QObject::connect(playbackBar_, &PlaybackBar::speedChanged, this, [this](double) {
+    restartPlayClock();
     if (playTimer_->isActive()) {
       applyPlayTimerInterval();
     }
@@ -795,9 +811,14 @@ void ViewerWindow::showFrame(int step) {
   }
 }
 
+void ViewerWindow::restartPlayClock() {
+  playAnchorStep_ = currentPlaybackStep_;
+  playClock_.restart();
+}
+
 void ViewerWindow::applyPlayTimerInterval() {
-  const double fps = 15.0 * playbackBar_->speedMultiplier();
-  playTimer_->setInterval(std::max(1, static_cast<int>(std::round(1000.0 / fps))));
+  const double fps = kPlaybackBaseFps * playbackBar_->speedMultiplier();
+  playTimer_->setInterval(std::max(4, static_cast<int>(std::round(1000.0 / fps))));
 }
 
 // ── annotation mode ─────────────────────────────────────────────────────
@@ -871,10 +892,9 @@ void ViewerWindow::setupAnnotateMode() {
       QStringLiteral("Paint (a) — off = rotate. 'e' toggles erase; right-drag also erases."));
   row->addWidget(pencilButton_);
   const QCursor brushCursor = makeBrushCursor();
-  QObject::connect(pencilButton_, &QToolButton::toggled, this,
-                   [this, brushCursor](bool on) {
-                     vtkWidget_->setCursor(on ? brushCursor : QCursor(Qt::ArrowCursor));
-                   });
+  QObject::connect(pencilButton_, &QToolButton::toggled, this, [this, brushCursor](bool on) {
+    vtkWidget_->setCursor(on ? brushCursor : QCursor(Qt::ArrowCursor));
+  });
   vtkWidget_->setCursor(Qt::ArrowCursor);
   // Toolbar is a child of vtkWidget_, so it inherits the brush cursor; force arrow.
   annotationBar_->setCursor(Qt::ArrowCursor);
@@ -884,9 +904,8 @@ void ViewerWindow::setupAnnotateMode() {
   for (int v = 0; v <= kNumLabels; ++v) { // v == 0 is the eraser (grey / unlabeled)
     double rgb[3];
     labelLut_->GetColor(static_cast<double>(v), rgb);
-    const QColor color = QColor::fromRgbF(static_cast<float>(rgb[0]),
-                                          static_cast<float>(rgb[1]),
-                                          static_cast<float>(rgb[2]));
+    const QColor color = QColor::fromRgbF(
+        static_cast<float>(rgb[0]), static_cast<float>(rgb[1]), static_cast<float>(rgb[2]));
     auto* sw = new QToolButton(annotationBar_);
     sw->setCheckable(true);
     sw->setFixedSize(22, 22);
@@ -902,7 +921,8 @@ void ViewerWindow::setupAnnotateMode() {
       sw->setChecked(true);
     }
   }
-  QObject::connect(swatches, &QButtonGroup::idClicked, this, [this](int id) { currentLabel_ = id; });
+  QObject::connect(
+      swatches, &QButtonGroup::idClicked, this, [this](int id) { currentLabel_ = id; });
 
   row->addWidget(new QLabel(QStringLiteral("Brush"), annotationBar_));
   brushSlider_ = new QSlider(Qt::Horizontal, annotationBar_);
@@ -935,11 +955,15 @@ void ViewerWindow::setupAnnotateMode() {
     }
   };
   for (const auto key : {Qt::Key_Plus, Qt::Key_Equal}) { // '=' so + needs no Shift
-    QObject::connect(new QShortcut(QKeySequence(key), this), &QShortcut::activated, this,
+    QObject::connect(new QShortcut(QKeySequence(key), this),
+                     &QShortcut::activated,
+                     this,
                      [bumpBrush]() { bumpBrush(+1); });
   }
   for (const auto key : {Qt::Key_Minus, Qt::Key_Underscore}) {
-    QObject::connect(new QShortcut(QKeySequence(key), this), &QShortcut::activated, this,
+    QObject::connect(new QShortcut(QKeySequence(key), this),
+                     &QShortcut::activated,
+                     this,
                      [bumpBrush]() { bumpBrush(-1); });
   }
   auto* undo = new QShortcut(QKeySequence(QKeySequence::Undo), this); // Cmd/Ctrl+Z
@@ -1131,7 +1155,8 @@ void ViewerWindow::saveAnnotations() {
   auto* pd = vtkPolyData::SafeDownCast(mesh);
   auto* ug = vtkUnstructuredGrid::SafeDownCast(mesh);
   if (!pd && !ug) {
-    QMessageBox::warning(this, QStringLiteral("Save failed"),
+    QMessageBox::warning(this,
+                         QStringLiteral("Save failed"),
                          QStringLiteral("Only polydata/unstructured-grid meshes can be saved."));
     return;
   }
@@ -1140,12 +1165,11 @@ void ViewerWindow::saveAnnotations() {
   QString suggested;
   if (!load_.meshes.names.empty()) {
     QFileInfo fi(QStringFromUtf8(load_.meshes.names.front()));
-    suggested = fi.dir().filePath(fi.completeBaseName() +
-                                  (poly ? QStringLiteral(".labeled.vtp")
-                                        : QStringLiteral(".labeled.vtu")));
+    suggested = fi.dir().filePath(fi.completeBaseName() + (poly ? QStringLiteral(".labeled.vtp")
+                                                                : QStringLiteral(".labeled.vtu")));
   }
-  const QString filter =
-      poly ? QStringLiteral("VTK PolyData (*.vtp)") : QStringLiteral("VTK UnstructuredGrid (*.vtu)");
+  const QString filter = poly ? QStringLiteral("VTK PolyData (*.vtp)")
+                              : QStringLiteral("VTK UnstructuredGrid (*.vtu)");
   const QString path = QFileDialog::getSaveFileName(this, "Save annotations", suggested, filter);
   if (path.isEmpty()) {
     return;
@@ -1167,8 +1191,8 @@ void ViewerWindow::saveAnnotations() {
     ok = w->Write();
   }
   if (ok == 0) {
-    QMessageBox::warning(this, QStringLiteral("Save failed"),
-                         QStringLiteral("Could not write ") + path);
+    QMessageBox::warning(
+        this, QStringLiteral("Save failed"), QStringLiteral("Could not write ") + path);
   } else {
     statusBar()->showMessage(QStringLiteral("Saved ") + path, 4000);
   }

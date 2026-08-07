@@ -9,6 +9,7 @@
 #include "VTKHDFMeshParser.h"
 #include "VTKMeshParser.h"
 #include "XMLMeshParser.h"
+#include "XdmfMeshParser.h"
 #include "mesh_utils.h"
 
 #include <array>
@@ -67,6 +68,7 @@ std::vector<std::string> filesToProcessFromArgs(const std::vector<std::string>& 
 std::vector<std::unique_ptr<MeshParser>> buildParsers() {
   std::vector<std::unique_ptr<MeshParser>> parsers;
   parsers.emplace_back(std::make_unique<XMLMeshParser>());
+  parsers.emplace_back(std::make_unique<XdmfMeshParser>());
   parsers.emplace_back(std::make_unique<VTKHDFMeshParser>());
   parsers.emplace_back(std::make_unique<VTKMeshParser>());
   parsers.emplace_back(std::make_unique<JsonMeshParser>());
@@ -143,11 +145,8 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explod
 
     std::vector<vtkSmartPointer<vtkDataSet>> parsedMeshes = selected->parse(realFilename);
 
-    // Capture temporal (playable) info if this file produced it.
-    if (const auto* hdfParser = dynamic_cast<const VTKHDFMeshParser*>(selected)) {
-      if (auto temporal = hdfParser->temporal(); temporal && temporal->playable()) {
-        result.temporal = temporal;
-      }
+    if (auto temporal = selected->temporal(); temporal && temporal->playable()) {
+      result.temporal = temporal;
     }
 
     if (parsedMeshes.empty()) {

@@ -4,7 +4,6 @@
 
 class QLabel;
 class QSlider;
-class QComboBox;
 class QToolButton;
 
 // Bottom-overlay media bar for temporal (playable) meshes: play/pause, a scrub
@@ -36,13 +35,17 @@ signals:
 
 private:
   void updateReadout(int step, double timeValue);
+  void stepBy(int delta);
 
   int numSteps_ = 0;
   bool playing_ = false;
+  double speed_ = 1.0;
 
+  QToolButton* prevButton_ = nullptr;
   QToolButton* playButton_ = nullptr;
+  QToolButton* nextButton_ = nullptr;
   QSlider* slider_ = nullptr;
   QLabel* readout_ = nullptr;
-  QComboBox* speedBox_ = nullptr;
+  QToolButton* speedButton_ = nullptr;
   QToolButton* loopButton_ = nullptr;
 };
