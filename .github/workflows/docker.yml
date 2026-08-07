@@ -21,6 +21,7 @@ jobs:
   build:
     name: Build Docker image (cached)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -56,4 +57,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # PR caches are scoped to the PR and never reused, so only branches and
+          # tags write. ignore-error keeps a flaky cache export (the GHA backend
+          # intermittently answers "error writing layer blob: not_found") from
+          # failing a build that already succeeded.
+          cache-to: ${{ github.event_name == 'pull_request' && '' || 'type=gha,mode=max,ignore-error=true' }}
