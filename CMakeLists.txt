@@ -127,6 +127,7 @@ set(VV_CORE_SOURCES
   src/VTKMeshParser.cpp
   src/ViewerWindow.cpp
   src/XMLMeshParser.cpp
+  src/XdmfMeshParser.cpp
   src/mesh_utils.cpp
 )
 
@@ -146,6 +147,7 @@ set(VV_HEADERS
   src/include/VTKMeshParser.h
   src/include/ViewerWindow.h
   src/include/XMLMeshParser.h
+  src/include/XdmfMeshParser.h
   src/include/mesh_utils.h
 )
 
@@ -189,7 +191,16 @@ if(VV_ENABLE_WARNINGS)
   endif()
 endif()
 
-target_link_libraries(vv PRIVATE fmt::fmt)
+# XDMF heavy data is read with the HDF5 C API. Prefer the copy VTK already links
+# (VTK::hdf5), so no new dependency is introduced.
+if(TARGET VTK::hdf5)
+  set(VV_HDF5_TARGET VTK::hdf5)
+else()
+  find_package(HDF5 REQUIRED COMPONENTS C)
+  set(VV_HDF5_TARGET hdf5::hdf5)
+endif()
+
+target_link_libraries(vv PRIVATE fmt::fmt ${VV_HDF5_TARGET})
 target_link_libraries(vv PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(vv PRIVATE
   VTK::CommonCore

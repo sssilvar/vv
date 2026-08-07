@@ -82,8 +82,8 @@ std::vector<vtkSmartPointer<vtkDataSet>> VTKHDFMeshParser::parse(const std::stri
   meshes.push_back(mesh);
 
   if (timeValues.size() > 1) {
-    temporal_ = std::make_shared<TemporalSource>();
-    temporal_->init(reader, std::move(timeValues));
+    temporal_ = std::make_shared<VTKHDFTemporalSource>();
+    std::static_pointer_cast<VTKHDFTemporalSource>(temporal_)->init(reader, std::move(timeValues));
   }
 
   return meshes;

@@ -79,8 +79,12 @@ public:
   RendererContext context;
 
   // Annotation mode needs the renderer (for picking) and the primary dataset.
-  vtkRenderer* getRenderer() const { return renderer; }
-  vtkDataSet* getPrimaryMesh() const { return sceneMeshes.empty() ? nullptr : sceneMeshes.front(); }
+  vtkRenderer* getRenderer() const {
+    return renderer;
+  }
+  vtkDataSet* getPrimaryMesh() const {
+    return sceneMeshes.empty() ? nullptr : sceneMeshes.front();
+  }
 
 private:
   vtkSmartPointer<vtkRenderer> renderer;

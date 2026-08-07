@@ -9,14 +9,22 @@
 #include <vtkStreamingDemandDrivenPipeline.h>
 #include <vtkVersionMacros.h>
 
-TemporalSource::TemporalSource() = default;
 TemporalSource::~TemporalSource() = default;
 
-void TemporalSource::init(const vtkSmartPointer<vtkHDFReader>& reader,
-                          std::vector<double> timeValues) {
+VTKHDFTemporalSource::VTKHDFTemporalSource() = default;
+VTKHDFTemporalSource::~VTKHDFTemporalSource() = default;
+
+double TemporalSource::timeAt(int step) const {
+  if (step < 0 || step >= steps()) {
+    return 0.0;
+  }
+  return timeValues_[static_cast<size_t>(step)];
+}
+
+void VTKHDFTemporalSource::init(const vtkSmartPointer<vtkHDFReader>& reader,
+                                std::vector<double> timeValues) {
   reader_ = reader;
   timeValues_ = std::move(timeValues);
-  numSteps_ = static_cast<int>(timeValues_.size());
   if (reader_) {
     // Cache the static geometry/topology so successive frames only re-read the
     // temporal point-data arrays (incompatible with MergeParts, which is off).
@@ -28,7 +36,7 @@ void TemporalSource::init(const vtkSmartPointer<vtkHDFReader>& reader,
   }
 }
 
-void TemporalSource::setActiveArray(const std::string& scalarName) {
+void VTKHDFTemporalSource::setActiveArray(const std::string& scalarName) {
   if (!reader_ || scalarName.empty()) {
     return;
   }
@@ -40,15 +48,8 @@ void TemporalSource::setActiveArray(const std::string& scalarName) {
   sel->EnableArray(scalarName.c_str());
 }
 
-double TemporalSource::timeAt(int step) const {
-  if (step < 0 || step >= numSteps_) {
-    return 0.0;
-  }
-  return timeValues_[static_cast<size_t>(step)];
-}
-
-bool TemporalSource::updateToStep(int step) {
-  if (!reader_ || step < 0 || step >= numSteps_) {
+bool VTKHDFTemporalSource::updateToStep(int step) {
+  if (!reader_ || step < 0 || step >= steps()) {
     return false;
   }
   // Drive the time-series pipeline via UPDATE_TIME_STEP: vtkHDFReader::RequestData
@@ -63,7 +64,7 @@ bool TemporalSource::updateToStep(int step) {
   return true;
 }
 
-bool TemporalSource::readStepInto(int step, vtkDataSet* target) {
+bool VTKHDFTemporalSource::readStepInto(int step, vtkDataSet* target) {
   if (!target || !updateToStep(step)) {
     return false;
   }
@@ -76,13 +77,13 @@ bool TemporalSource::readStepInto(int step, vtkDataSet* target) {
   return true;
 }
 
-bool TemporalSource::sampledScalarRange(const std::string& scalarName,
-                                        double out[2],
-                                        int maxSamples) {
-  if (!reader_ || numSteps_ <= 0 || scalarName.empty()) {
+bool VTKHDFTemporalSource::sampledScalarRange(const std::string& scalarName,
+                                              double out[2],
+                                              int maxSamples) {
+  if (!reader_ || steps() <= 0 || scalarName.empty()) {
     return false;
   }
-  const int sampleCount = std::min(numSteps_, std::max(1, maxSamples));
+  const int sampleCount = std::min(steps(), std::max(1, maxSamples));
   double lo = 0.0;
   double hi = 0.0;
   bool any = false;
@@ -91,7 +92,7 @@ bool TemporalSource::sampledScalarRange(const std::string& scalarName,
     const int step =
         sampleCount == 1
             ? 0
-            : static_cast<int>((static_cast<long long>(s) * (numSteps_ - 1)) / (sampleCount - 1));
+            : static_cast<int>((static_cast<long long>(s) * (steps() - 1)) / (sampleCount - 1));
     if (!updateToStep(step)) {
       continue;
     }

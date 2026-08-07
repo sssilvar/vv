@@ -7,43 +7,52 @@
 
 class vtkHDFReader;
 
-// Wraps a live vtkHDFReader for a temporal (time-series) VTKHDF file. Frames are
-// streamed on demand — only the current step is held in memory — because result
-// files routinely span thousands of steps and gigabytes on disk.
+// A playable time series backing the rendered dataset. Frames are produced on
+// demand — result files routinely span thousands of steps and gigabytes on disk,
+// so only what is needed for the current frame is materialised.
 class TemporalSource {
 public:
-  TemporalSource();
-  ~TemporalSource();
+  virtual ~TemporalSource();
 
-  // Number of time steps; >1 means the file is playable.
   int steps() const {
-    return numSteps_;
+    return static_cast<int>(timeValues_.size());
   }
   bool playable() const {
-    return numSteps_ > 1;
+    return timeValues_.size() > 1;
   }
   double timeAt(int step) const;
 
-  // Read the given step and shallow-copy its dataset into `target` (the rendered
-  // object the mappers point at). Returns false on out-of-range or read failure.
-  bool readStepInto(int step, vtkDataSet* target);
+  // Bring `target` (the rendered object the mappers point at) to the given step.
+  // Returns false on out-of-range or read failure.
+  virtual bool readStepInto(int step, vtkDataSet* target) = 0;
 
-  // Union of a point-data array's range across up to maxSamples evenly spaced
-  // steps. Used to fix a stable color range for the whole animation.
-  bool sampledScalarRange(const std::string& scalarName, double out[2], int maxSamples = 16);
+  // Union of an array's range across up to maxSamples evenly spaced steps. Used to
+  // fix a stable color range for the whole animation.
+  virtual bool
+  sampledScalarRange(const std::string& scalarName, double out[2], int maxSamples = 16) = 0;
 
-  // Restrict per-frame reads to a single point-data array. Static geometry is
-  // cached (UseCache) and the other arrays are skipped, so streaming a frame only
-  // touches the array actually being colored — the dominant playback speed-up.
-  void setActiveArray(const std::string& scalarName);
+  // Restrict per-frame work to a single array — the dominant playback speed-up.
+  virtual void setActiveArray(const std::string& scalarName) = 0;
+
+protected:
+  std::vector<double> timeValues_;
+};
+
+// Wraps a live vtkHDFReader for a temporal VTKHDF file.
+class VTKHDFTemporalSource : public TemporalSource {
+public:
+  VTKHDFTemporalSource();
+  ~VTKHDFTemporalSource() override;
 
   // Called by the parser once the reader is constructed and information is read.
   void init(const vtkSmartPointer<vtkHDFReader>& reader, std::vector<double> timeValues);
+
+  bool readStepInto(int step, vtkDataSet* target) override;
+  bool sampledScalarRange(const std::string& scalarName, double out[2], int maxSamples) override;
+  void setActiveArray(const std::string& scalarName) override;
 
 private:
   bool updateToStep(int step);
 
   vtkSmartPointer<vtkHDFReader> reader_;
-  std::vector<double> timeValues_;
-  int numSteps_ = 0;
 };
