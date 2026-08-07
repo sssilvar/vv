@@ -1,3 +1,23 @@
+# [1.4.0] - 2026-08-07
+
+### Added
+
+- XDMF parser (`.xdmf` / `.xmf`) for solver outputs with HDF5 heavy data:
+  static topology/geometry plus a temporal collection of node/cell attributes.
+  Frames stream straight into the rendered array (no geometry re-read) and are
+  cached in memory under a 512 MB budget, so looped playback is zero-I/O.
+- Annotation mode (`--annotate`): paint a per-cell `label` array with a surface
+  brush, undo, and save.
+- Playback bar: previous/next frame buttons and a speed drop-up (1x/2x/4x/8x/12x).
+
+### Changed
+
+- Playback is clock-driven: each tick jumps to the frame the elapsed time calls
+  for, dropping frames instead of queueing them so high speeds stay real-time.
+- `TemporalSource` is now an interface with VTKHDF and XDMF backends; parsers
+  expose their time series through `MeshParser::temporal()`.
+- Mesh JSON accepts a `surfaces` key.
+
 # [1.3.0] - 2026-07-07
 
 ### Changed

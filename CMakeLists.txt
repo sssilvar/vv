@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
-project(VtkViewer VERSION 1.3.0)
+project(VtkViewer VERSION 1.4.0)
 
 set(CMAKE_AUTOMOC ON)
 
