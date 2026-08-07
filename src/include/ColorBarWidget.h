@@ -2,12 +2,23 @@
 
 #include <QColor>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QObject>
+#include <QPointF>
 #include <QString>
 #include <QWidget>
 #include <QtGlobal>
 #include <utility>
 #include <vector>
+
+// QMouseEvent::localPos() is deprecated in Qt 6, position() absent in Qt 5.
+inline QPointF mouseLocalPos(const QMouseEvent* ev) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  return ev->position();
+#else
+  return ev->localPos();
+#endif
+}
 
 /// A vertical colorbar widget with draggable clip handles, inspired by
 /// the mapping-system UIs of CARTO and RHYTHMIA.

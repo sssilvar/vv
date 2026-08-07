@@ -35,14 +35,6 @@ static double niceTickStep(double range, int maxTicks) {
   return 10.0 * mag;
 }
 
-static QPointF mouseLocalPos(const QMouseEvent* ev) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-  return ev->position();
-#else
-  return ev->localPos();
-#endif
-}
-
 // ═══════════════════════════════════════════════════════════════════
 ColorBarWidget::ColorBarWidget(QWidget* parent) : QWidget(parent) {
   setMouseTracking(true);

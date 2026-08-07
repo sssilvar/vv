@@ -999,16 +999,17 @@ bool ViewerWindow::handleAnnotatePointer(QMouseEvent* event) {
       painting_ = true;
       currentStroke_.clear();
       clearBrushPreview();
-      paintAtWidgetPos(event->localPos(), eraseMode_ || event->button() == Qt::RightButton);
+      paintAtWidgetPos(mouseLocalPos(event), eraseMode_ || event->button() == Qt::RightButton);
       return true;
     }
     return false;
   case QEvent::MouseMove:
     if (painting_ && (event->buttons() & (Qt::LeftButton | Qt::RightButton))) {
-      paintAtWidgetPos(event->localPos(), eraseMode_ || (event->buttons() & Qt::RightButton) != 0);
+      paintAtWidgetPos(mouseLocalPos(event),
+                       eraseMode_ || (event->buttons() & Qt::RightButton) != 0);
       return true;
     }
-    updateBrushPreview(event->localPos()); // hover with no button: show the footprint
+    updateBrushPreview(mouseLocalPos(event)); // hover with no button: show the footprint
     return false;
   case QEvent::MouseButtonRelease:
     if (painting_) {
