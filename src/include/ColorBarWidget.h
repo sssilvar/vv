@@ -51,6 +51,9 @@ public:
   /// Restore continuous gradient mode.
   void clearCategorical();
 
+  /// Cyclic gradient: full hue wheel so both ends share a color.
+  void setCyclic(bool cyclic);
+
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
 
@@ -81,6 +84,7 @@ private:
 
   // categorical mode
   bool categorical_ = false;
+  bool cyclic_ = false;
   std::vector<std::pair<QString, QColor>> catEntries_; // (label, color), bottom→top order
 
   // ── interaction state ─────────────────────────────────────────────

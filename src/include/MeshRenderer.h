@@ -53,6 +53,9 @@ public:
                                vtkLookupTable* lut,
                                const double range[2]);
   void clearActiveScalar();
+  // Swap the active continuous field between the linear and the cyclic (full hue
+  // wheel) colormap. Returns the state after the toggle.
+  bool toggleCyclicColormap();
   // Re-apply the current scalar mapping after the underlying mesh data changed
   // (e.g. a new playback frame was shallow-copied in), keeping the color range
   // fixed, then re-render.
@@ -70,6 +73,13 @@ public:
   bool getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo) const;
   vtkLookupTable* getFacetPanelLUT(size_t panelIndex) const;
   bool setFacetPanelClipRange(size_t panelIndex, double minValue, double maxValue);
+  // Widen or narrow a panel's full range (what the colorbar ends show), not just
+  // the clip window inside it — used to pin one range across every panel.
+  bool setFacetPanelGlobalRange(size_t panelIndex, double minValue, double maxValue);
+
+  // Draw a short line glyph per cell (or per point) tangent to the surface, one
+  // for each tuple of a 3-component array. Empty name removes the glyphs.
+  bool setVectorGlyphs(const std::string& name, FieldAssociation association);
 
   void setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
                       const std::vector<std::string>& names,
@@ -106,6 +116,7 @@ private:
     double viewport[4] = {0.0, 0.0, 1.0, 1.0};
   };
   std::vector<FacetPanelState> facetPanels;
+  vtkSmartPointer<vtkActor> glyphActor_;
   // Keeps the facet-grid cameras synchronized (observer shared by all panels).
   vtkSmartPointer<vtkCallbackCommand> camLinkCb_;
   bool embeddedMode = false;

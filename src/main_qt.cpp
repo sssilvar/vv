@@ -17,6 +17,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
+#include <cstdio>
 #include <cxxopts.hpp>
 #include <iostream>
 #include <string>
@@ -41,6 +42,7 @@ struct Args {
   bool explode_view = false;
   bool common_cat_lut = false;
   bool annotate = false;
+  std::string range; // "min,max": pin the color range for continuous fields
   bool version = false;
   bool help = false;
   std::string thumbnail_output; // non-empty → offscreen render to PNG and exit
@@ -59,6 +61,9 @@ Args parseArgs(int argc, char* argv[], bool requireFiles = true) {
       "a,annotate",
       "Annotation mode: paint a per-cell 'label' array with a surface brush",
       cxxopts::value<bool>(args.annotate))(
+      "r,range",
+      "Pin the color range for continuous scalars, e.g. -80,40",
+      cxxopts::value<std::string>(args.range))(
       "v,version", "Show version and exit", cxxopts::value<bool>(args.version))(
       "h,help", "Show help and exit", cxxopts::value<bool>(args.help))(
       "T,thumbnail",
@@ -253,6 +258,16 @@ int main(int argc, char* argv[]) try {
   }
 
   ViewerOptions viewerOptions;
+  if (!args.range.empty()) {
+    double lo = 0.0, hi = 0.0;
+    if (std::sscanf(args.range.c_str(), "%lf,%lf", &lo, &hi) != 2 || lo >= hi) {
+      std::cerr << "vv: --range expects min,max with min < max (e.g. -80,40)\n";
+      return 1;
+    }
+    viewerOptions.hasFixedRange = true;
+    viewerOptions.fixedRange[0] = lo;
+    viewerOptions.fixedRange[1] = hi;
+  }
   viewerOptions.explodeView = args.explode_view;
   viewerOptions.commonCatLut = args.common_cat_lut;
   viewerOptions.annotate = args.annotate && !args.explode_view;

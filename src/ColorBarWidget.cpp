@@ -90,6 +90,11 @@ void ColorBarWidget::clearCategorical() {
   update();
 }
 
+void ColorBarWidget::setCyclic(bool cyclic) {
+  cyclic_ = cyclic;
+  update();
+}
+
 QSize ColorBarWidget::sizeHint() const {
   int width = 90;
   if (!title_.isEmpty()) {
@@ -291,8 +296,10 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
         mappedValue = clipMin_;
 
       const double t = (mappedValue - clipMin_) / clipSpan;
+      // hue 1.0 is out of range for QColor, so a cyclic bar stops just short of it.
+      const double hueSpan = cyclic_ ? 0.999 : 0.8;
       grad.setColorAt(
-          pos, QColor::fromHsvF(static_cast<float>(std::clamp(t, 0.0, 1.0) * 0.8), 1.0f, 1.0f));
+          pos, QColor::fromHsvF(static_cast<float>(std::clamp(t, 0.0, 1.0) * hueSpan), 1.0f, 1.0f));
     }
     p.fillRect(bar, grad);
   }

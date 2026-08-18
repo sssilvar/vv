@@ -4,17 +4,24 @@
 #include "mesh_utils.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <vtkActor.h>
 #include <vtkBoundingBox.h>
 #include <vtkCallbackCommand.h>
 #include <vtkCamera.h>
+#include <vtkCellCenters.h>
 #include <vtkCellData.h>
 #include <vtkCommand.h>
 #include <vtkDataSetMapper.h>
+#include <vtkGlyph3D.h>
 #include <vtkInteractorStyleTrackballCamera.h>
+#include <vtkLineSource.h>
 #include <vtkLookupTable.h>
 #include <vtkPointData.h>
+#include <vtkPointSet.h>
+#include <vtkPolyData.h>
+#include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
@@ -198,6 +205,7 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
     } else {
       mapper->SetScalarModeToUsePointFieldData();
     }
+    mapper->SetInterpolateScalarsBeforeMapping(pair.association == FieldAssociation::Cell ? 0 : 1);
     mapper->SetColorModeToMapScalars();
 
     auto* arr = arrayForAssociation(srcMesh, pair.scalarName, pair.association);
@@ -524,6 +532,98 @@ bool MeshRenderer::setClipRange(double minValue, double maxValue) {
   return found;
 }
 
+bool MeshRenderer::toggleCyclicColormap() {
+  if (activeScalarName.empty() || activeScalarAnalysis.categorical) {
+    return false;
+  }
+  activeScalarAnalysis.cyclic = !activeScalarAnalysis.cyclic;
+  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
+    setMapperScalar(sceneMeshes[index],
+                    mappers[index],
+                    activeScalarName,
+                    activeScalarAssociation,
+                    clipRange,
+                    activeScalarAnalysis);
+  }
+  if (context.window) {
+    context.window->Render();
+  }
+  return activeScalarAnalysis.cyclic;
+}
+
+bool MeshRenderer::setVectorGlyphs(const std::string& name, FieldAssociation association) {
+  if (glyphActor_ && renderer) {
+    renderer->RemoveActor(glyphActor_);
+    glyphActor_ = nullptr;
+  }
+  vtkDataSet* mesh = getPrimaryMesh();
+  if (name.empty() || !mesh || !renderer) {
+    if (context.window) {
+      context.window->Render();
+    }
+    return false;
+  }
+  auto* arr = arrayForAssociation(mesh, name, association);
+  auto* pointSet = vtkPointSet::SafeDownCast(mesh);
+  if (!arr || arr->GetNumberOfComponents() != 3 || !pointSet) {
+    return false;
+  }
+
+  auto seed = vtkSmartPointer<vtkPolyData>::New();
+  if (association == FieldAssociation::Cell) {
+    vtkNew<vtkCellCenters> centers;
+    centers->SetInputData(mesh);
+    centers->Update();
+    seed->ShallowCopy(centers->GetOutput());
+  } else {
+    seed->SetPoints(pointSet->GetPoints());
+    seed->GetPointData()->ShallowCopy(mesh->GetPointData());
+  }
+  if (!seed->GetPointData()->GetArray(name.c_str())) {
+    return false;
+  }
+  seed->GetPointData()->SetActiveVectors(name.c_str());
+
+  double bounds[6];
+  mesh->GetBounds(bounds);
+  const double diagonal =
+      std::sqrt(std::pow(bounds[1] - bounds[0], 2) + std::pow(bounds[3] - bounds[2], 2) +
+                std::pow(bounds[5] - bounds[4], 2));
+
+  // Roughly one mean cell width, so glyphs read as a direction field rather than
+  // a solid mat or a dot cloud. Centered on the cell so a fibre direction and its
+  // opposite draw the same segment.
+  const double cells = std::max(1.0, static_cast<double>(mesh->GetNumberOfCells()));
+  const double length = 2.0 * diagonal / std::sqrt(cells);
+  vtkNew<vtkLineSource> line;
+  line->SetPoint1(-0.5 * length, 0.0, 0.0);
+  line->SetPoint2(0.5 * length, 0.0, 0.0);
+
+  vtkNew<vtkGlyph3D> glyph;
+  glyph->SetInputData(seed);
+  glyph->SetSourceConnection(line->GetOutputPort());
+  glyph->OrientOn();
+  glyph->SetVectorModeToUseVector();
+  glyph->SetScaleModeToDataScalingOff();
+
+  vtkNew<vtkPolyDataMapper> mapper;
+  mapper->SetInputConnection(glyph->GetOutputPort());
+  mapper->ScalarVisibilityOff();
+  // Glyphs are coplanar with the surface they describe; without a depth offset the
+  // surface wins the depth test and hides all but a few pixels of each segment.
+  vtkPolyDataMapper::SetResolveCoincidentTopologyToPolygonOffset();
+  mapper->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -6.0);
+  glyphActor_ = vtkSmartPointer<vtkActor>::New();
+  glyphActor_->SetMapper(mapper);
+  glyphActor_->GetProperty()->SetColor(0.05, 0.05, 0.05);
+  glyphActor_->GetProperty()->SetLineWidth(2.0);
+  renderer->AddActor(glyphActor_);
+  if (context.window) {
+    context.window->Render();
+  }
+  return true;
+}
+
 bool MeshRenderer::setPartVisible(size_t partIndex, bool visible) {
   if (partIndex >= context.actors.size() || !context.actors[partIndex]) {
     return false;
@@ -563,6 +663,18 @@ vtkLookupTable* MeshRenderer::getFacetPanelLUT(size_t panelIndex) const {
   return vtkLookupTable::SafeDownCast(facetPanels[panelIndex].mapper->GetLookupTable());
 }
 
+bool MeshRenderer::setFacetPanelGlobalRange(size_t panelIndex, double minValue, double maxValue) {
+  if (panelIndex >= facetPanels.size() || minValue >= maxValue) {
+    return false;
+  }
+  FacetPanelState& panel = facetPanels[panelIndex];
+  panel.globalRange[0] = minValue;
+  panel.globalRange[1] = maxValue;
+  panel.clipRange[0] = minValue;
+  panel.clipRange[1] = maxValue;
+  return setFacetPanelClipRange(panelIndex, minValue, maxValue);
+}
+
 bool MeshRenderer::setFacetPanelClipRange(size_t panelIndex, double minValue, double maxValue) {
   if (panelIndex >= facetPanels.size()) {
     return false;
@@ -588,7 +700,7 @@ bool MeshRenderer::setFacetPanelClipRange(size_t panelIndex, double minValue, do
 
   vtkLookupTable* lut = vtkLookupTable::SafeDownCast(panel.mapper->GetLookupTable());
   if (lut) {
-    applyLookupTableRange(lut, panel.clipRange);
+    applyLookupTableRange(lut, panel.clipRange, panel.analysis.cyclic);
   }
   panel.mapper->SetScalarRange(panel.clipRange);
   if (context.window) {

@@ -1,3 +1,21 @@
+# [Unreleased]
+
+### Added
+
+- `-r/--range min,max`: pin the color range of continuous scalars, in the single
+  view and in every facet of `--explode`.
+- Cyclic colormap (full hue wheel, no false seam at the wrap) for fields whose
+  name contains `phase`; **c** toggles it for any continuous field.
+- Vector-field glyphs: **v** cycles 3-component point/cell arrays, drawn as a
+  short segment per tuple oriented along the vector (e.g. fibre orientation).
+
+### Changed
+
+- Nodal scalars are interpolated before mapping, so a wavefront gets a smooth
+  colormap-correct gradient; cell scalars and categorical LUTs stay flat.
+- Space cycles single-component arrays only; multi-component arrays are vector
+  fields now (**v**) instead of being colored by their magnitude.
+
 # [1.4.0] - 2026-08-07
 
 ### Added

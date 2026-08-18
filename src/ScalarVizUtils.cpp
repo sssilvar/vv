@@ -134,6 +134,9 @@ ScalarAnalysis analyzeScalar(const std::vector<vtkDataSet*>& meshes,
   if (n >= 2 && n <= limit) {
     result.categorical = true;
     result.uniqueValues = std::move(unique);
+  } else {
+    result.cyclic = scalarName.find("phase") != std::string::npos ||
+                    scalarName.find("Phase") != std::string::npos;
   }
   return result;
 }
@@ -209,23 +212,24 @@ vtkSmartPointer<vtkLookupTable> buildLookupTable(const ScalarAnalysis& analysis,
                                                  const double range[2]) {
   if (analysis.categorical)
     return createCategoricalLookupTable(analysis.uniqueValues);
-  return createDefaultLookupTable(range);
+  return createDefaultLookupTable(range, analysis.cyclic);
 }
 
-vtkSmartPointer<vtkLookupTable> createDefaultLookupTable(const double range[2]) {
+vtkSmartPointer<vtkLookupTable> createDefaultLookupTable(const double range[2], bool cyclic) {
   auto lut = vtkSmartPointer<vtkLookupTable>::New();
   lut->SetNumberOfTableValues(256);
-  applyLookupTableRange(lut, range);
+  applyLookupTableRange(lut, range, cyclic);
   return lut;
 }
 
-void applyLookupTableRange(vtkLookupTable* lut, const double range[2]) {
+void applyLookupTableRange(vtkLookupTable* lut, const double range[2], bool cyclic) {
   if (!lut) {
     return;
   }
 
   lut->SetRange(range);
-  lut->SetHueRange(0.0, 0.8);
+  // Full hue wheel wraps red→red so a cyclic field has no discontinuity.
+  lut->SetHueRange(0.0, cyclic ? 1.0 : 0.8);
 
   double meshColor[3];
   vtkNew<vtkNamedColors> colors;
@@ -262,6 +266,10 @@ bool setMapperScalar(vtkDataSet* mesh,
   mapper->SelectColorArray(scalarName.c_str());
   mapper->SetColorModeToMapScalars();
   mapper->ScalarVisibilityOn();
+  // Interpolate the scalar across the triangle and map afterwards, so nodal
+  // fields get a smooth colormap-correct gradient. Cell fields (and indexed
+  // categorical LUTs) must stay flat per cell.
+  mapper->SetInterpolateScalarsBeforeMapping((!cell && !analysis.categorical) ? 1 : 0);
 
   auto lut = buildLookupTable(analysis, range);
   mapper->SetLookupTable(lut);

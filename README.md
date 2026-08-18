@@ -60,10 +60,26 @@ Required UI dependencies are Qt6 Widgets and `VTK::GUISupportQt`.
 
 Press **Space** to cycle through the available scalar fields (and back to plain
 geometry). Both **point-data** and **cell-data** scalars are supported; cell
-fields are labelled `… (cells)` in the colorbar title. Categorical integer
-fields (2–20 distinct values) get a discrete tab10/tab20 colormap; continuous
-fields get a draggable clip range. Use `-e/--explode` to show every field at
-once in a synchronized facet grid.
+fields are labelled `… (cells)` in the colorbar title. Nodal fields are
+interpolated across each triangle, cell fields stay flat per triangle.
+Categorical integer fields (2–20 distinct values) get a discrete tab10/tab20
+colormap; continuous fields get a draggable clip range. Use `-e/--explode` to
+show every field at once in a synchronized facet grid (linked cameras).
+
+`-r/--range min,max` pins the color range of every continuous field, in the
+single view and in every facet, e.g. `--range -80,40` for a transmembrane
+potential in mV. Without it, a time series uses the range sampled across the
+whole animation and a static file the field's own range; either way the range is
+fixed for the whole animation, never per frame.
+
+Press **c** to switch the active continuous field between the linear colormap
+and a cyclic one (full hue wheel, both ends the same color). Fields whose name
+contains `phase` start cyclic. A wrapping field usually also wants its cycle
+length pinned, e.g. `--range 0,260`.
+
+Press **v** to cycle vector-field glyphs: every 3-component point or cell array
+is drawn as a short segment per tuple, oriented along the vector (fibre
+orientation, and any other direction field).
 
 ## Quality checks
 

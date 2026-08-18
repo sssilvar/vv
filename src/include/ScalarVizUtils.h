@@ -24,6 +24,9 @@ struct ScalarField {
 // Result of scalar field analysis — computed once, passed around.
 struct ScalarAnalysis {
   bool categorical = false;
+  // Cyclic domain (e.g. a phase field wrapping at the cycle length): needs a
+  // colormap whose two ends are the same color, or the wrap shows a false seam.
+  bool cyclic = false;
   std::set<double> uniqueValues; // populated iff categorical == true
 };
 
@@ -48,8 +51,10 @@ bool computeScalarGlobalRange(const std::vector<vtkDataSet*>& meshes,
                               FieldAssociation association,
                               double outRange[2]);
 
-// Continuous rainbow LUT.
-vtkSmartPointer<vtkLookupTable> createDefaultLookupTable(const double range[2]);
+// Continuous rainbow LUT. cyclic = full hue wheel, so range[0] and range[1] share
+// a color (for phase-like fields).
+vtkSmartPointer<vtkLookupTable> createDefaultLookupTable(const double range[2],
+                                                         bool cyclic = false);
 
 // Categorical LUT using tab10 (n≤10) or tab20 (n≤20). Uses indexed lookup.
 vtkSmartPointer<vtkLookupTable> createCategoricalLookupTable(const std::set<double>& uniqueValues);
@@ -58,7 +63,7 @@ vtkSmartPointer<vtkLookupTable> createCategoricalLookupTable(const std::set<doub
 vtkSmartPointer<vtkLookupTable> buildLookupTable(const ScalarAnalysis& analysis,
                                                  const double range[2]);
 
-void applyLookupTableRange(vtkLookupTable* lut, const double range[2]);
+void applyLookupTableRange(vtkLookupTable* lut, const double range[2], bool cyclic = false);
 
 bool setMapperScalar(vtkDataSet* mesh,
                      vtkDataSetMapper* mapper,

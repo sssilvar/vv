@@ -113,8 +113,10 @@ QString QStringFromUtf8(const std::string& value) {
 // Union of selectable scalar fields across all meshes, point fields first then
 // cell fields, each group sorted by name. Cell fields are suffixed " (cells)" in
 // the colorbar title so the user can tell which association is shown.
-std::vector<ScalarField>
-collectScalarUnion(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
+// wantComponents selects which arrays are collected: 1 for colorable scalars,
+// 3 for vector fields drawn as glyphs.
+std::vector<ScalarField> collectScalarUnion(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
+                                            int wantComponents = 1) {
   std::set<std::string> pointNames;
   std::set<std::string> cellNames;
   for (const auto& mesh : meshes) {
@@ -124,14 +126,14 @@ collectScalarUnion(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
     if (auto* pd = mesh->GetPointData()) {
       for (int i = 0; i < pd->GetNumberOfArrays(); ++i) {
         vtkDataArray* arr = pd->GetArray(i);
-        if (arr && arr->GetName())
+        if (arr && arr->GetName() && arr->GetNumberOfComponents() == wantComponents)
           pointNames.insert(arr->GetName());
       }
     }
     if (auto* cd = mesh->GetCellData()) {
       for (int i = 0; i < cd->GetNumberOfArrays(); ++i) {
         vtkDataArray* arr = cd->GetArray(i);
-        if (arr && arr->GetName())
+        if (arr && arr->GetName() && arr->GetNumberOfComponents() == wantComponents)
           cellNames.insert(arr->GetName());
       }
     }
@@ -231,11 +233,12 @@ public:
                           std::function<void()> onViewportResize,
                           std::function<bool(QMouseEvent*)> onPointerEvent,
                           std::function<void(bool active, bool erase)> onPaintHold,
+                          std::function<bool(int key)> onHotkey,
                           QObject* parent = nullptr)
       : QObject(parent), vtkRoot_(vtkRoot), overlayColorBar_(overlayColorBar),
         overlayTree_(overlayTree), onSpaceCycle_(std::move(onSpaceCycle)),
         onViewportResize_(std::move(onViewportResize)), onPointerEvent_(std::move(onPointerEvent)),
-        onPaintHold_(std::move(onPaintHold)) {}
+        onPaintHold_(std::move(onPaintHold)), onHotkey_(std::move(onHotkey)) {}
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override {
@@ -354,6 +357,9 @@ protected:
         QApplication::quit();
         return true;
       }
+      if (onHotkey_ && onHotkey_(ke->key())) {
+        return true;
+      }
       // Hold 'a' to paint, 'e' to erase; ignore X11 auto-repeat so the hold sticks.
       if (!ke->isAutoRepeat() && onPaintHold_ &&
           (ke->key() == Qt::Key_A || ke->key() == Qt::Key_E)) {
@@ -374,7 +380,7 @@ protected:
     case QEvent::ShortcutOverride: {
       auto* ke = static_cast<QKeyEvent*>(event);
       if (ke->key() == Qt::Key_Space || ke->key() == Qt::Key_Q || ke->key() == Qt::Key_A ||
-          ke->key() == Qt::Key_E) {
+          ke->key() == Qt::Key_E || ke->key() == Qt::Key_C || ke->key() == Qt::Key_V) {
         ke->accept();
         return true;
       }
@@ -394,6 +400,7 @@ private:
   std::function<void()> onViewportResize_;
   std::function<bool(QMouseEvent*)> onPointerEvent_;
   std::function<void(bool active, bool erase)> onPaintHold_;
+  std::function<bool(int key)> onHotkey_;
 };
 
 // Number of paintable labels (1..kNumLabels); value 0 is "unlabeled". Kept at 9
@@ -530,6 +537,17 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult, const ViewerOptions& optio
       options_.annotate ? std::function<void(bool, bool)>(
                               [this](bool active, bool erase) { setPaintHold(active, erase); })
                         : nullptr,
+      [this](int key) {
+        if (key == Qt::Key_C) {
+          toggleCyclicColormap();
+          return true;
+        }
+        if (key == Qt::Key_V) {
+          cycleVectorField();
+          return true;
+        }
+        return false;
+      },
       this));
 
   QTimer::singleShot(0, this, [this]() {
@@ -610,10 +628,17 @@ void ViewerWindow::setupFacetMode() {
       continue;
     }
 
+    if (options_.hasFixedRange && !panelInfo.analysis.categorical &&
+        renderer_.setFacetPanelGlobalRange(
+            panelIndex, options_.fixedRange[0], options_.fixedRange[1])) {
+      renderer_.getFacetPanelInfo(panelIndex, panelInfo);
+    }
+
     auto* panelBar = new ColorBarWidget(vtkWidget_);
     panelBar->setFocusPolicy(Qt::NoFocus);
     panelBar->setTitle(QStringFromUtf8(panelInfo.title));
     panelBar->setRange(panelInfo.globalRange[0], panelInfo.globalRange[1]);
+    panelBar->setCyclic(panelInfo.analysis.cyclic);
 
     if (panelInfo.analysis.categorical) {
       vtkLookupTable* lut = renderer_.getFacetPanelLUT(panelIndex);
@@ -655,6 +680,7 @@ void ViewerWindow::setupNormalMode() {
                    [this](double lo, double hi) { renderer_.setClipRange(lo, hi); });
 
   scalarFields_ = collectScalarUnion(load_.meshes.meshes);
+  vectorFields_ = collectScalarUnion(load_.meshes.meshes, 3);
   if (!scalarFields_.empty()) {
     applyScalarAtIndex(0);
   } else {
@@ -1249,6 +1275,11 @@ void ViewerWindow::applyScalarAtIndex(int index) {
     }
   }
 
+  const ScalarAnalysis& analysis = renderer_.getActiveScalarAnalysis();
+  if (options_.hasFixedRange && !analysis.categorical) {
+    renderer_.setActiveScalarRange(options_.fixedRange[0], options_.fixedRange[1]);
+  }
+
   double globalRange[2] = {0.0, 1.0};
   if (!renderer_.getActiveScalarGlobalRange(globalRange)) {
     colorBar_->setVisible(false);
@@ -1257,7 +1288,7 @@ void ViewerWindow::applyScalarAtIndex(int index) {
   colorBar_->setVisible(true);
   colorBar_->setRange(globalRange[0], globalRange[1]);
 
-  const ScalarAnalysis& analysis = renderer_.getActiveScalarAnalysis();
+  colorBar_->setCyclic(analysis.cyclic);
   if (analysis.categorical) {
     colorBar_->setCategorical(categoricalEntries(renderer_.getActiveLUT(), analysis));
   } else {
@@ -1283,6 +1314,32 @@ void ViewerWindow::cycleScalar() {
     return;
   }
   applyScalarAtIndex(next);
+}
+
+// 'c': linear ↔ cyclic colormap for the active continuous field.
+void ViewerWindow::toggleCyclicColormap() {
+  const bool cyclic = renderer_.toggleCyclicColormap();
+  colorBar_->setCyclic(cyclic);
+  statusBar()->showMessage(cyclic ? "cyclic colormap" : "linear colormap", 1500);
+}
+
+// 'v': cycle vector-field glyphs (each 3-component array, then off).
+void ViewerWindow::cycleVectorField() {
+  if (vectorFields_.empty()) {
+    statusBar()->showMessage("no vector field in this mesh", 1500);
+    return;
+  }
+  activeVectorIdx_ = (activeVectorIdx_ + 1) % (static_cast<int>(vectorFields_.size()) + 1);
+  if (activeVectorIdx_ == static_cast<int>(vectorFields_.size())) {
+    activeVectorIdx_ = -1;
+    renderer_.setVectorGlyphs("", FieldAssociation::Point);
+    statusBar()->showMessage("glyphs off", 1500);
+    return;
+  }
+  const ScalarField& field = vectorFields_[static_cast<size_t>(activeVectorIdx_)];
+  if (renderer_.setVectorGlyphs(field.name, field.association)) {
+    statusBar()->showMessage(QStringLiteral("glyphs: ") + scalarTitle(field), 1500);
+  }
 }
 
 // ── overlay layout ─────────────────────────────────────────────────────

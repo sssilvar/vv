@@ -23,6 +23,10 @@ class TemporalSource;
 
 struct ViewerOptions {
   bool explodeView = false;
+  // Pinned color range: overrides the data/sampled range for every continuous
+  // field, so a wavefront keeps the same colors across frames and files.
+  bool hasFixedRange = false;
+  double fixedRange[2] = {0.0, 1.0};
   bool commonCatLut = false;
   bool annotate = false;
 };
@@ -69,6 +73,8 @@ private:
   void applyScalarAtIndex(int index);
   void applyNoScalar();
   void cycleScalar();
+  void cycleVectorField();
+  void toggleCyclicColormap();
 
   // ── layout / playback ─────────────────────────────────────────────
   void layoutFacetColorBars();
@@ -90,6 +96,8 @@ private:
 
   std::vector<ScalarField> scalarFields_;
   int activeScalarIdx_ = -1;
+  std::vector<ScalarField> vectorFields_; // 3-component arrays, drawn as glyphs
+  int activeVectorIdx_ = -1;
 
   // Temporal (playable) support: when a time-series file is loaded, the color
   // range is fixed across the whole animation (sampled once per scalar) so the
