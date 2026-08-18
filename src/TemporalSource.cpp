@@ -28,9 +28,11 @@ void VTKHDFTemporalSource::init(const vtkSmartPointer<vtkHDFReader>& reader,
   if (reader_) {
     // Cache the static geometry/topology so successive frames only re-read the
     // temporal point-data arrays (incompatible with MergeParts, which is off).
-    // vtkHDFReader gained UseCache in VTK 9.3; older VTK still plays back, just
-    // re-reading geometry each frame.
-#if VTK_VERSION_NUMBER >= VTK_VERSION_CHECK(9, 3, 0)
+    // vtkHDFReader gained UseCache in VTK 9.3 and made it always-on (and the
+    // setter deprecated) in 9.7; older VTK still plays back, just re-reading
+    // geometry each frame.
+#if VTK_VERSION_NUMBER >= VTK_VERSION_CHECK(9, 3, 0) && \
+    VTK_VERSION_NUMBER < VTK_VERSION_CHECK(9, 7, 0)
     reader_->UseCacheOn();
 #endif
   }
