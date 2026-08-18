@@ -31,7 +31,7 @@ void VTKHDFTemporalSource::init(const vtkSmartPointer<vtkHDFReader>& reader,
     // vtkHDFReader gained UseCache in VTK 9.3 and made it always-on (and the
     // setter deprecated) in 9.7; older VTK still plays back, just re-reading
     // geometry each frame.
-#if VTK_VERSION_NUMBER >= VTK_VERSION_CHECK(9, 3, 0) && \
+#if VTK_VERSION_NUMBER >= VTK_VERSION_CHECK(9, 3, 0) &&                                            \
     VTK_VERSION_NUMBER < VTK_VERSION_CHECK(9, 7, 0)
     reader_->UseCacheOn();
 #endif
