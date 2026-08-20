@@ -2,6 +2,7 @@
 
 #include "mesh_utils.h"
 
+#include <array>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -16,6 +17,25 @@
 #include <vtkXMLUtilities.h>
 
 XMLMeshParser::~XMLMeshParser() = default;
+
+// A DIF volume's colour, as `rrggbb` hex. EnSite writes it bare and lowercase, and
+// leaves it empty when the volume has none; a leading '#' is tolerated too. Volumes
+// without a usable colour keep the viewer's categorical palette.
+static bool ParseHexColor(const char* attribute, std::array<double, 3>& color) {
+  if (!attribute)
+    return false;
+  std::string hex(attribute);
+  if (!hex.empty() && hex.front() == '#')
+    hex.erase(0, 1);
+  if (hex.size() != 6 || hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+    return false;
+  for (int channel = 0; channel < 3; ++channel) {
+    color[static_cast<size_t>(channel)] =
+        static_cast<double>(std::stoi(hex.substr(static_cast<size_t>(channel) * 2, 2), nullptr, 16)) /
+        255.0;
+  }
+  return true;
+}
 
 // Helper: parse doubles from string (copied from main.cpp)
 static std::vector<double> ParseDoubles(const std::string& s) {
@@ -95,6 +115,15 @@ std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string&
       partNameArray->SetName("vv_part_name");
       partNameArray->InsertNextValue(volumeName);
       poly->GetFieldData()->AddArray(partNameArray);
+    }
+
+    std::array<double, 3> volumeColor{};
+    if (ParseHexColor(vol->GetAttribute("color"), volumeColor)) {
+      vtkNew<vtkFloatArray> partColorArray;
+      partColorArray->SetName("vv_part_color");
+      partColorArray->SetNumberOfComponents(3);
+      partColorArray->InsertNextTuple3(volumeColor[0], volumeColor[1], volumeColor[2]);
+      poly->GetFieldData()->AddArray(partColorArray);
     }
 
     vtkXMLDataElement* normElem = vol->FindNestedElementWithName("Normals");
