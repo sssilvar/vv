@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileOpenEvent>
 #include <QString>
@@ -18,6 +19,7 @@
 #include <windows.h>
 #endif
 #include <cstdio>
+#include <cstdlib>
 #include <cxxopts.hpp>
 #include <iostream>
 #include <string>
@@ -29,6 +31,9 @@
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
 #include <vtkWindowToImageFilter.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 namespace {
 
@@ -138,6 +143,34 @@ int renderThumbnail(const std::string& meshFile, const std::string& outPath) {
 } // namespace
 
 #ifdef __APPLE__
+namespace {
+void addMacOSQtPluginPath() {
+  uint32_t pathSize = 0;
+  _NSGetExecutablePath(nullptr, &pathSize);
+  std::vector<char> executablePath(pathSize);
+  if (_NSGetExecutablePath(executablePath.data(), &pathSize) != 0) {
+    return;
+  }
+
+  char* resolvedPath = realpath(executablePath.data(), nullptr);
+  if (resolvedPath == nullptr) {
+    return;
+  }
+  const QString executable = QString::fromUtf8(resolvedPath);
+  std::free(resolvedPath);
+
+  const qsizetype separator = executable.lastIndexOf(QLatin1Char('/'));
+  if (separator < 0) {
+    return;
+  }
+  const QString plugins =
+      QDir::cleanPath(executable.left(separator) + QStringLiteral("/../PlugIns"));
+  if (QDir(plugins).exists()) {
+    QCoreApplication::addLibraryPath(plugins);
+  }
+}
+} // namespace
+
 // Subclass to capture QFileOpenEvent (sent by macOS when user opens a file in Finder).
 class VVApplication : public QApplication {
 public:
@@ -210,6 +243,8 @@ int main(int argc, char* argv[]) try {
   QSurfaceFormat::setDefaultFormat(format);
 #ifdef _WIN32
   addWindowsQtPluginPath();
+#elif defined(__APPLE__)
+  addMacOSQtPluginPath();
 #endif
 
 #ifdef __APPLE__

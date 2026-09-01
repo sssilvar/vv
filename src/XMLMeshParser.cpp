@@ -31,7 +31,8 @@ static bool ParseHexColor(const char* attribute, std::array<double, 3>& color) {
     return false;
   for (int channel = 0; channel < 3; ++channel) {
     color[static_cast<size_t>(channel)] =
-        static_cast<double>(std::stoi(hex.substr(static_cast<size_t>(channel) * 2, 2), nullptr, 16)) /
+        static_cast<double>(
+            std::stoi(hex.substr(static_cast<size_t>(channel) * 2, 2), nullptr, 16)) /
         255.0;
   }
   return true;
