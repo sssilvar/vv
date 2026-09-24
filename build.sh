@@ -15,7 +15,7 @@
 #       --clang-tidy             Run clang-tidy over the compilation database
 #       --analyze                Shorthand for --cppcheck --clang-tidy
 #       --format-check           Verify clang-format cleanliness (no changes)
-#       --install                Install the app/binary after a successful build
+#       --install                Install the binary after a successful build
 #   -h, --help                   Show this help and exit
 #
 # Static analysis relies on build/compile_commands.json, which this script
@@ -155,25 +155,8 @@ fi
 if [ "$DO_INSTALL" = 1 ]; then
   INSTALL_DIR=${INSTALL_DIR:-$HOME/.local/bin}
   run "mkdir -p '$INSTALL_DIR'"
-  case "$(uname)" in
-    Darwin)
-      APP_INSTALL_DIR=${APP_INSTALL_DIR:-$HOME/Applications}
-      run "mkdir -p '$APP_INSTALL_DIR'"
-      run "rm -rf '$APP_INSTALL_DIR/vv.app'"
-      run "cp -R '$BUILD_DIR/vv.app' '$APP_INSTALL_DIR/vv.app'"
-      run "ln -sf '$APP_INSTALL_DIR/vv.app/Contents/MacOS/vv' '$INSTALL_DIR/vv'"
-      run "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f '$APP_INSTALL_DIR/vv.app'"
-      run "qlmanage -r" || true
-      info "Installed vv.app to $APP_INSTALL_DIR (CLI symlink: $INSTALL_DIR/vv)"
-      ;;
-    Linux)
-      run "cp '$BUILD_DIR/vv' '$INSTALL_DIR/'"
-      info "Installed vv to $INSTALL_DIR (ensure it is on your PATH)"
-      ;;
-    *)
-      die "unsupported platform for --install: $(uname)"
-      ;;
-  esac
+  run "cp '$BUILD_DIR/vv' '$INSTALL_DIR/'"
+  info "Installed vv to $INSTALL_DIR (ensure it is on your PATH)"
 fi
 
 info "Done."

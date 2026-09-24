@@ -22,7 +22,7 @@ and (optionally) runs static analysis and installs:
 ./build.sh                 # Release build into ./build
 ./build.sh -t Debug        # Debug build
 ./build.sh --analyze       # build, then cppcheck + clang-tidy
-./build.sh --install       # build, then install the app/binary
+./build.sh --install       # build, then install the binary
 ./build.sh --help          # all options
 ```
 
@@ -40,15 +40,7 @@ cmake --build --preset=$PRESET
 
 `CMAKE_EXPORT_COMPILE_COMMANDS=ON` is set in the presets. Pass CMake `-D...` options to the configure step (`cmake --preset=... -DNAME=VALUE`), not the build step (`cmake --build ...`).
 
-The project builds a single Qt-based executable: `vv`. On macOS, CMake packages it as an app bundle, so the binary is inside `vv.app`.
-
-Run on macOS:
-
-```sh
-./build/vv.app/Contents/MacOS/vv /path/to/mesh.json
-```
-
-Run on Linux or Windows:
+The project builds a single Qt-based executable: `vv`.
 
 ```sh
 ./build/vv /path/to/mesh.json
@@ -187,20 +179,22 @@ On **Windows**, if you use **vcpkg**, CMake copies **`Qt6/plugins`** from the in
 ./build.sh --install
 ```
 
-On macOS this copies `vv.app` to `~/Applications`, symlinks the CLI into
-`~/.local/bin`, and registers the Quick Look generator. On Linux it copies the
-`vv` binary to `~/.local/bin`. Override locations with the `INSTALL_DIR` and
-`APP_INSTALL_DIR` environment variables. Make sure `~/.local/bin` is in your PATH.
+This copies the `vv` binary to `~/.local/bin` (override with `INSTALL_DIR`).
+Make sure `~/.local/bin` is in your PATH.
 
 ## Releases / packaging
 
 Tagged pushes (`v*`) trigger `.github/workflows/release.yml`, which builds
-**self-contained** bundles with Qt and VTK included, so end users need nothing
+**self-contained** packages with Qt and VTK included, so end users need nothing
 preinstalled:
 
 - **Linux** — `.AppImage` (via `linuxdeploy` + the Qt plugin)
-- **macOS** — zipped `vv.app` (via `macdeployqt`)
+- **macOS** — `vv-<version>-<arch>-apple-darwin.tar.gz` (via `macdeployqt`), laid
+  out for `~/.local`: `bin/vv` links to `lib/vv/bin/vv`, next to the bundled Qt/VTK
+  libraries. Install with `tar -xzf vv-*-apple-darwin.tar.gz -C ~/.local`. The
+  binaries are not notarized: if macOS refuses to run them (e.g. after extracting
+  with Finder), run `xattr -dr com.apple.quarantine ~/.local/lib/vv`.
 - **Windows** — portable `.exe` (via `scripts/package-windows.sh`; unpacks to `%LOCALAPPDATA%\vv\` on first run)
 
-Bare-binary archives are also published for users who already have the runtime
-from a package manager.
+A bare Linux binary (`-bin.tar.gz`) is also published for users who already
+have the runtime from a package manager.

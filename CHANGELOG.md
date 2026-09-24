@@ -1,3 +1,20 @@
+# [Unreleased]
+
+### Changed
+
+- macOS releases ship a self-contained `.tar.gz` that extracts into `~/.local`
+  (`bin/vv` plus bundled libraries under `lib/vv`) instead of `vv.app`; the
+  broken bare-binary `-bin.tar.gz` is no longer published for macOS.
+- `build.sh --install` copies the `vv` binary to `~/.local/bin` on macOS too.
+
+### Removed
+
+- macOS app bundle, Finder "Open with" file associations and the Quick Look
+  generator.
+- `-T/--thumbnail` offscreen PNG rendering.
+- File picker shown when launched without a mesh file; `vv` now requires one
+  on every platform.
+
 # [1.5.0] - 2026-08-18
 
 ### Added

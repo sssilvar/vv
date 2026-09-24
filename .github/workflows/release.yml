@@ -9,8 +9,8 @@ on:
 env:
   CI: true
 
-# Builds self-contained, deployable bundles (Qt + VTK included) for each OS, plus
-# the bare binary for users who already have the runtime via a package manager.
+# Builds self-contained, deployable packages (Qt + VTK included) for each OS, plus
+# the bare Linux binary for users who already have the runtime via a package manager.
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -53,7 +53,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew update
-          for pkg in cmake ninja vtk qt fmt cxxopts nlohmann-json; do
+          for pkg in cmake ninja vtk qtbase fmt cxxopts nlohmann-json; do
             brew list --versions "$pkg" >/dev/null || brew install "$pkg"
           done
 
@@ -94,7 +94,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix vtk)"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase);$(brew --prefix vtk)"
           cmake --build build -j"$(sysctl -n hw.ncpu)"
 
       - name: Configure + build (Windows)
@@ -140,17 +140,32 @@ jobs:
           # bare binary too
           tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}-bin.tar.gz" -C build vv
 
-      - name: Package macOS app
+      - name: Package macOS ~/.local tree
         if: runner.os == 'macOS'
         run: |
           set -e
-          MACDEPLOYQT="$(brew --prefix qt)/bin/macdeployqt"
-          "$MACDEPLOYQT" build/vv.app -verbose=1
+          MACDEPLOYQT="$(brew --prefix qtbase)/bin/macdeployqt"
+          # macdeployqt only operates on app bundles: deploy into a throwaway one,
+          # then flatten it into a tree that extracts straight into ~/.local.
+          contents=deploy/vv.app/Contents
+          mkdir -p "$contents/MacOS" stage/bin stage/lib/vv/bin
+          cp build/vv "$contents/MacOS/vv"
+          "$MACDEPLOYQT" deploy/vv.app -verbose=1
+          mv "$contents/MacOS/vv" stage/lib/vv/bin/
+          mv "$contents/Frameworks" "$contents/PlugIns" stage/lib/vv/
+          # dyld resolves @executable_path through symlinks, so the deployed
+          # ../Frameworks references still hold when launched from ~/.local/bin.
+          ln -s ../lib/vv/bin/vv stage/bin/vv
+          # Homebrew is present on the runner, so a leftover absolute reference
+          # would load here but fail for users; reject it explicitly.
+          if find stage/lib/vv -type f -exec dyld_info -dependents {} + 2>/dev/null \
+              | grep -E '^[[:space:]]+.*/(opt/homebrew|usr/local)/'; then
+            echo "error: unbundled Homebrew dependency" >&2
+            exit 1
+          fi
+          stage/bin/vv --version
           mkdir -p dist
-          ditto -c -k --keepParent build/vv.app \
-            "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}.app.zip"
-          tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}-bin.tar.gz" \
-            -C build/vv.app/Contents/MacOS vv
+          tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" -C stage bin lib
 
       - name: Package Windows portable exe
         if: runner.os == 'Windows'
