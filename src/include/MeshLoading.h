@@ -28,9 +28,11 @@ struct MeshLoadResult {
   int exitCode = 0;
   std::string error;
   LoadedMeshes meshes;
-  // Non-null and playable when a temporal VTKHDF file was loaded; meshes[0] is the
-  // rendered object playback streams successive frames into.
+  // Non-null and playable when a temporal file was loaded; meshes[temporalMesh] is
+  // the rendered object playback streams successive frames into. Only the first
+  // temporal file plays.
   std::shared_ptr<TemporalSource> temporal;
+  size_t temporalMesh = 0;
 };
 
-MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explodeView);
+MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles);

@@ -48,6 +48,26 @@ The project builds a single Qt-based executable: `vv`.
 
 Required UI dependencies are Qt6 Widgets and `VTK::GUISupportQt`.
 
+### Several files
+
+```sh
+vv foo.vtk bar.stl       # side by side, one panel per file
+vv /data/case/*.vtk      # every matching file (the shell expands the glob)
+vv -e foo.vtk bar.vtp    # exploded: a row per file, a column per scalar
+```
+
+Several files open side by side in a grid, one labelled panel per file, all
+sharing one camera so rotation and zoom stay in step and meshes in a common
+coordinate frame keep their relative positions. **Space** cycles the union of
+the files' scalars: a field present in several files uses one color range and
+one colorbar, and a file without it is drawn in its plain part color.
+
+With `-e`, each file gets a row and each scalar a column, so the same field
+lines up vertically across files with one color range per column; dragging a
+column's clip range applies to the whole column. A panel whose file lacks that
+column's field is drawn plain and labelled `file · no field`. A single file keeps
+the square grid of its fields. `--annotate` needs a single file.
+
 ### Scalar fields
 
 Press **Space** to cycle through the available scalar fields (and back to plain
@@ -56,7 +76,7 @@ fields are labelled `… (cells)` in the colorbar title. Nodal fields are
 interpolated across each triangle, cell fields stay flat per triangle.
 Categorical integer fields (2–20 distinct values) get a discrete tab10/tab20
 colormap; continuous fields get a draggable clip range. Use `-e/--explode` to
-show every field at once in a synchronized facet grid (linked cameras).
+show every field at once in a facet grid sharing one camera.
 
 `-r/--range min,max` pins the color range of every continuous field, in the
 single view and in every facet, e.g. `--range -80,40` for a transmembrane

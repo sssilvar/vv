@@ -13,6 +13,8 @@
 #include <vtkCellCenters.h>
 #include <vtkCellData.h>
 #include <vtkCommand.h>
+#include <vtkCoordinate.h>
+#include <vtkDataArray.h>
 #include <vtkDataSetMapper.h>
 #include <vtkGlyph3D.h>
 #include <vtkInteractorStyleTrackballCamera.h>
@@ -27,6 +29,8 @@
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRenderer.h>
 #include <vtkRendererCollection.h>
+#include <vtkTextActor.h>
+#include <vtkTextProperty.h>
 #include <vtkUnstructuredGrid.h>
 
 const char* kVVWindowTitle = "VV mesh viewer";
@@ -42,6 +46,96 @@ std::vector<vtkDataSet*> rawMeshPointers(const std::vector<vtkSmartPointer<vtkDa
   return result;
 }
 
+// Row-major cell (index) of a cols x rows grid, as a VTK viewport (y grows up).
+void gridViewport(size_t index, size_t cols, size_t rows, double out[4]) {
+  const size_t row = index / cols;
+  const double r = static_cast<double>(row);
+  const double c = static_cast<double>(index % cols);
+  const double nc = static_cast<double>(cols);
+  const double nr = static_cast<double>(rows);
+  out[0] = c / nc;
+  out[1] = 1.0 - (r + 1.0) / nr;
+  out[2] = (c + 1.0) / nc;
+  out[3] = 1.0 - r / nr;
+}
+
+size_t squareGridCols(size_t count) {
+  return static_cast<size_t>(std::ceil(std::sqrt(static_cast<double>(count))));
+}
+
+void addPanelLabel(vtkRenderer* ren, const std::string& text) {
+  vtkNew<vtkTextActor> label;
+  label->SetInput(text.c_str());
+  label->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
+  // Top-center: the top-left corner belongs to the parts-tree overlay.
+  label->SetPosition(0.5, 0.97);
+  vtkTextProperty* prop = label->GetTextProperty();
+  prop->SetFontSize(14);
+  prop->SetColor(0.89, 0.89, 0.89);
+  prop->SetJustificationToCentered();
+  prop->SetVerticalJustificationToTop();
+  ren->AddViewProp(label);
+}
+
+vtkSmartPointer<vtkActor>
+makeGlyphActor(vtkDataSet* mesh, const std::string& name, FieldAssociation association) {
+  auto* arr = arrayForAssociation(mesh, name, association);
+  auto* pointSet = vtkPointSet::SafeDownCast(mesh);
+  if (!arr || arr->GetNumberOfComponents() != 3 || !pointSet) {
+    return nullptr;
+  }
+
+  auto seed = vtkSmartPointer<vtkPolyData>::New();
+  if (association == FieldAssociation::Cell) {
+    vtkNew<vtkCellCenters> centers;
+    centers->SetInputData(mesh);
+    centers->Update();
+    seed->ShallowCopy(centers->GetOutput());
+  } else {
+    seed->SetPoints(pointSet->GetPoints());
+    seed->GetPointData()->ShallowCopy(mesh->GetPointData());
+  }
+  if (!seed->GetPointData()->GetArray(name.c_str())) {
+    return nullptr;
+  }
+  seed->GetPointData()->SetActiveVectors(name.c_str());
+
+  double bounds[6];
+  mesh->GetBounds(bounds);
+  const double diagonal =
+      std::sqrt(std::pow(bounds[1] - bounds[0], 2) + std::pow(bounds[3] - bounds[2], 2) +
+                std::pow(bounds[5] - bounds[4], 2));
+
+  // Roughly one mean cell width, so glyphs read as a direction field rather than
+  // a solid mat or a dot cloud. Centered on the cell so a fibre direction and its
+  // opposite draw the same segment.
+  const double cells = std::max(1.0, static_cast<double>(mesh->GetNumberOfCells()));
+  const double length = 2.0 * diagonal / std::sqrt(cells);
+  vtkNew<vtkLineSource> line;
+  line->SetPoint1(-0.5 * length, 0.0, 0.0);
+  line->SetPoint2(0.5 * length, 0.0, 0.0);
+
+  vtkNew<vtkGlyph3D> glyph;
+  glyph->SetInputData(seed);
+  glyph->SetSourceConnection(line->GetOutputPort());
+  glyph->OrientOn();
+  glyph->SetVectorModeToUseVector();
+  glyph->SetScaleModeToDataScalingOff();
+
+  vtkNew<vtkPolyDataMapper> mapper;
+  mapper->SetInputConnection(glyph->GetOutputPort());
+  mapper->ScalarVisibilityOff();
+  // Glyphs are coplanar with the surface they describe; without a depth offset the
+  // surface wins the depth test and hides all but a few pixels of each segment.
+  vtkPolyDataMapper::SetResolveCoincidentTopologyToPolygonOffset();
+  mapper->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -6.0);
+  auto actor = vtkSmartPointer<vtkActor>::New();
+  actor->SetMapper(mapper);
+  actor->GetProperty()->SetColor(0.05, 0.05, 0.05);
+  actor->GetProperty()->SetLineWidth(2.0);
+  return actor;
+}
+
 } // namespace
 
 MeshRenderer::~MeshRenderer() = default;
@@ -55,16 +149,28 @@ void MeshRenderer::setRenderContext(vtkRenderWindow* externalWindow,
 }
 
 void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
-                         const std::vector<std::string>& names,
+                         const std::vector<MeshGroup>& groups,
                          const std::vector<std::array<double, 3>>& colorsHex) {
-  (void)names;
-  renderer = vtkSmartPointer<vtkRenderer>::New();
   sceneMeshes = meshes;
   facetPanels.clear();
 
   if (!context.window) {
     context.window = vtkSmartPointer<vtkRenderWindow>::New();
   }
+  const size_t panelCount = std::max<size_t>(1, groups.size());
+  buildPanels(panelCount, squareGridCols(panelCount));
+  meshPanel_.assign(meshes.size(), 0);
+  for (size_t g = 0; g < groups.size(); ++g) {
+    for (size_t meshIndex : groups[g].partIndices) {
+      if (meshIndex < meshPanel_.size()) {
+        meshPanel_[meshIndex] = g;
+      }
+    }
+    if (groups.size() > 1) {
+      addPanelLabel(panelRenderers_[g], groups[g].name);
+    }
+  }
+
   mappers.clear();
   context.actors.clear();
   for (size_t i = 0; i < meshes.size(); ++i) {
@@ -78,13 +184,13 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
     if (vtkUnstructuredGrid::SafeDownCast(meshes[i])) {
       actor->GetProperty()->SetRepresentationToSurface();
     }
-    renderer->AddActor(actor);
+    panelRenderers_[meshPanel_[i]]->AddActor(actor);
     mappers.push_back(mapper);
     context.actors.push_back(actor);
   }
   context.colorsHex = colorsHex;
+  finishPanels(meshes);
 
-  context.window->AddRenderer(renderer);
   if (!embeddedMode) {
     int screenWidth = 1200, screenHeight = 1024;
     context.window->SetSize(screenWidth, screenHeight);
@@ -110,6 +216,63 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
   clearActiveScalar();
 }
 
+void MeshRenderer::buildPanels(size_t count, size_t cols) {
+  std::vector<vtkRenderer*> existing;
+  auto* renderers = context.window->GetRenderers();
+  vtkCollectionSimpleIterator cookie;
+  renderers->InitTraversal(cookie);
+  for (vtkRenderer* ren = renderers->GetNextRenderer(cookie); ren;
+       ren = renderers->GetNextRenderer(cookie)) {
+    existing.push_back(ren);
+  }
+  for (vtkRenderer* ren : existing) {
+    context.window->RemoveRenderer(ren);
+  }
+  glyphActors_.clear();
+
+  const size_t rows = (count + cols - 1) / cols;
+  vtkNew<vtkCamera> camera;
+  panelRenderers_.clear();
+  for (size_t i = 0; i < count; ++i) {
+    auto ren = vtkSmartPointer<vtkRenderer>::New();
+    double viewport[4];
+    gridViewport(i, cols, rows, viewport);
+    ren->SetViewport(viewport);
+    ren->SetActiveCamera(camera);
+    context.window->AddRenderer(ren);
+    panelRenderers_.push_back(ren);
+  }
+  renderer = panelRenderers_.front();
+}
+
+void MeshRenderer::finishPanels(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
+  vtkBoundingBox bbox;
+  for (const auto& mesh : meshes) {
+    double bounds[6];
+    mesh->GetBounds(bounds);
+    bbox.AddBounds(bounds);
+  }
+  if (bbox.IsValid()) {
+    bbox.GetBounds(sceneBounds_);
+  }
+  renderer->ResetCamera(sceneBounds_);
+  fittedCameraMTime_ = renderer->GetActiveCamera()->GetMTime();
+
+  // The interactor style resets clipping from the panel under the cursor only;
+  // re-deriving it from every mesh before each panel draws keeps the shared
+  // camera from clipping geometry that only another panel shows.
+  if (!clipCb_) {
+    clipCb_ = vtkSmartPointer<vtkCallbackCommand>::New();
+    clipCb_->SetCallback([](vtkObject* caller, unsigned long, void* bounds, void*) {
+      static_cast<vtkRenderer*>(caller)->ResetCameraClippingRange(static_cast<double*>(bounds));
+    });
+  }
+  clipCb_->SetClientData(sceneBounds_);
+  for (const auto& ren : panelRenderers_) {
+    ren->AddObserver(vtkCommand::StartEvent, clipCb_);
+  }
+}
+
 void MeshRenderer::start() {
   context.window->Render();
   if (!embeddedMode) {
@@ -118,38 +281,39 @@ void MeshRenderer::start() {
 }
 
 void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
-                                  const std::vector<std::string>& names,
+                                  const std::vector<MeshGroup>& groups,
                                   const std::vector<std::array<double, 3>>& colorsHex) {
-  (void)names;
-  if (meshes.empty())
+  if (meshes.empty() || groups.empty())
     return;
 
-  // Collect all (mesh_index, scalar_name, association) tuples — one facet per
-  // scalar, point and cell fields alike.
-  struct MeshScalarPair {
-    size_t meshIndex;
-    std::string scalarName;
+  // Columns: every named point and cell array across all meshes, in first-seen
+  // order, so a scalar shared by several files lines up in one column.
+  struct Column {
+    std::string name;
     FieldAssociation association;
   };
-  std::vector<MeshScalarPair> pairs;
-  for (size_t j = 0; j < meshes.size(); ++j) {
-    if (auto* pd = meshes[j]->GetPointData()) {
-      for (int i = 0; i < pd->GetNumberOfArrays(); ++i) {
-        if (auto* a = pd->GetArray(i); a && a->GetName()) {
-          pairs.push_back({j, a->GetName(), FieldAssociation::Point});
-        }
+  std::vector<Column> columns;
+  auto addColumns = [&columns](vtkFieldData* data, FieldAssociation association) {
+    for (int i = 0; data && i < data->GetNumberOfArrays(); ++i) {
+      vtkAbstractArray* a = data->GetAbstractArray(i);
+      if (!a || !a->GetName() || !vtkDataArray::SafeDownCast(a)) {
+        continue;
+      }
+      const std::string name = a->GetName();
+      const bool seen = std::any_of(columns.begin(), columns.end(), [&](const Column& c) {
+        return c.name == name && c.association == association;
+      });
+      if (!seen) {
+        columns.push_back({name, association});
       }
     }
-    if (auto* cd = meshes[j]->GetCellData()) {
-      for (int i = 0; i < cd->GetNumberOfArrays(); ++i) {
-        if (auto* a = cd->GetArray(i); a && a->GetName()) {
-          pairs.push_back({j, a->GetName(), FieldAssociation::Cell});
-        }
-      }
-    }
+  };
+  for (const auto& mesh : meshes) {
+    addColumns(mesh->GetPointData(), FieldAssociation::Point);
+    addColumns(mesh->GetCellData(), FieldAssociation::Cell);
   }
-  if (pairs.empty())
-    return;
+  const bool geometryOnly = columns.empty();
+  const size_t columnCount = geometryOnly ? 1 : columns.size();
 
   if (!context.window) {
     context.window = vtkSmartPointer<vtkRenderWindow>::New();
@@ -164,145 +328,79 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
     context.window->SetPosition(80, 60);
   }
 
-  std::vector<vtkRenderer*> renderersToRemove;
-  auto* existingRenderers = context.window->GetRenderers();
-  vtkCollectionSimpleIterator removeCookie;
-  existingRenderers->InitTraversal(removeCookie);
-  for (vtkRenderer* existing = existingRenderers->GetNextRenderer(removeCookie); existing;
-       existing = existingRenderers->GetNextRenderer(removeCookie)) {
-    renderersToRemove.push_back(existing);
-  }
-  for (vtkRenderer* existing : renderersToRemove) {
-    context.window->RemoveRenderer(existing);
-  }
-
-  const size_t n = pairs.size();
-  const int cols = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(n))));
-  const int rows = static_cast<int>(std::ceil(static_cast<double>(n) / cols));
+  const bool matrix = groups.size() > 1;
+  const size_t panelCount = groups.size() * columnCount;
+  buildPanels(panelCount, matrix ? columnCount : squareGridCols(panelCount));
 
   mappers.clear();
   context.actors.clear();
   facetPanels.clear();
   context.colorsHex = colorsHex;
+  const std::vector<vtkDataSet*> allPtrs = rawMeshPointers(meshes);
 
-  for (size_t i = 0; i < n; ++i) {
-    const int r = static_cast<int>(i) / cols, c = static_cast<int>(i) % cols;
-    const double xmin = double(c) / cols, xmax = double(c + 1) / cols;
-    const double ymin = 1.0 - double(r + 1) / rows, ymax = 1.0 - double(r) / rows;
-
-    auto ren = vtkSmartPointer<vtkRenderer>::New();
-    ren->SetViewport(xmin, ymin, xmax, ymax);
-    context.window->AddRenderer(ren);
-
-    const auto& pair = pairs[i];
-    auto& srcMesh = meshes[pair.meshIndex];
-
-    vtkNew<vtkDataSetMapper> mapper;
-    mapper->SetInputData(srcMesh);
-    mapper->SelectColorArray(pair.scalarName.c_str());
-    if (pair.association == FieldAssociation::Cell) {
-      mapper->SetScalarModeToUseCellFieldData();
-    } else {
-      mapper->SetScalarModeToUsePointFieldData();
-    }
-    mapper->SetInterpolateScalarsBeforeMapping(pair.association == FieldAssociation::Cell ? 0 : 1);
-    mapper->SetColorModeToMapScalars();
-
-    auto* arr = arrayForAssociation(srcMesh, pair.scalarName, pair.association);
-    if (arr) {
-      double range[2];
-      arr->GetRange(range);
-      std::vector<vtkDataSet*> allPtrs = rawMeshPointers(meshes);
-      auto analysis = analyzeScalar(allPtrs, pair.scalarName, pair.association);
-      if (analysis.categorical && sharedCatAnalysis.categorical)
-        analysis = sharedCatAnalysis;
-      auto lut = buildLookupTable(analysis, range);
-      mapper->SetLookupTable(lut);
-      mapper->SetScalarRange(range);
-      mapper->ScalarVisibilityOn();
+  for (size_t g = 0; g < groups.size(); ++g) {
+    for (size_t col = 0; col < columnCount; ++col) {
+      vtkRenderer* ren = panelRenderers_[g * columnCount + col];
 
       FacetPanelState panel;
-      panel.mapper = mapper;
-      panel.title = pair.scalarName;
-      panel.analysis = std::move(analysis);
-      panel.globalRange[0] = range[0];
-      panel.globalRange[1] = range[1];
-      panel.clipRange[0] = range[0];
-      panel.clipRange[1] = range[1];
-      panel.viewport[0] = xmin;
-      panel.viewport[1] = ymin;
-      panel.viewport[2] = xmax;
-      panel.viewport[3] = ymax;
-      facetPanels.push_back(std::move(panel));
-    } else {
-      mapper->ScalarVisibilityOff();
+      panel.column = col;
+      ren->GetViewport(panel.viewport);
+      if (!geometryOnly) {
+        const Column& column = columns[col];
+        panel.title = column.name;
+        // One range per column (across every file) so equal values match colors.
+        if (computeScalarGlobalRange(allPtrs, column.name, column.association, panel.globalRange)) {
+          panel.analysis = analyzeScalar(allPtrs, column.name, column.association);
+          if (panel.analysis.categorical && sharedCatAnalysis.categorical)
+            panel.analysis = sharedCatAnalysis;
+          panel.clipRange[0] = panel.globalRange[0];
+          panel.clipRange[1] = panel.globalRange[1];
+        }
+      }
 
-      FacetPanelState panel;
-      panel.mapper = mapper;
-      panel.title = pair.scalarName;
-      panel.viewport[0] = xmin;
-      panel.viewport[1] = ymin;
-      panel.viewport[2] = xmax;
-      panel.viewport[3] = ymax;
+      for (size_t meshIndex : groups[g].partIndices) {
+        if (meshIndex >= meshes.size()) {
+          continue;
+        }
+        vtkNew<vtkDataSetMapper> mapper;
+        mapper->SetInputData(meshes[meshIndex]);
+        if (!geometryOnly && setMapperScalar(meshes[meshIndex],
+                                             mapper,
+                                             columns[col].name,
+                                             columns[col].association,
+                                             panel.clipRange,
+                                             panel.analysis)) {
+          if (!panel.lut) {
+            panel.lut = vtkLookupTable::SafeDownCast(mapper->GetLookupTable());
+          }
+          mapper->SetLookupTable(panel.lut);
+          panel.scalarMappers.emplace_back(mapper);
+          panel.hasScalar = true;
+        } else {
+          mapper->ScalarVisibilityOff();
+        }
+
+        const auto color = meshIndex < colorsHex.size()
+                               ? colorsHex[meshIndex]
+                               : generateDistinctColor(static_cast<int>(meshIndex));
+        vtkNew<vtkActor> actor;
+        actor->SetMapper(mapper);
+        actor->GetProperty()->SetColor(color[0], color[1], color[2]);
+        ren->AddActor(actor);
+        mappers.emplace_back(mapper);
+        context.actors.emplace_back(actor);
+      }
+      // Scalar panels are titled by their colorbar; a plain one names what it lacks.
+      if (matrix) {
+        addPanelLabel(ren,
+                      panel.hasScalar || panel.title.empty()
+                          ? groups[g].name
+                          : groups[g].name + " \u00b7 no " + panel.title);
+      }
       facetPanels.push_back(std::move(panel));
     }
-
-    auto color = (pair.meshIndex < colorsHex.size())
-                     ? colorsHex[pair.meshIndex]
-                     : generateDistinctColor(static_cast<int>(pair.meshIndex));
-    vtkNew<vtkActor> actor;
-    actor->SetMapper(mapper);
-    actor->GetProperty()->SetColor(color[0], color[1], color[2]);
-    ren->AddActor(actor);
-    mappers.push_back(mapper);
-    context.actors.push_back(actor);
   }
-
-  vtkBoundingBox bbox;
-  for (auto& p : meshes) {
-    double bb[6];
-    p->GetBounds(bb);
-    bbox.AddBounds(bb);
-  }
-  double ub[6];
-  bbox.GetBounds(ub);
-
-  auto tmplRen = vtkSmartPointer<vtkRenderer>::New();
-  auto tmplCam = vtkSmartPointer<vtkCamera>::New();
-  tmplRen->SetActiveCamera(tmplCam);
-  tmplRen->ResetCamera(ub);
-
-  auto* rens = context.window->GetRenderers();
-  vtkCollectionSimpleIterator cookie;
-  rens->InitTraversal(cookie);
-  for (vtkRenderer* ren = rens->GetNextRenderer(cookie); ren; ren = rens->GetNextRenderer(cookie)) {
-    auto cam = vtkSmartPointer<vtkCamera>::New();
-    cam->DeepCopy(tmplCam);
-    ren->SetActiveCamera(cam);
-    ren->ResetCameraClippingRange(ub);
-  }
-
-  if (!camLinkCb_)
-    camLinkCb_ = vtkSmartPointer<vtkCallbackCommand>::New();
-  camLinkCb_->SetClientData(context.window);
-  camLinkCb_->SetCallback([](vtkObject* caller, unsigned long, void* cd, void*) {
-    auto* src = vtkCamera::SafeDownCast(caller);
-    auto* win = static_cast<vtkRenderWindow*>(cd);
-    if (!src || !win)
-      return;
-    auto* r = win->GetRenderers();
-    vtkCollectionSimpleIterator it;
-    r->InitTraversal(it);
-    for (vtkRenderer* ren = r->GetNextRenderer(it); ren; ren = r->GetNextRenderer(it)) {
-      auto* cam = ren->GetActiveCamera();
-      if (cam && cam != src)
-        cam->DeepCopy(src);
-    }
-  });
-
-  rens->InitTraversal(cookie);
-  for (vtkRenderer* ren = rens->GetNextRenderer(cookie); ren; ren = rens->GetNextRenderer(cookie))
-    ren->GetActiveCamera()->AddObserver(vtkCommand::ModifiedEvent, camLinkCb_);
+  finishPanels(meshes);
 
   if (!interactor) {
     interactor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
@@ -316,6 +414,14 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
   auto style = vtkSmartPointer<vtkInteractorStyleTrackballCamera>::New();
   style->SetMotionFactor(10.0);
   interactor->SetInteractorStyle(style);
+}
+
+void MeshRenderer::refitCameraIfUntouched() {
+  if (!renderer || renderer->GetActiveCamera()->GetMTime() != fittedCameraMTime_) {
+    return;
+  }
+  renderer->ResetCamera(sceneBounds_);
+  fittedCameraMTime_ = renderer->GetActiveCamera()->GetMTime();
 }
 
 void MeshRenderer::startFacetGrid() {
@@ -552,76 +658,23 @@ bool MeshRenderer::toggleCyclicColormap() {
 }
 
 bool MeshRenderer::setVectorGlyphs(const std::string& name, FieldAssociation association) {
-  if (glyphActor_ && renderer) {
-    renderer->RemoveActor(glyphActor_);
-    glyphActor_ = nullptr;
+  for (const auto& [ren, actor] : glyphActors_) {
+    ren->RemoveActor(actor);
   }
-  vtkDataSet* mesh = getPrimaryMesh();
-  if (name.empty() || !mesh || !renderer) {
-    if (context.window) {
-      context.window->Render();
+  glyphActors_.clear();
+  if (!name.empty()) {
+    for (size_t i = 0; i < sceneMeshes.size() && i < meshPanel_.size(); ++i) {
+      if (auto actor = makeGlyphActor(sceneMeshes[i], name, association)) {
+        vtkRenderer* ren = panelRenderers_[meshPanel_[i]];
+        ren->AddActor(actor);
+        glyphActors_.emplace_back(ren, actor);
+      }
     }
-    return false;
   }
-  auto* arr = arrayForAssociation(mesh, name, association);
-  auto* pointSet = vtkPointSet::SafeDownCast(mesh);
-  if (!arr || arr->GetNumberOfComponents() != 3 || !pointSet) {
-    return false;
-  }
-
-  auto seed = vtkSmartPointer<vtkPolyData>::New();
-  if (association == FieldAssociation::Cell) {
-    vtkNew<vtkCellCenters> centers;
-    centers->SetInputData(mesh);
-    centers->Update();
-    seed->ShallowCopy(centers->GetOutput());
-  } else {
-    seed->SetPoints(pointSet->GetPoints());
-    seed->GetPointData()->ShallowCopy(mesh->GetPointData());
-  }
-  if (!seed->GetPointData()->GetArray(name.c_str())) {
-    return false;
-  }
-  seed->GetPointData()->SetActiveVectors(name.c_str());
-
-  double bounds[6];
-  mesh->GetBounds(bounds);
-  const double diagonal =
-      std::sqrt(std::pow(bounds[1] - bounds[0], 2) + std::pow(bounds[3] - bounds[2], 2) +
-                std::pow(bounds[5] - bounds[4], 2));
-
-  // Roughly one mean cell width, so glyphs read as a direction field rather than
-  // a solid mat or a dot cloud. Centered on the cell so a fibre direction and its
-  // opposite draw the same segment.
-  const double cells = std::max(1.0, static_cast<double>(mesh->GetNumberOfCells()));
-  const double length = 2.0 * diagonal / std::sqrt(cells);
-  vtkNew<vtkLineSource> line;
-  line->SetPoint1(-0.5 * length, 0.0, 0.0);
-  line->SetPoint2(0.5 * length, 0.0, 0.0);
-
-  vtkNew<vtkGlyph3D> glyph;
-  glyph->SetInputData(seed);
-  glyph->SetSourceConnection(line->GetOutputPort());
-  glyph->OrientOn();
-  glyph->SetVectorModeToUseVector();
-  glyph->SetScaleModeToDataScalingOff();
-
-  vtkNew<vtkPolyDataMapper> mapper;
-  mapper->SetInputConnection(glyph->GetOutputPort());
-  mapper->ScalarVisibilityOff();
-  // Glyphs are coplanar with the surface they describe; without a depth offset the
-  // surface wins the depth test and hides all but a few pixels of each segment.
-  vtkPolyDataMapper::SetResolveCoincidentTopologyToPolygonOffset();
-  mapper->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -6.0);
-  glyphActor_ = vtkSmartPointer<vtkActor>::New();
-  glyphActor_->SetMapper(mapper);
-  glyphActor_->GetProperty()->SetColor(0.05, 0.05, 0.05);
-  glyphActor_->GetProperty()->SetLineWidth(2.0);
-  renderer->AddActor(glyphActor_);
   if (context.window) {
     context.window->Render();
   }
-  return true;
+  return !glyphActors_.empty();
 }
 
 bool MeshRenderer::setPartVisible(size_t partIndex, bool visible) {
@@ -645,6 +698,8 @@ bool MeshRenderer::getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo)
   }
   const FacetPanelState& panel = facetPanels[panelIndex];
   outInfo.title = panel.title;
+  outInfo.hasScalar = panel.hasScalar;
+  outInfo.column = panel.column;
   outInfo.analysis = panel.analysis;
   outInfo.globalRange[0] = panel.globalRange[0];
   outInfo.globalRange[1] = panel.globalRange[1];
@@ -660,7 +715,7 @@ bool MeshRenderer::getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo)
 vtkLookupTable* MeshRenderer::getFacetPanelLUT(size_t panelIndex) const {
   if (panelIndex >= facetPanels.size())
     return nullptr;
-  return vtkLookupTable::SafeDownCast(facetPanels[panelIndex].mapper->GetLookupTable());
+  return facetPanels[panelIndex].lut;
 }
 
 bool MeshRenderer::setFacetPanelGlobalRange(size_t panelIndex, double minValue, double maxValue) {
@@ -681,7 +736,7 @@ bool MeshRenderer::setFacetPanelClipRange(size_t panelIndex, double minValue, do
   }
 
   FacetPanelState& panel = facetPanels[panelIndex];
-  if (!panel.mapper) {
+  if (!panel.hasScalar) {
     return false;
   }
 
@@ -698,11 +753,12 @@ bool MeshRenderer::setFacetPanelClipRange(size_t panelIndex, double minValue, do
   panel.clipRange[0] = minValue;
   panel.clipRange[1] = maxValue;
 
-  vtkLookupTable* lut = vtkLookupTable::SafeDownCast(panel.mapper->GetLookupTable());
-  if (lut) {
-    applyLookupTableRange(lut, panel.clipRange, panel.analysis.cyclic);
+  if (panel.lut) {
+    applyLookupTableRange(panel.lut, panel.clipRange, panel.analysis.cyclic);
   }
-  panel.mapper->SetScalarRange(panel.clipRange);
+  for (const auto& mapper : panel.scalarMappers) {
+    mapper->SetScalarRange(panel.clipRange);
+  }
   if (context.window) {
     context.window->Render();
   }

@@ -496,8 +496,10 @@ std::vector<vtkIdType> growCells(vtkDataSet* ds, vtkIdType seed, int rings) {
 ViewerWindow::ViewerWindow(MeshLoadResult loadResult, const ViewerOptions& options, QWidget* parent)
     : QMainWindow(parent), load_(std::move(loadResult)), options_(options),
       temporal_(load_.temporal) {
-  // Title: "vv - .../parent/stem.ext"
-  if (!load_.meshes.names.empty()) {
+  // Title: "vv - .../parent/stem.ext", or the file count when comparing files.
+  if (load_.meshes.groups.size() > 1) {
+    setWindowTitle(QStringLiteral("vv - %1 files").arg(load_.meshes.groups.size()));
+  } else if (!load_.meshes.names.empty()) {
     QFileInfo fi(QStringFromUtf8(load_.meshes.names.front()));
     setWindowTitle(QStringLiteral("vv - …/") + fi.dir().dirName() + "/" + fi.fileName());
   }
@@ -615,7 +617,7 @@ void ViewerWindow::buildViewport() {
 
 // ── facet (exploded) mode ──────────────────────────────────────────────
 void ViewerWindow::setupFacetMode() {
-  renderer_.setupFacetGrid(load_.meshes.meshes, load_.meshes.names, partColors_);
+  renderer_.setupFacetGrid(load_.meshes.meshes, load_.meshes.groups, partColors_);
   renderer_.startFacetGrid();
   colorBar_->setVisible(false);
   partsTree_->setVisible(false);
@@ -624,7 +626,9 @@ void ViewerWindow::setupFacetMode() {
   facetColorBars_.reserve(panelCount);
   for (size_t panelIndex = 0; panelIndex < panelCount; ++panelIndex) {
     FacetPanelInfo panelInfo;
-    if (!renderer_.getFacetPanelInfo(panelIndex, panelInfo)) {
+    // facetColorBars_ stays index-aligned with the panels; plain panels get none.
+    if (!renderer_.getFacetPanelInfo(panelIndex, panelInfo) || !panelInfo.hasScalar) {
+      facetColorBars_.push_back(nullptr);
       continue;
     }
 
@@ -648,15 +652,21 @@ void ViewerWindow::setupFacetMode() {
     }
     panelBar->setVisible(true);
 
+    // A column shares one scalar and range, so clipping one panel clips them all.
     QObject::connect(panelBar,
                      &ColorBarWidget::clipRangeChanged,
                      this,
-                     [this, panelIndex, panelBar](double lo, double hi) {
-                       if (renderer_.setFacetPanelClipRange(panelIndex, lo, hi)) {
-                         FacetPanelInfo updated;
-                         if (renderer_.getFacetPanelInfo(panelIndex, updated)) {
-                           panelBar->setClipRange(updated.clipRange[0], updated.clipRange[1]);
+                     [this, column = panelInfo.column](double lo, double hi) {
+                       for (size_t i = 0; i < facetColorBars_.size(); ++i) {
+                         FacetPanelInfo other;
+                         if (!facetColorBars_[i] || !renderer_.getFacetPanelInfo(i, other) ||
+                             other.column != column ||
+                             !renderer_.setFacetPanelClipRange(i, lo, hi) ||
+                             !renderer_.getFacetPanelInfo(i, other)) {
+                           continue;
                          }
+                         QSignalBlocker block(facetColorBars_[i]);
+                         facetColorBars_[i]->setClipRange(other.clipRange[0], other.clipRange[1]);
                        }
                      });
 
@@ -669,7 +679,7 @@ void ViewerWindow::setupFacetMode() {
 
 // ── normal (single-view) mode ──────────────────────────────────────────
 void ViewerWindow::setupNormalMode() {
-  renderer_.setup(load_.meshes.meshes, load_.meshes.names, partColors_);
+  renderer_.setup(load_.meshes.meshes, load_.meshes.groups, partColors_);
   renderer_.start();
 
   buildPartsTree();
@@ -829,7 +839,7 @@ void ViewerWindow::showFrame(int step) {
   if (!temporal_ || step < 0 || step >= temporal_->steps() || load_.meshes.meshes.empty()) {
     return;
   }
-  temporal_->readStepInto(step, load_.meshes.meshes.front());
+  temporal_->readStepInto(step, load_.meshes.meshes[load_.temporalMesh]);
   renderer_.refreshAfterDataChange();
   currentPlaybackStep_ = step;
   if (playbackBar_) {
@@ -1250,7 +1260,7 @@ void ViewerWindow::applyScalarAtIndex(int index) {
       temporal_ && temporal_->playable() && field.association == FieldAssociation::Point;
   if (temporalPoint) {
     temporal_->setActiveArray(scalarName);
-    temporal_->readStepInto(currentPlaybackStep_, load_.meshes.meshes.front());
+    temporal_->readStepInto(currentPlaybackStep_, load_.meshes.meshes[load_.temporalMesh]);
   }
 
   if (!renderer_.setActiveScalar(scalarName, field.association)) {
@@ -1345,6 +1355,7 @@ void ViewerWindow::cycleVectorField() {
 
 // ── overlay layout ─────────────────────────────────────────────────────
 void ViewerWindow::onViewportResize() {
+  renderer_.refitCameraIfUntouched();
   layoutFacetColorBars();
   if (playbackBar_) {
     playbackBar_->setGeometry(playbackBarGeometry(vtkWidget_));
@@ -1383,6 +1394,9 @@ void ViewerWindow::layoutFacetColorBars() {
                      std::round((panelInfo.viewport[3] - panelInfo.viewport[1]) * viewportHeight)));
 
     ColorBarWidget* bar = facetColorBars_[panelIndex];
+    if (!bar) {
+      continue;
+    }
     const int margin = kFacetBarMargin;
     const int barW = std::clamp(bar->sizeHint().width(), kFacetBarMinWidth, kFacetBarMaxWidth);
     int barH = normalTargetHeight;

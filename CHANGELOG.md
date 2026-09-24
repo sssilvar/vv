@@ -3,9 +3,17 @@
 ### Added
 
 - STL surface meshes (`.stl`, ASCII and binary).
+- Several mesh files open side by side, one labelled panel per file with a
+  shared camera; **Space** cycles the union of their scalars, one color range
+  per field across files (`vv foo.vtk bar.stl`, `vv dir/*.vtk`).
 
 ### Changed
 
+- `-e` with several files lays panels out as a matrix: a labelled row per file,
+  a column per scalar with one shared color range and clip range; a file lacking
+  a column's field shows plain geometry instead of being left out. Files without
+  any fields (e.g. STL) now appear too.
+- `--annotate` is ignored (with a warning) when more than one file is given.
 - macOS releases ship a self-contained `.tar.gz` that extracts into `~/.local`
   (`bin/vv` plus bundled libraries under `lib/vv`) instead of `vv.app`; the
   broken bare-binary `-bin.tar.gz` is no longer published for macOS.

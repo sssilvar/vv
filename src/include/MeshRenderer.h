@@ -1,8 +1,10 @@
 #pragma once
+#include "MeshLoading.h"
 #include "ScalarVizUtils.h"
 
 #include <array>
 #include <string>
+#include <utility>
 #include <vector>
 #include <vtkActor.h>
 #include <vtkDataSet.h>
@@ -22,7 +24,9 @@ struct RendererContext {
 };
 
 struct FacetPanelInfo {
-  std::string title;
+  std::string title;      // scalar name; empty for a geometry-only column
+  bool hasScalar = false; // false: the panel's file lacks this column's scalar
+  size_t column = 0;      // panels in one column share a scalar and its color range
   double globalRange[2] = {0.0, 1.0};
   double clipRange[2] = {0.0, 1.0};
   double viewport[4] = {0.0, 0.0, 1.0, 1.0};
@@ -35,8 +39,10 @@ public:
   ~MeshRenderer();
   void setRenderContext(vtkRenderWindow* externalWindow,
                         vtkRenderWindowInteractor* externalInteractor);
+  // One viewport per group (file), all sharing a single camera; a lone group
+  // fills the window.
   void setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
-             const std::vector<std::string>& names,
+             const std::vector<MeshGroup>& groups,
              const std::vector<std::array<double, 3>>& colorsHex);
   void start();
 
@@ -78,17 +84,24 @@ public:
   bool setFacetPanelGlobalRange(size_t panelIndex, double minValue, double maxValue);
 
   // Draw a short line glyph per cell (or per point) tangent to the surface, one
-  // for each tuple of a 3-component array. Empty name removes the glyphs.
+  // for each tuple of a 3-component array, on every mesh that has it. Empty name
+  // removes the glyphs.
   bool setVectorGlyphs(const std::string& name, FieldAssociation association);
 
+  // One panel per (group, scalar): a square grid of scalars for a single group,
+  // otherwise a matrix with a row per group and a column per scalar.
   void setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
-                      const std::vector<std::string>& names,
+                      const std::vector<MeshGroup>& groups,
                       const std::vector<std::array<double, 3>>& colorsHex);
   void startFacetGrid();
+  // Re-frame the scene for the current viewport shape unless the camera moved
+  // since vv last framed it; the first fit can run before the widget is laid out.
+  void refitCameraIfUntouched();
 
   RendererContext context;
 
-  // Annotation mode needs the renderer (for picking) and the primary dataset.
+  // Annotation mode needs the renderer (for picking) and the primary dataset; it
+  // is only enabled for a single file, so the first panel holds that dataset.
   vtkRenderer* getRenderer() const {
     return renderer;
   }
@@ -107,17 +120,28 @@ private:
   ScalarAnalysis sharedCatAnalysis; // non-empty = override per-scalar detection
   double activeScalarGlobalRange[2] = {0.0, 1.0};
   double clipRange[2] = {0.0, 1.0};
+  // Viewports sharing one camera; clipping follows the bounds of every mesh so
+  // a panel never clips geometry another panel frames.
+  void buildPanels(size_t count, size_t cols);
+  void finishPanels(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes);
+
+  std::vector<vtkSmartPointer<vtkRenderer>> panelRenderers_;
+  std::vector<size_t> meshPanel_; // mesh index -> panel (normal mode)
+  double sceneBounds_[6] = {0.0, 1.0, 0.0, 1.0, 0.0, 1.0};
+  vtkSmartPointer<vtkCallbackCommand> clipCb_;
+  vtkMTimeType fittedCameraMTime_ = 0;
   struct FacetPanelState {
-    vtkSmartPointer<vtkDataSetMapper> mapper;
+    std::vector<vtkSmartPointer<vtkDataSetMapper>> scalarMappers; // share lut
+    vtkSmartPointer<vtkLookupTable> lut;
     std::string title;
+    bool hasScalar = false;
+    size_t column = 0;
     ScalarAnalysis analysis;
     double globalRange[2] = {0.0, 1.0};
     double clipRange[2] = {0.0, 1.0};
     double viewport[4] = {0.0, 0.0, 1.0, 1.0};
   };
   std::vector<FacetPanelState> facetPanels;
-  vtkSmartPointer<vtkActor> glyphActor_;
-  // Keeps the facet-grid cameras synchronized (observer shared by all panels).
-  vtkSmartPointer<vtkCallbackCommand> camLinkCb_;
+  std::vector<std::pair<vtkRenderer*, vtkSmartPointer<vtkActor>>> glyphActors_;
   bool embeddedMode = false;
 };

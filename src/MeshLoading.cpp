@@ -58,14 +58,6 @@ bool partColorFromMesh(vtkDataSet* mesh, std::array<double, 3>& color) {
   return true;
 }
 
-std::vector<std::string> filesToProcessFromArgs(const std::vector<std::string>& meshfiles,
-                                                bool explodeView) {
-  if (explodeView) {
-    return meshfiles;
-  }
-  return {meshfiles.front()};
-}
-
 std::vector<std::unique_ptr<MeshParser>> buildParsers() {
   std::vector<std::unique_ptr<MeshParser>> parsers;
   parsers.emplace_back(std::make_unique<XMLMeshParser>());
@@ -101,13 +93,12 @@ private:
 
 } // namespace
 
-MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explodeView) {
+MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles) {
   MeshLoadResult result;
   auto parsers = buildParsers();
-  auto filesToProcess = filesToProcessFromArgs(meshfiles, explodeView);
   TempFileCleanup tmpCleanup;
 
-  for (const std::string& filename : filesToProcess) {
+  for (const std::string& filename : meshfiles) {
     std::string realFilename = filename;
 
     if (filename == "-") {
@@ -147,8 +138,10 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles, bool explod
 
     std::vector<vtkSmartPointer<vtkDataSet>> parsedMeshes = selected->parse(realFilename);
 
-    if (auto temporal = selected->temporal(); temporal && temporal->playable()) {
+    if (auto temporal = selected->temporal();
+        !result.temporal && temporal && temporal->playable() && !parsedMeshes.empty()) {
       result.temporal = temporal;
+      result.temporalMesh = result.meshes.meshes.size();
     }
 
     if (parsedMeshes.empty()) {

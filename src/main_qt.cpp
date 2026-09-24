@@ -38,7 +38,9 @@ Args parseArgs(int argc, char* argv[]) {
   cxxopts::Options options("vv", "A Qt-based mesh viewer");
   options.positional_help("<meshfile> [<meshfile2> ...]");
   options.add_options()(
-      "e,explode", "Explode scalar view", cxxopts::value<bool>(args.explode_view))(
+      "e,explode",
+      "One panel per scalar; with several files, a row per file and a column per scalar",
+      cxxopts::value<bool>(args.explode_view))(
       "C,common-cat-lut",
       "Share one categorical colormap across all categorical scalars for cross-scalar comparison",
       cxxopts::value<bool>(args.common_cat_lut))(
@@ -50,7 +52,9 @@ Args parseArgs(int argc, char* argv[]) {
       cxxopts::value<std::string>(args.range))(
       "v,version", "Show version and exit", cxxopts::value<bool>(args.version))(
       "h,help", "Show help and exit", cxxopts::value<bool>(args.help))(
-      "meshfiles", "Mesh files or '-'", cxxopts::value<std::vector<std::string>>(args.meshfiles));
+      "meshfiles",
+      "Mesh files (several open side by side) or '-'",
+      cxxopts::value<std::vector<std::string>>(args.meshfiles));
   options.parse_positional({"meshfiles"});
 
   try {
@@ -133,11 +137,6 @@ void addWindowsQtPluginPath() {
 int main(int argc, char* argv[]) try {
   Args args = parseArgs(argc, argv);
 
-  if (args.meshfiles.size() > 1 && !args.explode_view) {
-    std::cerr << "Warning: Multiple mesh files provided without -e flag. "
-                 "Using only the first file.\n";
-  }
-
   // ── Qt + VTK setup ────────────────────────────────────────────
   QSurfaceFormat format = QVTKOpenGLNativeWidget::defaultFormat();
   format.setSwapInterval(0);
@@ -151,7 +150,7 @@ int main(int argc, char* argv[]) try {
 
   QApplication app(argc, argv);
 
-  MeshLoadResult loadResult = loadMeshes(args.meshfiles, args.explode_view);
+  MeshLoadResult loadResult = loadMeshes(args.meshfiles);
   if (!loadResult.ok) {
     std::cerr << loadResult.error << '\n';
     return loadResult.exitCode;
@@ -170,9 +169,12 @@ int main(int argc, char* argv[]) try {
   }
   viewerOptions.explodeView = args.explode_view;
   viewerOptions.commonCatLut = args.common_cat_lut;
-  viewerOptions.annotate = args.annotate && !args.explode_view;
+  const bool singleFile = args.meshfiles.size() == 1;
+  viewerOptions.annotate = args.annotate && !args.explode_view && singleFile;
   if (args.annotate && args.explode_view) {
     std::cerr << "Warning: --annotate is not supported with --explode; ignoring --annotate.\n";
+  } else if (args.annotate && !singleFile) {
+    std::cerr << "Warning: --annotate needs a single mesh file; ignoring --annotate.\n";
   }
 
   ViewerWindow window(std::move(loadResult), viewerOptions);
