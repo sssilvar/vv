@@ -24,6 +24,9 @@
 - macOS app bundle, Finder "Open with" file associations and the Quick Look
   generator.
 - `-T/--thumbnail` offscreen PNG rendering.
+- Intel (x86_64) macOS release builds: Homebrew no longer ships Intel bottles, so
+  the dependencies would compile from source for hours. 1.5.0 is the last Intel
+  macOS release; Intel Macs can still build from source.
 - File picker shown when launched without a mesh file; `vv` now requires one
   on every platform.
 

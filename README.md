@@ -209,9 +209,10 @@ Tagged pushes (`v*`) trigger `.github/workflows/release.yml`, which builds
 preinstalled:
 
 - **Linux** — `.AppImage` (via `linuxdeploy` + the Qt plugin)
-- **macOS** — `vv-<version>-<arch>-apple-darwin.tar.gz` (via `macdeployqt`), laid
+- **macOS** (Apple Silicon) — `vv-<version>-aarch64-apple-darwin.tar.gz` (via `macdeployqt`), laid
   out for `~/.local`: `bin/vv` links to `lib/vv/bin/vv`, next to the bundled Qt/VTK
-  libraries. Install with `tar -xzf vv-*-apple-darwin.tar.gz -C ~/.local`. The
+  libraries. Install with `tar -xzf vv-*-apple-darwin.tar.gz -C ~/.local`. Intel
+  Macs are not packaged (Homebrew no longer ships Intel bottles); build from source. The
   binaries are not notarized: if macOS refuses to run them (e.g. after extracting
   with Finder), run `xattr -dr com.apple.quarantine ~/.local/lib/vv`.
 - **Windows** — portable `.exe` (via `scripts/package-windows.sh`; unpacks to `%LOCALAPPDATA%\vv\` on first run)
