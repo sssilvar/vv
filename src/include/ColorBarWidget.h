@@ -11,6 +11,9 @@
 #include <utility>
 #include <vector>
 
+// Component type of QColor's *F() API: float in Qt 6, qreal (double) in Qt 5.
+using QColorComponent = decltype(std::declval<QColor>().redF());
+
 // QMouseEvent::localPos() is deprecated in Qt 6, position() absent in Qt 5.
 inline QPointF mouseLocalPos(const QMouseEvent* ev) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)

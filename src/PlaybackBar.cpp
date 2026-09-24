@@ -185,6 +185,8 @@ PlaybackBar::PlaybackBar(int numSteps, QWidget* parent)
   }
   // Drop *up*: the bar sits at the bottom of the viewport, so a menu opened
   // downwards would fall outside the window.
+  // speedGroup is owned by speedMenu (Qt parent), which the analyzer doesn't model.
+  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
   connect(speedButton_, &QToolButton::clicked, this, [this, speedMenu]() {
     const QSize hint = speedMenu->sizeHint();
     speedMenu->popup(speedButton_->mapToGlobal(QPoint(0, -hint.height())));

@@ -31,7 +31,7 @@ struct AttributeSeries {
 
 // Cap for the in-memory frame cache of the array being played. 302 steps of a
 // 23k-node field is ~28 MB, so typical runs cache whole and loop without I/O.
-constexpr size_t kCacheBudgetBytes = 512u * 1024u * 1024u;
+constexpr size_t kCacheBudgetBytes = size_t{512} * 1024 * 1024;
 
 class H5File {
 public:

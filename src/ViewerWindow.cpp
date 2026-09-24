@@ -211,9 +211,9 @@ std::vector<std::pair<QString, QColor>> categoricalEntries(vtkLookupTable* lut,
     else
       std::snprintf(label, sizeof(label), "%.3g", v);
     entries.push_back({QString::fromLatin1(label),
-                       QColor::fromRgbF(static_cast<float>(rgba[0]),
-                                        static_cast<float>(rgba[1]),
-                                        static_cast<float>(rgba[2]))});
+                       QColor::fromRgbF(static_cast<QColorComponent>(rgba[0]),
+                                        static_cast<QColorComponent>(rgba[1]),
+                                        static_cast<QColorComponent>(rgba[2]))});
   }
   return entries;
 }
@@ -930,8 +930,9 @@ void ViewerWindow::setupAnnotateMode() {
   for (int v = 0; v <= kNumLabels; ++v) { // v == 0 is the eraser (grey / unlabeled)
     double rgb[3];
     labelLut_->GetColor(static_cast<double>(v), rgb);
-    const QColor color = QColor::fromRgbF(
-        static_cast<float>(rgb[0]), static_cast<float>(rgb[1]), static_cast<float>(rgb[2]));
+    const QColor color = QColor::fromRgbF(static_cast<QColorComponent>(rgb[0]),
+                                          static_cast<QColorComponent>(rgb[1]),
+                                          static_cast<QColorComponent>(rgb[2]));
     auto* sw = new QToolButton(annotationBar_);
     sw->setCheckable(true);
     sw->setFixedSize(22, 22);
