@@ -78,6 +78,7 @@ find_package(VTK QUIET COMPONENTS
   CommonCore
   CommonDataModel
   CommonColor
+  IOGeometry
   IOLegacy
   IOXML
   IOImage
@@ -124,6 +125,7 @@ set(VV_CORE_SOURCES
   src/MeshParser.cpp
   src/MeshRenderer.cpp
   src/PlaybackBar.cpp
+  src/STLMeshParser.cpp
   src/ScalarVizUtils.cpp
   src/TemporalSource.cpp
   src/VTKHDFMeshParser.cpp
@@ -144,6 +146,7 @@ set(VV_HEADERS
   src/include/MeshParser.h
   src/include/MeshRenderer.h
   src/include/PlaybackBar.h
+  src/include/STLMeshParser.h
   src/include/ScalarVizUtils.h
   src/include/TemporalSource.h
   src/include/VTKHDFMeshParser.h
@@ -209,6 +212,7 @@ target_link_libraries(vv PRIVATE
   VTK::CommonCore
   VTK::CommonDataModel
   VTK::CommonColor
+  VTK::IOGeometry
   VTK::IOLegacy
   VTK::IOXML
   VTK::IOImage

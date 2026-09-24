@@ -1,5 +1,9 @@
 # [Unreleased]
 
+### Added
+
+- STL surface meshes (`.stl`, ASCII and binary).
+
 ### Changed
 
 - macOS releases ship a self-contained `.tar.gz` that extracts into `~/.local`

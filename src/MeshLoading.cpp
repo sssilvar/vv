@@ -5,6 +5,7 @@
 #include "JsonMeshParser.h"
 #include "LSDynaMeshParser.h"
 #include "MeshParser.h"
+#include "STLMeshParser.h"
 #include "TemporalSource.h"
 #include "VTKHDFMeshParser.h"
 #include "VTKMeshParser.h"
@@ -75,6 +76,7 @@ std::vector<std::unique_ptr<MeshParser>> buildParsers() {
   parsers.emplace_back(std::make_unique<CartoMeshParser>());
   parsers.emplace_back(std::make_unique<FSurfMeshParser>());
   parsers.emplace_back(std::make_unique<LSDynaMeshParser>());
+  parsers.emplace_back(std::make_unique<STLMeshParser>());
   return parsers;
 }
 
