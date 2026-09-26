@@ -1,3 +1,9 @@
+# [Unreleased]
+
+### Changed
+
+- Retain temporary release artifacts and Docker build records for 3 days; published release downloads remain available.
+
 # [2.0.0] - 2026-09-25
 
 ### Added

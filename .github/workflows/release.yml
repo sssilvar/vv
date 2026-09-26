@@ -180,6 +180,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 3
           name: vv-${{ matrix.target }}
           path: dist/*
 
