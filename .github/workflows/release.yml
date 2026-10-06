@@ -5,16 +5,79 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Combined RC tag to create, using the published npm version in web/package.json (blank builds only)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 env:
   CI: true
+  RELEASE_NAME: ${{ inputs.release_tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name || github.sha) }}
 
 # Builds self-contained, deployable packages (Qt + VTK included) for each OS, plus
 # the bare Linux binary for users who already have the runtime via a package manager.
 jobs:
+  npm:
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') && inputs.release_tag == ''
+    uses: ./.github/workflows/npm-publish.yml
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+
+  published-npm:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+      - name: Retrieve and verify the published npm archive
+        working-directory: web
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const app = readFileSync('../CMakeLists.txt', 'utf8').match(/project\(VtkViewer VERSION (\d+\.\d+\.\d+)\)/)[1];
+          const tag = process.env.RELEASE_NAME;
+          assert.equal(/^v(\d+\.\d+\.\d+)-rc\.\d+$/.exec(tag)?.[1], app);
+          assert.equal(pkg.name, '@sssilvar/vv-wasm');
+          assert(/^\d+\.\d+\.\d+-rc\.\d+$/.test(pkg.version));
+          const existing = execFileSync('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`], { encoding: 'utf8' }).trim();
+          assert(!existing || existing.split(/\s+/)[0] === process.env.GITHUB_SHA, 'Tag already points to another commit');
+          const spec = `${pkg.name}@${pkg.version}`;
+          const integrity = JSON.parse(execFileSync('npm', ['view', spec, 'dist.integrity', '--json', '--registry=https://registry.npmjs.org'], { encoding: 'utf8' }));
+          const packed = JSON.parse(execFileSync('npm', ['pack', spec, '--ignore-scripts', '--json', '--registry=https://registry.npmjs.org'], { encoding: 'utf8' }));
+          assert.equal(packed.length, 1);
+          assert.equal(packed[0].name, pkg.name);
+          assert.equal(packed[0].version, pkg.version);
+          const actual = 'sha512-' + createHash('sha512').update(readFileSync(packed[0].filename)).digest('base64');
+          assert.equal(actual, integrity, 'Registry archive integrity mismatch');
+          JS
+          node scripts/check-package.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package
+          retention-days: 3
+          path: |
+            web/*.tgz
+            web/release-versions.json
+
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -22,16 +85,18 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-windows
             os: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: ccache
         if: runner.os != 'Windows'
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: ccache-release-${{ matrix.target }}
           max-size: 500M
@@ -57,7 +122,7 @@ jobs:
 
       - name: Set up MSYS2 (Windows)
         if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: MINGW64
           update: true
@@ -128,7 +193,7 @@ jobs:
           wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy*.AppImage
           export QMAKE=/usr/bin/qmake
-          export OUTPUT="vv-${GITHUB_REF_NAME}-${{ matrix.target }}.AppImage"
+          export OUTPUT="vv-${RELEASE_NAME}-${{ matrix.target }}.AppImage"
           # GitHub runners lack a usable FUSE; run the AppImage tools by extracting
           # them instead of mounting.
           export APPIMAGE_EXTRACT_AND_RUN=1
@@ -136,7 +201,7 @@ jobs:
             --plugin qt --output appimage
           mkdir -p dist && mv vv*.AppImage dist/
           # bare binary too
-          tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}-bin.tar.gz" -C build vv
+          tar -czf "dist/vv-${RELEASE_NAME}-${{ matrix.target }}-bin.tar.gz" -C build vv
 
       - name: Package macOS ~/.local tree
         if: runner.os == 'macOS'
@@ -163,22 +228,20 @@ jobs:
           fi
           stage/bin/vv --version
           mkdir -p dist
-          tar -czf "dist/vv-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" -C stage bin lib
+          tar -czf "dist/vv-${RELEASE_NAME}-${{ matrix.target }}.tar.gz" -C stage bin lib
 
-      - name: Package Windows portable exe
+      - name: Package Windows ZIP
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        # Staging, smoke test, and the portable-exe build all live in
-        # scripts/package-windows.sh so the exact packaging is runnable locally
-        # (from an MSYS2 MINGW64 shell) before a tag is pushed. Produces a
-        # single portable .exe.
+        # The NSIS wrapper stalls before extraction on current runners.
+        # Verify an extract-and-run ZIP for this release instead.
         run: |
           set -e
-          ./scripts/package-windows.sh \
-            --stage-name "vv-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          ./scripts/package-windows.sh --no-portable --zip \
+            --stage-name "vv-${RELEASE_NAME}-${{ matrix.target }}"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           retention-days: 3
           name: vv-${{ matrix.target }}
@@ -186,21 +249,50 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, npm, published-npm]
+    if: always() && (startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '') && needs.build.result == 'success' && (needs.npm.result == 'success' || needs.published-npm.result == 'success' || (needs.npm.result == 'skipped' && needs.published-npm.result == 'skipped'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
+          pattern: vv-*
+          merge-multiple: true
+
+      - name: Download npm archive and version manifest
+        if: needs.npm.result == 'success' || needs.published-npm.result == 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: artifacts
+
+      - name: Describe both distributions
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_NAME }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          notes = f"Native vv app: **{os.environ['RELEASE_TAG']}**. Download the asset for your platform. Windows: extract the ZIP and run `vv.exe`; this RC does not include the self-extracting launcher.\n"
+          manifest = Path('artifacts/release-versions.json')
+          if manifest.exists():
+              versions = json.loads(manifest.read_text())
+              package = f"{versions['packageName']}@{versions['packageVersion']}"
+              notes += f"\nReact/TypeScript package: **{package}**.\n\n```sh\nnpm install {package}\n```\n\nThe npm package is UNLICENSED. Its verified archive is attached alongside the native app downloads.\n"
+          Path('release-notes.md').write_text(notes)
+          PY
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ env.RELEASE_NAME }}
+          target_commitish: ${{ github.sha }}
           files: artifacts/**/*
           generate_release_notes: true
+          body_path: release-notes.md
+          prerelease: ${{ contains(env.RELEASE_NAME, '-rc.') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
