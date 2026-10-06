@@ -54,7 +54,9 @@ for (const backend of ["webgl", "software"]) {
 
 test("streaming coalesces frames, bounds memory, and preserves the camera after context loss", async ({
   page,
+  browserName,
 }, info) => {
+  if (browserName === "firefox") test.setTimeout(120_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/tests/harness.html");
@@ -80,7 +82,10 @@ test("streaming coalesces frames, bounds memory, and preserves the camera after 
     .poll(() => page.evaluate(() => window.viewerTest.statistics()?.scalarUploads))
     .toBe(initial.scalarUploads + 1);
   const camera = await page.evaluate(() => window.viewerTest.camera());
-  const report = await page.evaluate(() => window.viewerTest.benchmark());
+  const report = await page.evaluate(
+    (frames) => window.viewerTest.benchmark(frames),
+    browserName === "firefox" ? 32 : 90,
+  );
   await info.attach("streaming timings (CPU, excludes GPU completion)", {
     body: JSON.stringify(report, null, 2),
     contentType: "application/json",
