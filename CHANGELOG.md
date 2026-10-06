@@ -2,6 +2,11 @@
 
 ### Added
 
+- Storybook cases for the browser viewer and scalar bar, including streaming,
+  rendering backends, clipping, categorical fields and invalid inputs.
+- npm RC packaging and GitHub Actions validation with isolated publishing,
+  provenance and OIDC support for `@sssilvar/vv-wasm`.
+
 - Embeddable WebAssembly target reusing the C++ mesh renderer without Qt or file
   parsers; React/TSX viewer and scalar bar with typed-array input, point/cell
   fields, categorical/cyclic palettes, clipping planes, tags and camera controls.
