@@ -1,6 +1,6 @@
 {
   "name": "@sssilvar/vv-wasm",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0-rc.1",
   "description": "VTK WebAssembly surface visualizer with React bindings and a software renderer",
   "license": "UNLICENSED",
   "repository": {

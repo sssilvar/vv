@@ -212,7 +212,10 @@ The package is currently **UNLICENSED**. Install a published candidate with
 `pnpm add @sssilvar/vv-wasm@rc` (and React 19 when using the React entry point).
 
 The `Web package` workflow checks types, formatting, lint, all three browser
-engines, the static Storybook, and the packed archive. It retains the package,
+engines, the static Storybook, and the packed archive. Linux browser tests run
+headed under Xvfb so Firefox can create WebGL contexts. The build and browser
+jobs are separate, allowing failed tests to be retried without recompiling VTK.
+It retains the package,
 Storybook and failure diagnostics for three days. Builds use pinned actions,
 Node, pnpm and Emscripten, with no privileged PR jobs or release build caches.
 
