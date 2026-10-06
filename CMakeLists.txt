@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.14)
 
 project(VtkViewer VERSION 2.0.0)
 
+option(VV_VISUALIZATION_ONLY "Build the embeddable renderer without Qt or parsers" ${EMSCRIPTEN})
+if(VV_VISUALIZATION_ONLY)
+  enable_testing()
+  add_subdirectory(src/visualization)
+  return()
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 

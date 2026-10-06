@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <set>
 #include <string>
 #include <vector>
@@ -65,9 +66,23 @@ vtkSmartPointer<vtkLookupTable> buildLookupTable(const ScalarAnalysis& analysis,
 
 void applyLookupTableRange(vtkLookupTable* lut, const double range[2], bool cyclic = false);
 
+// Bind a prebuilt LUT without rescanning data or rebuilding the transfer function.
+void configureScalarMapper(vtkMapper* mapper,
+                           const char* name,
+                           FieldAssociation association,
+                           vtkLookupTable* lut);
+
 bool setMapperScalar(vtkDataSet* mesh,
                      vtkDataSetMapper* mapper,
                      const std::string& scalarName,
                      FieldAssociation association,
                      const double range[2],
                      const ScalarAnalysis& analysis);
+
+// Returns null for malformed stops/colors. Labels are represented by float scalar arrays.
+vtkSmartPointer<vtkLookupTable> createSegmentedLookupTable(const float* rgba,
+                                                         std::size_t count,
+                                                         const double* stops,
+                                                         double min,
+                                                         double max,
+                                                         bool interpolate);

@@ -1,8 +1,35 @@
 # [Unreleased]
 
+### Added
+
+- Embeddable WebAssembly target reusing the C++ mesh renderer without Qt or file
+  parsers; React/TSX viewer and scalar bar with typed-array input, point/cell
+  fields, categorical/cyclic palettes, clipping planes, tags and camera controls.
+- C++ software rendering fallback for unavailable or lost WebGL contexts, with
+  bounded framebuffers and transparency; scalar-only frame updates retain
+  topology and camera state.
+- Native scene tests and Playwright coverage for Chromium, Firefox and WebKit.
+
 ### Changed
 
+- Use a direct VTK polygon mapper for the WASM scene and share scalar mapping
+  utilities with desktop rendering. Stream simulation fields through validated,
+  reusable back buffers without an extra scalar copy; coalesce pending frames,
+  release geometry staging memory, and build picking locators on demand.
+- Add CPU upload/render and memory statistics, GPU benchmark coverage, camera
+  state restoration, scalar probing and FXAA. Replace the browser smoke-test demo
+  with a synthetic chamber explorer and simulation playback.
+
 - Retain temporary release artifacts and Docker build records for 3 days; published release downloads remain available.
+
+### Fixed
+
+- Correct vertical browser rotation and restore the full camera pose on reset;
+  use a black viewport and native-style vertical scalar limits in the simpler demo.
+
+- Preserve categorical colors through software clipping and account for LUT
+  transparency when picking annotations. Apply cyclic palette saturation
+  endpoints and preserve the camera across WebGL context loss.
 
 # [2.0.0] - 2026-09-25
 

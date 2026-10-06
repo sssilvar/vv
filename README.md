@@ -1,5 +1,9 @@
 # Simple vtk viewer
 
+The renderer can also be built as a WebAssembly package with a typed React
+wrapper and a C++ software fallback. See [web/README.md](web/README.md) for the
+build, API, Sandboxer integration and browser tests.
+
 ## Requirements
 
 ### System Dependencies

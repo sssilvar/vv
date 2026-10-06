@@ -239,6 +239,22 @@ void applyLookupTableRange(vtkLookupTable* lut, const double range[2], bool cycl
   lut->Build();
 }
 
+void configureScalarMapper(vtkMapper* mapper,
+                           const char* name,
+                           FieldAssociation association,
+                           vtkLookupTable* lut) {
+  const bool cell = association == FieldAssociation::Cell;
+  if (cell)
+    mapper->SetScalarModeToUseCellFieldData();
+  else
+    mapper->SetScalarModeToUsePointFieldData();
+  mapper->SelectColorArray(name);
+  mapper->SetColorModeToMapScalars();
+  mapper->ScalarVisibilityOn();
+  mapper->SetInterpolateScalarsBeforeMapping(!cell && !lut->GetIndexedLookup());
+  mapper->SetLookupTable(lut);
+}
+
 bool setMapperScalar(vtkDataSet* mesh,
                      vtkDataSetMapper* mapper,
                      const std::string& scalarName,
@@ -258,21 +274,70 @@ bool setMapperScalar(vtkDataSet* mesh,
   const bool cell = (association == FieldAssociation::Cell);
   if (cell) {
     mesh->GetCellData()->SetActiveScalars(scalarName.c_str());
-    mapper->SetScalarModeToUseCellFieldData();
   } else {
     mesh->GetPointData()->SetActiveScalars(scalarName.c_str());
-    mapper->SetScalarModeToUsePointFieldData();
   }
-  mapper->SelectColorArray(scalarName.c_str());
-  mapper->SetColorModeToMapScalars();
-  mapper->ScalarVisibilityOn();
-  // Interpolate the scalar across the triangle and map afterwards, so nodal
-  // fields get a smooth colormap-correct gradient. Cell fields (and indexed
-  // categorical LUTs) must stay flat per cell.
-  mapper->SetInterpolateScalarsBeforeMapping((!cell && !analysis.categorical) ? 1 : 0);
-
   auto lut = buildLookupTable(analysis, range);
-  mapper->SetLookupTable(lut);
+  configureScalarMapper(mapper, scalarName.c_str(), association, lut);
   mapper->SetScalarRange(range);
   return true;
+}
+
+vtkSmartPointer<vtkLookupTable> createSegmentedLookupTable(const float* rgba,
+                                                         std::size_t count,
+                                                         const double* stops,
+                                                         double min,
+                                                         double max,
+                                                         bool interpolate) {
+  if (!rgba || !stops || count == 0 || count > 256 ||
+      !std::all_of(stops, stops + count, [](double v) {
+        return std::isfinite(v) && std::abs(v) <= 1e15;
+      }) || !std::isfinite(min) || !std::isfinite(max) || min > max ||
+      !std::is_sorted(stops, stops + count))
+    return nullptr;
+  for (std::size_t i = 0; i < count * 4; ++i) {
+    if (!std::isfinite(rgba[i]) || rgba[i] < 0 || rgba[i] > 1)
+      return nullptr;
+  }
+  if (!interpolate) {
+    for (std::size_t i = 1; i < count; ++i) {
+      if (static_cast<float>(stops[i]) <= static_cast<float>(stops[i - 1]))
+        return nullptr;
+    }
+  }
+  auto lut = vtkSmartPointer<vtkLookupTable>::New();
+  lut->SetRange(min, max);
+  lut->SetNanColor(0.5, 0.5, 0.5, 1.0);
+  if (!interpolate) {
+    lut->SetIndexedLookup(true);
+    lut->SetNumberOfTableValues(static_cast<vtkIdType>(count));
+    for (std::size_t i = 0; i < count; ++i) {
+      lut->SetTableValue(static_cast<vtkIdType>(i),
+                         static_cast<double>(rgba[i * 4]),
+                         static_cast<double>(rgba[i * 4 + 1]),
+                         static_cast<double>(rgba[i * 4 + 2]),
+                         static_cast<double>(rgba[i * 4 + 3]));
+      lut->SetAnnotation(static_cast<double>(static_cast<float>(stops[i])),
+                         std::to_string(stops[i]));
+    }
+  } else {
+    lut->SetNumberOfTableValues(256);
+    for (std::size_t i = 0; i < 256; ++i) {
+      const double value = min + (max - min) * static_cast<double>(i) / 255;
+      auto high = std::upper_bound(stops, stops + count, value);
+      const auto hi = min == max ? std::size_t{0}
+                                : high == stops + count ? count - 1
+                                                        : static_cast<std::size_t>(high - stops);
+      const auto lo = high == stops + count ? hi : hi ? hi - 1 : 0;
+      const double span = stops[hi] - stops[lo];
+      const double t = span > 0 ? std::clamp((value - stops[lo]) / span, 0.0, 1.0) : 0;
+      double color[4];
+      for (std::size_t c = 0; c < 4; ++c)
+        color[c] = static_cast<double>(rgba[lo * 4 + c]) * (1 - t) +
+                   static_cast<double>(rgba[hi * 4 + c]) * t;
+      lut->SetTableValue(static_cast<vtkIdType>(i), color);
+    }
+  }
+  lut->Build();
+  return lut;
 }

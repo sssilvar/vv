@@ -1,0 +1,49 @@
+{
+  "name": "@vv/visualiser",
+  "version": "0.1.0",
+  "type": "module",
+  "files": [
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/vv.js"
+    },
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "import": "./dist/engine.js"
+    }
+  },
+  "peerDependencies": {
+    "react": "^19.2.4"
+  },
+  "scripts": {
+    "build:wasm": "bash ../scripts/build-wasm.sh",
+    "build": "pnpm run build:wasm && vite build --config vite.config.tsx && tsc",
+    "dev": "vite --config vite.config.tsx",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "format": "oxfmt src demo tests *.tsx",
+    "format:check": "oxfmt --check src demo tests *.tsx",
+    "lint": "oxlint --deny-warnings src demo tests",
+    "test:e2e": "playwright test --config playwright.config.tsx"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "typescript": "~7.0.2",
+    "vite": "^7.2.6"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}
