@@ -10,6 +10,7 @@
 ;   makensis -DVERSION=.. -DCACHEKEY=.. -DSTAGE_DIR=<win> -DOUTFILE=<win> vv-portable.nsi
 
 Unicode true
+!include "FileFunc.nsh"
 ManifestDPIAware true
 RequestExecutionLevel user      ; per-user, never prompts for elevation
 SilentInstall silent            ; no wizard UI — extract + launch, then exit
@@ -41,5 +42,10 @@ launch:
   ; Forward argv (e.g. a mesh file dropped on / double-clicked into the exe)
   ; to the real binary — vv, unlike a plain GUI app, is driven by file args.
   SetOutPath "$INSTDIR"
-  Exec '"$INSTDIR\vv.exe" $CMDLINE'
+  ${GetParameters} $0
+  ; Packaging verifies extraction separately from the real binary's CLI smoke test.
+  StrCmp $0 "--extract-only" done
+  Exec '"$INSTDIR\vv.exe" $0'
+done:
+  Quit
 SectionEnd

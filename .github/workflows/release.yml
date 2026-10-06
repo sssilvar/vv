@@ -6,15 +6,26 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   CI: true
 
 # Builds self-contained, deployable packages (Qt + VTK included) for each OS, plus
 # the bare Linux binary for users who already have the runtime via a package manager.
 jobs:
+  npm:
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.')
+    uses: ./.github/workflows/npm-publish.yml
+    permissions:
+      contents: read
+      id-token: write
+
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -22,16 +33,18 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-windows
             os: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: ccache
         if: runner.os != 'Windows'
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: ccache-release-${{ matrix.target }}
           max-size: 500M
@@ -57,7 +70,7 @@ jobs:
 
       - name: Set up MSYS2 (Windows)
         if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: MINGW64
           update: true
@@ -178,7 +191,7 @@ jobs:
             --stage-name "vv-${GITHUB_REF_NAME}-${{ matrix.target }}"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           retention-days: 3
           name: vv-${{ matrix.target }}
@@ -186,21 +199,48 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, npm]
+    if: always() && startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success' && (needs.npm.result == 'success' || needs.npm.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
+          pattern: vv-*
+          merge-multiple: true
+
+      - name: Download npm archive and version manifest
+        if: needs.npm.result == 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: artifacts
+
+      - name: Describe both distributions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          notes = f"Native vv app: **{os.environ['RELEASE_TAG']}**. Download the asset for your platform.\n"
+          manifest = Path('artifacts/release-versions.json')
+          if manifest.exists():
+              versions = json.loads(manifest.read_text())
+              package = f"{versions['packageName']}@{versions['packageVersion']}"
+              notes += f"\nReact/TypeScript package: **{package}**.\n\n```sh\nnpm install {package}\n```\n\nThe npm package is UNLICENSED. Its verified archive is attached alongside the native app downloads.\n"
+          Path('release-notes.md').write_text(notes)
+          PY
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          body_path: release-notes.md
+          prerelease: ${{ contains(github.ref_name, '-rc.') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

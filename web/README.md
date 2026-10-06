@@ -1,8 +1,8 @@
 # vv WebAssembly visualiser
 
-`@vv/visualiser` embeds vv's C++/VTK rendering in React. React is the only runtime
+`@sssilvar/vv-wasm` embeds vv's C++/VTK rendering in React. React is the only runtime
 peer dependency for the React entry point. Non-React hosts can import
-`ViewerEngine` and `Lut` from `@vv/visualiser/engine` without loading React. Qt, mesh parsers, Three.js, R3F and WebGPU are not required.
+`ViewerEngine` and `Lut` from `@sssilvar/vv-wasm/engine` without loading React. Qt, mesh parsers, Three.js, R3F and WebGPU are not required.
 
 ## Build
 
@@ -33,7 +33,7 @@ runtime are about 122 KB before compression; the WASM binary is about 10 MB
 
 ```tsx
 import { useMemo, useState } from "react";
-import { Viewer, Lut, ScalarBar, type Surface } from "@vv/visualiser";
+import { Viewer, Lut, ScalarBar, type Surface } from "@sssilvar/vv-wasm";
 
 function SimulationView({ surface, values, revision }: {
   surface: Surface;
@@ -96,6 +96,16 @@ lifecycle. Rendering happens once per requested animation frame and stops when
 the scene is idle. Each canvas owns an independent C++ scene and render window;
 all scenes share a single WASM module.
 
+Mesh back faces render at 45% brightness in both backends, preserving scalar hues
+and opacity. Supply consistently wound triangles (counterclockwise when viewed
+from outside) for this cue to identify the inner shell. Winding is preserved;
+the viewer does not infer or repair an anatomical inside/outside orientation.
+An upper-left key light, weaker opposing fill and subtle white highlights provide
+curvature cues. Lights follow the camera; software shading interpolates vertex
+lighting, while WebGL uses per-fragment Phong shading. These are surface-lighting
+cues, not cast shadows or ambient occlusion.
+Wireframe edges use unlit colors without the back-face tint for clear visibility.
+
 `backend="auto"` uses WebGL 2, including integrated Intel graphics and browser
 software GL drivers. It switches to the C++ rasterizer when WebGL is unavailable
 or the context is lost. WebGL uses FXAA for edge antialiasing. `backend="software"` forces Canvas 2D presentation of a
@@ -118,7 +128,7 @@ annotation editing remain desktop/host responsibilities.
 ## Sandboxer integration
 
 The companion Sandboxer change replaces its R3F mesh subtree with one `Viewer`,
-uses `@vv/visualiser` for `Surface`, `SpatialAnnotation`, `Lut` and `LutSlider`, and
+uses `@sssilvar/vv-wasm` for `Surface`, `SpatialAnnotation`, `Lut` and `LutSlider`, and
 retains its data-loading and inference code. This is a data-contract replacement,
 not a binary-compatible implementation of all anatomy-gl/R3F exports.
 
@@ -126,12 +136,12 @@ Build this package before running `pnpm install` in Sandboxer. Its local
 dependency is `file:../../personal/vv/web`. For Vite development add:
 
 ```tsx
-optimizeDeps: { exclude: ["@vv/visualiser"] }
+optimizeDeps: { exclude: ["@sssilvar/vv-wasm"] }
 ```
 
 This preserves relative WASM asset URLs instead of relocating them into Vite's
 dependency-prebundle directory. After rebuilding a local `file:` package, run
-`pnpm update @vv/visualiser --offline` in Sandboxer to refresh its copy.
+`pnpm update @sssilvar/vv-wasm --offline` in Sandboxer to refresh its copy.
 
 ## Validation
 
@@ -193,3 +203,47 @@ Sandboxer's `MeshViewer` now accepts an optional `simulation` prop with `meshNam
 It preserves geometry while frames change. `/__mesh-simulation` is a development
 harness for its production component; Playwright supplies its mesh API fixture.
 Loading a solver's file format remains the caller's responsibility.
+
+## Storybook
+
+After `pnpm build`, run `pnpm storybook` and open http://localhost:6006.
+`pnpm build:storybook` produces a static catalog; `pnpm test:storybook` verifies
+that build with Chromium. The catalog uses the real WASM renderer and shared
+synthetic geometry. Viewer stories cover point/cell fields, cyclic/categorical
+palettes, missing values, saturation, spatial clipping, wireframe, point clouds,
+transparency, software rendering, annotations, streaming and large geometry.
+Empty and invalid geometry intentionally show the viewer's error state.
+Scalar-bar stories cover keyboard-editable, read-only, constant, segmented and
+formatted ranges. Backend and display controls are available in the controls panel.
+
+## npm release candidates
+
+The package is currently **UNLICENSED**. Install a published candidate with
+`pnpm add @sssilvar/vv-wasm@rc` (and React 19 when using the React entry point).
+
+The `Web package` workflow checks types, formatting, lint, all three browser
+engines, the static Storybook, and the packed archive. Chromium runs headless
+on Linux with SwiftShader; Firefox and WebKit run on macOS with native graphics.
+The build and browser jobs are separate, allowing failed tests to be retried
+without recompiling VTK.
+It retains the package,
+Storybook and failure diagnostics for three days. Builds use pinned actions,
+Node, pnpm and Emscripten, with no privileged PR jobs or release build caches.
+
+To release, update `web/package.json` to `0.1.0-rc.N`, commit, then push the
+matching `npm-v0.1.0-rc.N` tag. `npm-publish.yml` builds and tests the archive once,
+then publishes that archive with provenance and the `rc` dist-tag. The tag prefix
+is separate from desktop release tags. For a combined prerelease, also update
+the native version in `CMakeLists.txt` and push `vMAJOR.MINOR.PATCH-rc.N` instead.
+That workflow builds the Linux, macOS and Windows app downloads, publishes the
+npm RC, and attaches both distributions plus `release-versions.json` to one
+GitHub prerelease. The `npm` GitHub environment permits only
+RC tags; only the publish job can access its `NPM_TOKEN` bootstrap secret.
+
+For token-free releases, configure an npm trusted publisher on the package:
+GitHub owner `sssilvar`, repository `vv`, workflow `npm-publish.yml`, environment
+`npm`, with direct publishing allowed. Complete a successful OIDC release before
+revoking the bootstrap token and deleting `NPM_TOKEN`. Then require 2FA and
+disallow traditional tokens in npm package publishing settings. A new trusted
+publisher must be used within npm's activation window (currently two days).
+Never commit a token or pass one through shell arguments or chat.

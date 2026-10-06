@@ -155,7 +155,15 @@ if [ "$DO_PORTABLE" = 1 ]; then
   if [ "$DO_VERIFY_PORTABLE" = 1 ]; then
     cache="$(cygpath -u "$LOCALAPPDATA")/vv/$STAGE_NAME"
     run "rm -rf '$cache'"
-    "$OUT_DIR/$STAGE_NAME.exe" --version >/dev/null 2>&1 || true
+    VV_PORTABLE_EXE="$exe_win" powershell -NoProfile -Command '
+      $process = Start-Process -FilePath $env:VV_PORTABLE_EXE -ArgumentList "--extract-only" -PassThru
+      if (-not $process.WaitForExit(120000)) {
+        Write-Error ("Portable extraction timed out. Window: " + $process.MainWindowTitle)
+        Stop-Process -Id $process.Id -Force
+        exit 1
+      }
+      exit $process.ExitCode
+    ' || die "portable extraction failed"
     [ -f "$cache/ok.marker" ] || die "portable .exe did not unpack (no $cache/ok.marker)"
     [ -f "$cache/vv.exe" ] || die "portable unpack is missing vv.exe"
     ( cd "$cache" && PATH="$PWD" ./vv.exe --version ); rc=$?
