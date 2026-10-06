@@ -69,8 +69,9 @@ done
 
 # Normalize the VERSIONINFO stamp to numeric MAJOR.MINOR.PATCH (the .exe build
 # rejects anything else). Derive from the tag (v0.1.5 → 0.1.5) when not given.
-if [ -z "$APP_VERSION" ]; then APP_VERSION="${GITHUB_REF_NAME:-}"; fi
+if [ -z "$APP_VERSION" ]; then APP_VERSION="${RELEASE_NAME:-${GITHUB_REF_NAME:-}}"; fi
 APP_VERSION="${APP_VERSION#v}"
+APP_VERSION="${APP_VERSION%%-*}"
 IFS=. read -r _vmaj _vmin _vpat _ <<EOF
 $APP_VERSION
 EOF
@@ -155,7 +156,15 @@ if [ "$DO_PORTABLE" = 1 ]; then
   if [ "$DO_VERIFY_PORTABLE" = 1 ]; then
     cache="$(cygpath -u "$LOCALAPPDATA")/vv/$STAGE_NAME"
     run "rm -rf '$cache'"
-    "$OUT_DIR/$STAGE_NAME.exe" --version >/dev/null 2>&1 || true
+    VV_PORTABLE_EXE="$exe_win" powershell -NoProfile -Command '
+      $process = Start-Process -FilePath $env:VV_PORTABLE_EXE -ArgumentList "--extract-only" -PassThru
+      if (-not $process.WaitForExit(120000)) {
+        Write-Error ("Portable extraction timed out. Window: " + $process.MainWindowTitle)
+        Stop-Process -Id $process.Id -Force
+        exit 1
+      }
+      exit $process.ExitCode
+    ' || die "portable extraction failed"
     [ -f "$cache/ok.marker" ] || die "portable .exe did not unpack (no $cache/ok.marker)"
     [ -f "$cache/vv.exe" ] || die "portable unpack is missing vv.exe"
     ( cd "$cache" && PATH="$PWD" ./vv.exe --version ); rc=$?
@@ -167,7 +176,23 @@ fi
 # ── extract-and-run folder zip (opt-in) ────────────────────────────────
 if [ "$DO_ZIP" = 1 ]; then
   out_win="$(cygpath -w "$OUT_ABS/$STAGE_NAME.zip")"
-  (cd stage && powershell -Command "Compress-Archive -Force -Path '$STAGE_NAME' -DestinationPath '$out_win'")
+  VV_ZIP_STAGE="$(cygpath -w "$(cd "$STAGE" && pwd)")" VV_ZIP_OUT="$out_win" \
+    powershell -NoProfile -Command '
+      $ErrorActionPreference = "Stop"
+      Compress-Archive -Force -Path $env:VV_ZIP_STAGE -DestinationPath $env:VV_ZIP_OUT
+    '
+  if [ "$DO_SMOKE" = 1 ]; then
+    unpacked="$(mktemp -d)"
+    trap 'rm -rf "$unpacked"' EXIT
+    VV_ZIP_OUT="$out_win" VV_ZIP_UNPACK="$(cygpath -w "$unpacked")" \
+      powershell -NoProfile -Command '
+        $ErrorActionPreference = "Stop"
+        Expand-Archive -LiteralPath $env:VV_ZIP_OUT -DestinationPath $env:VV_ZIP_UNPACK
+      '
+    ( cd "$unpacked/$STAGE_NAME" && PATH="$PWD" ./vv.exe --version ) \
+      || die "extracted Windows ZIP failed smoke test"
+    info "Windows ZIP verified — extracted app launches with its bundled DLLs"
+  fi
   info "Wrote $OUT_DIR/$STAGE_NAME.zip"
 fi
 

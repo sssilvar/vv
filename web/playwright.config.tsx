@@ -32,7 +32,12 @@ export default defineConfig({
         launchOptions: { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] },
       },
     },
-    { name: "firefox", use: { browserName: "firefox" } },
+    {
+      name: "firefox",
+      // Hosted macOS runners can take several seconds to initialize WebGL.
+      expect: { timeout: 20_000 },
+      use: { browserName: "firefox" },
+    },
     { name: "webkit", use: { browserName: "webkit" } },
   ],
   webServer: {

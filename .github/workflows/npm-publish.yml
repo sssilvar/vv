@@ -1,0 +1,57 @@
+name: Publish npm RC
+
+on:
+  push:
+    tags: ['npm-v*-rc.*']
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/web.yml
+  publish:
+    needs: build
+    if: github.repository == 'sssilvar/vv'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: package
+      - name: Verify tag matches packed RC
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          archives=(package/*.tgz)
+          test "${#archives[@]}" -eq 1
+          tar -xOf "${archives[0]}" package/package.json > metadata.json
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('metadata.json', 'utf8'));
+          const versions = JSON.parse(readFileSync('package/release-versions.json', 'utf8'));
+          const tag = process.env.RELEASE_TAG;
+          const appTag = /^v(\d+\.\d+\.\d+)-rc\.\d+$/.exec(tag);
+          if (pkg.name !== '@sssilvar/vv-wasm' || !/^\d+\.\d+\.\d+-rc\.\d+$/.test(pkg.version) || versions.packageName !== pkg.name || versions.packageVersion !== pkg.version || (tag !== `npm-v${pkg.version}` && appTag?.[1] !== versions.appVersion)) {
+            throw new Error('Package name, RC version or release tag mismatch');
+          }
+          JS
+      - name: Publish verified archive with provenance
+        run: npm publish package/*.tgz --access public --tag rc --provenance --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
