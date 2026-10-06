@@ -1,6 +1,12 @@
 .vscode/
 build/
 .cache/
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+web/src/wasm/vv.js
+web/src/wasm/vv.wasm
 # Created by https://www.toptal.com/developers/gitignore/api/macos,linux,c++,ninja,cmake,windows,vcpkg
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,linux,c++,ninja,cmake,windows,vcpkg
 
