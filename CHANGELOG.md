@@ -1,6 +1,13 @@
 # [Unreleased]
 
+## [2.1.0-rc.1 / npm 0.1.0-rc.3] - 2026-10-07
+
 ### Added
+
+- Storybook cases for the browser viewer and scalar bar, including streaming,
+  rendering backends, clipping, categorical fields and invalid inputs.
+- npm RC packaging and GitHub Actions validation with isolated publishing,
+  provenance and OIDC support for `@sssilvar/vv-wasm`.
 
 - Embeddable WebAssembly target reusing the C++ mesh renderer without Qt or file
   parsers; React/TSX viewer and scalar bar with typed-array input, point/cell
@@ -23,6 +30,18 @@
 - Retain temporary release artifacts and Docker build records for 3 days; published release downloads remain available.
 
 ### Fixed
+
+- Keep wireframe edges unlit and equally visible from either side; skip surface
+  lighting calculations for software wireframes.
+
+- Use an offset camera-space key light, soft fill and restrained highlights to
+  make surface curvature and rotation readable in both browser renderers.
+
+- Distinguish mesh back faces with darker shading in WebGL and software rendering,
+  retaining scalar hues and opacity; add ambient fill to WebGL lighting.
+
+- Smooth Storybook scalar playback at the display refresh rate without rerendering
+  the React story for each frame; preserve simulation speed and pause/step controls.
 
 - Correct vertical browser rotation and restore the full camera pose on reset;
   use a black viewport and native-style vertical scalar limits in the simpler demo.

@@ -150,3 +150,8 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,linux,c++,ninja,cmake,windows,vcpkg
+
+web/storybook-static/
+web/*.tgz
+
+/web/release-versions.json
