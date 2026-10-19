@@ -3,12 +3,14 @@
 #include "mesh_utils.h"
 
 #include <array>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <vtkFieldData.h>
 #include <vtkFloatArray.h>
+#include <vtkIntArray.h>
 #include <vtkPointData.h>
 #include <vtkPolyData.h>
 #include <vtkSmartPointer.h>
@@ -57,6 +59,23 @@ static std::vector<vtkIdType> ParseIds(const std::string& s) {
   return v;
 }
 
+// Map names, in file order, from the "DxL map <name>" comment preceding each
+// <Map_data> (e.g. "P-P Voltage (bi)"); vtkXMLUtilities drops comments.
+static std::vector<std::string> ParseMapNames(const std::string& filename) {
+  const std::string tag = "Data values at each vertex of DxL map ";
+  std::vector<std::string> names;
+  std::ifstream file(filename);
+  std::string line;
+  while (std::getline(file, line)) {
+    const size_t start = line.find(tag);
+    if (start == std::string::npos)
+      continue;
+    const size_t begin = start + tag.size();
+    names.push_back(line.substr(begin, line.find(" -->", begin) - begin));
+  }
+  return names;
+}
+
 std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string& filename) {
   std::vector<vtkSmartPointer<vtkDataSet>> polys;
   vtkSmartPointer<vtkXMLDataElement> root = vtkSmartPointer<vtkXMLDataElement>::Take(
@@ -73,10 +92,17 @@ std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string&
     std::cerr << "No <Volumes> in XML: " << filename << '\n';
     return polys;
   }
+  const std::vector<std::string> mapNames = ParseMapNames(filename);
+  size_t mapIndex = 0;
   for (int i = 0; i < vols->GetNumberOfNestedElements(); ++i) {
     vtkXMLDataElement* vol = vols->GetNestedElement(i);
     if (std::string(vol->GetName()) != "Volume")
       continue;
+    // Consumed before any skip so names stay aligned with their <Map_data>.
+    vtkXMLDataElement* mapElem = vol->FindNestedElementWithName("Map_data");
+    const std::string mapName =
+        mapElem && mapIndex < mapNames.size() ? mapNames[mapIndex] : "Bipolar";
+    mapIndex += mapElem ? 1 : 0;
     vtkXMLDataElement* vertsElem = vol->FindNestedElementWithName("Vertices");
     if (!vertsElem)
       continue;
@@ -144,6 +170,34 @@ std::vector<vtkSmartPointer<vtkDataSet>> XMLMeshParser::parse(const std::string&
         }
         poly->GetPointData()->SetNormals(an);
         poly->GetPointData()->AddArray(an);
+      }
+    }
+
+    // EnSite exports the DxL map values as <Map_data>; unnamed maps default to
+    // "Bipolar" like volta-py.
+    if (mapElem) {
+      auto values = ParseDoubles(mapElem->GetCharacterData() ? mapElem->GetCharacterData() : "");
+      if (values.size() * 3 == verts.size()) {
+        vtkNew<vtkFloatArray> mapArray;
+        mapArray->SetName(mapName.c_str());
+        mapArray->SetNumberOfTuples(static_cast<vtkIdType>(values.size()));
+        for (vtkIdType vi = 0; vi < static_cast<vtkIdType>(values.size()); ++vi)
+          mapArray->SetValue(vi, static_cast<float>(values[static_cast<size_t>(vi)]));
+        poly->GetPointData()->AddArray(mapArray);
+      }
+    }
+
+    // Per-vertex map status: 0 = good, 1 = scar, 2 = unsampled.
+    vtkXMLDataElement* statusElem = vol->FindNestedElementWithName("Map_status");
+    if (statusElem) {
+      auto status = ParseIds(statusElem->GetCharacterData() ? statusElem->GetCharacterData() : "");
+      if (status.size() * 3 == verts.size()) {
+        vtkNew<vtkIntArray> statusArray;
+        statusArray->SetName("Map_status");
+        statusArray->SetNumberOfTuples(static_cast<vtkIdType>(status.size()));
+        for (vtkIdType vi = 0; vi < static_cast<vtkIdType>(status.size()); ++vi)
+          statusArray->SetValue(vi, static_cast<int>(status[static_cast<size_t>(vi)]));
+        poly->GetPointData()->AddArray(statusArray);
       }
     }
     polys.push_back(poly);
