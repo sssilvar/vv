@@ -127,11 +127,12 @@ ScalarAnalysis analyzeScalar(const std::vector<vtkDataSet*>& meshes,
 
   // Integer arrays: collect up to 20 unique (rounded) values.
   // Float arrays: collect up to 20 unique values (no rounding).
-  const int limit = 20;
+  const bool painted = scalarName == "vv_scalar";
+  const int limit = painted ? 256 : 20;
   auto unique = collectUniqueValues(meshes, scalarName, association, isInt, limit);
   const int n = static_cast<int>(unique.size());
 
-  if (n >= 2 && n <= limit) {
+  if ((n >= 2 || painted) && n <= limit) {
     result.categorical = true;
     result.uniqueValues = std::move(unique);
   } else {
@@ -272,6 +273,22 @@ bool setMapperScalar(vtkDataSet* mesh,
   mapper->SetInterpolateScalarsBeforeMapping((!cell && !analysis.categorical) ? 1 : 0);
 
   auto lut = buildLookupTable(analysis, range);
+  // vv_scalar holds 1 + 0xRRGGBB per point, 0 if unpainted (see JsonMeshParser).
+  if (scalarName == "vv_scalar" && analysis.categorical) {
+    for (double v : analysis.uniqueValues) {
+      const int rgb = static_cast<int>(v) - 1;
+      const vtkIdType idx = lut->GetAnnotatedValueIndex(v);
+      if (rgb < 0) {
+        lut->SetTableValue(idx, 0.6, 0.6, 0.6, 1.0);
+        continue;
+      }
+      lut->SetTableValue(
+          idx, (rgb >> 16 & 0xFF) / 255.0, (rgb >> 8 & 0xFF) / 255.0, (rgb & 0xFF) / 255.0, 1.0);
+      char label[8];
+      std::snprintf(label, sizeof(label), "#%06x", rgb & 0xFFFFFF);
+      lut->SetAnnotation(v, label);
+    }
+  }
   mapper->SetLookupTable(lut);
   mapper->SetScalarRange(range);
   return true;

@@ -3,15 +3,19 @@
 #include "mesh_utils.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 #include <vtkCellArray.h>
 #include <vtkFieldData.h>
 #include <vtkFloatArray.h>
+#include <vtkIntArray.h>
 #include <vtkNew.h>
 #include <vtkPointData.h>
 #include <vtkPoints.h>
@@ -36,8 +40,13 @@ const json* meshPartArray(const json& root) {
     return nullptr;
   }
   for (const char* key : {"surface", "surfaces"}) {
-    if (root.contains(key) && root[key].is_array()) {
-      return &root[key];
+    if (root.contains(key)) {
+      if (root[key].is_array()) {
+        return &root[key];
+      }
+      if (root[key].is_object() && isMeshPart(root[key])) {
+        return &root[key];
+      }
     }
   }
   return nullptr;
@@ -48,8 +57,9 @@ bool looksLikeJsonMesh(const json& value) {
     return true;
   }
   const json* parts = meshPartArray(value);
-  return parts != nullptr && !parts->empty() &&
-         std::all_of(parts->begin(), parts->end(), isMeshPart);
+  return parts != nullptr &&
+         (isMeshPart(*parts) ||
+          (!parts->empty() && std::all_of(parts->begin(), parts->end(), isMeshPart)));
 }
 
 std::string partName(const json& part) {
@@ -60,7 +70,7 @@ std::string partName(const json& part) {
 }
 
 bool addNormals(vtkPolyData* poly, const json& part, size_t pointCount) {
-  if (!part.contains("normals") || !part["normals"].is_array()) {
+  if (!part.contains("normals") || !part["normals"].is_array() || part["normals"].size() == 0) {
     return true;
   }
 
@@ -165,6 +175,65 @@ vtkSmartPointer<vtkPolyData> parsePart(const json& part) {
   }
 }
 
+std::optional<std::array<unsigned char, 3>> hexToRGB(std::string hex) {
+  if (!hex.empty() && hex[0] == '#')
+    hex.erase(0, 1);
+
+  if (hex.size() != 6)
+    return std::nullopt;
+
+  for (char c : hex)
+    if (!std::isxdigit(static_cast<unsigned char>(c)))
+      return std::nullopt;
+
+  unsigned long v = std::stoul(hex, nullptr, 16);
+  return std::array<unsigned char, 3>{
+      static_cast<unsigned char>((v >> 16) & 0xFF),
+      static_cast<unsigned char>((v >> 8) & 0xFF),
+      static_cast<unsigned char>(v & 0xFF),
+  };
+}
+
+void parseMeshPainterScalar(const json& root, vtkSmartPointer<vtkPolyData>* poly) {
+  if (!root.contains("indices")) {
+    return;
+  }
+  const json indices =
+      root["indices"].is_object()
+          ? root["indices"].value(root.value(json::json_pointer("/surface/name"), std::string()),
+                                  json())
+          : root["indices"];
+  if (!indices.is_array() || indices.size() == 0) {
+    return;
+  }
+  const json groups = indices[0].is_number_integer() ? json::array({indices}) : indices;
+  const json hexes = indices[0].is_number_integer() ? json::array({"#ff0000"})
+                                                    : root.value("colors", json::array());
+  const auto mesh = poly->GetPointer();
+  const vtkIdType nPts = mesh->GetNumberOfPoints();
+
+  // 1 + 0xRRGGBB per painted point, 0 elsewhere: equal colors share a value across files.
+  vtkNew<vtkIntArray> labels;
+  labels->SetName("vv_scalar");
+  labels->SetNumberOfTuples(nPts);
+  labels->Fill(0);
+
+  for (size_t i = 0; i < groups.size(); i++) {
+    const auto rgb = i < hexes.size() && hexes[i].is_string() ? hexToRGB(hexes[i]) : std::nullopt;
+    if (!rgb) {
+      continue;
+    }
+    const int label = 1 + ((*rgb)[0] << 16 | (*rgb)[1] << 8 | (*rgb)[2]);
+    for (vtkIdType id : groups[i]) {
+      if (id >= 0 && id < nPts) {
+        labels->SetValue(id, label);
+      }
+    }
+  }
+
+  mesh->GetPointData()->AddArray(labels);
+}
+
 } // namespace
 
 JsonMeshParser::~JsonMeshParser() = default;
@@ -194,6 +263,17 @@ std::vector<vtkSmartPointer<vtkDataSet>> JsonMeshParser::parse(const std::string
 
   const json* parts = meshPartArray(root);
   if (!parts) {
+    return meshes;
+  }
+  if (isMeshPart(*parts)) {
+    auto poly = parsePart(*parts);
+    if (poly) {
+      try {
+        parseMeshPainterScalar(root, &poly);
+      } catch (const json::exception&) {
+      }
+      meshes.push_back(poly);
+    }
     return meshes;
   }
 
