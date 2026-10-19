@@ -204,13 +204,7 @@ std::vector<std::pair<QString, QColor>> categoricalEntries(vtkLookupTable* lut,
   for (auto it = uv.rbegin(); it != uv.rend(); ++it, --idx) {
     double rgba[4];
     lut->GetTableValue(idx < 0 ? 0 : idx, rgba);
-    char label[32];
-    const double v = *it;
-    if (v == std::floor(v))
-      std::snprintf(label, sizeof(label), "%g", v);
-    else
-      std::snprintf(label, sizeof(label), "%.3g", v);
-    entries.push_back({QString::fromLatin1(label),
+    entries.push_back({QString::fromStdString(lut->GetAnnotation(idx < 0 ? 0 : idx)),
                        QColor::fromRgbF(static_cast<QColorComponent>(rgba[0]),
                                         static_cast<QColorComponent>(rgba[1]),
                                         static_cast<QColorComponent>(rgba[2]))});

@@ -272,10 +272,10 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
         QRectF(
             bar.left(), bar.top() - sfm.height() - kLabelGap, width() - bar.left(), sfm.height()),
         Qt::AlignLeft | Qt::AlignBottom,
-        QString::number(globalMax_, 'g', 4));
+        catEntries_.front().first);
     drawTextRect(QRectF(bar.left(), bar.bottom() + kLabelGap, width() - bar.left(), sfm.height()),
                  Qt::AlignLeft | Qt::AlignTop,
-                 QString::number(globalMin_, 'g', 4));
+                 catEntries_.back().first);
     return; // skip gradient, handles, ticks
   }
 
