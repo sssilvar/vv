@@ -276,10 +276,9 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
 
     // min / max flanking labels (outside bar, same as continuous mode)
     p.setFont(small);
-    drawTextRect(
-        QRectF(0.0, bar.top() - sfm.height() - kLabelGap, width(), sfm.height()),
-        Qt::AlignHCenter | Qt::AlignBottom,
-        catEntries_.front().first);
+    drawTextRect(QRectF(0.0, bar.top() - sfm.height() - kLabelGap, width(), sfm.height()),
+                 Qt::AlignHCenter | Qt::AlignBottom,
+                 catEntries_.front().first);
     drawTextRect(QRectF(0.0, bar.bottom() + kLabelGap, width(), sfm.height()),
                  Qt::AlignHCenter | Qt::AlignTop,
                  catEntries_.back().first);
@@ -341,10 +340,9 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
     QFontMetrics sfm(small);
 
     // max label just above bar
-    drawTextRect(
-        QRectF(0.0, bar.top() - sfm.height() - kLabelGap, width(), sfm.height()),
-        Qt::AlignHCenter | Qt::AlignBottom,
-        QString::number(globalMax_, 'g', 4));
+    drawTextRect(QRectF(0.0, bar.top() - sfm.height() - kLabelGap, width(), sfm.height()),
+                 Qt::AlignHCenter | Qt::AlignBottom,
+                 QString::number(globalMax_, 'g', 4));
     // min label just below bar
     drawTextRect(QRectF(0.0, bar.bottom() + kLabelGap, width(), sfm.height()),
                  Qt::AlignHCenter | Qt::AlignTop,
