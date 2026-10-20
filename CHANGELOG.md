@@ -3,6 +3,8 @@
 ### Changed
 
 - Retain temporary release artifacts and Docker build records for 3 days; published release downloads remain available.
+- The colorbar is centered under its title and keeps a fixed height however the
+  title wraps; the title tooltip is gone.
 
 ### Fixed
 

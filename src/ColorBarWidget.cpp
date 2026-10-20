@@ -11,11 +11,11 @@
 #include <cmath>
 
 // ── layout constants ────────────────────────────────────────────────
-static constexpr int kBarLeft = 10;
 static constexpr int kBarWidth = 16;
 static constexpr int kHandleW = 10;
 static constexpr int kHandleH = 10;
 static constexpr int kTitleTopPad = 4;
+static constexpr int kTitleLines = 3; // fixed so the bar keeps its height however the title wraps
 static constexpr int kLabelGap = 2;
 static constexpr int kBarPad = 4;
 
@@ -75,7 +75,6 @@ void ColorBarWidget::setClipRange(double lower, double upper) {
 void ColorBarWidget::setTitle(const QString& title) {
   // Zero-width spaces let snake_case names wrap after each underscore.
   title_ = QString(title).replace(QLatin1Char('_'), QStringLiteral("_\u200B"));
-  setToolTip(title);
   update();
 }
 
@@ -103,9 +102,18 @@ QSize ColorBarWidget::sizeHint() const {
     bold.setBold(true);
     width = std::max(width, QFontMetrics(bold).horizontalAdvance(title_) + 8);
   }
+  // The bar is centered, so labels on its right need the same space mirrored on its left.
   for (const auto& entry : catEntries_) {
-    width =
-        std::max(width, fontMetrics().horizontalAdvance(entry.first) + kBarLeft + kBarWidth + 14);
+    width = std::max(width, 2 * fontMetrics().horizontalAdvance(entry.first) + kBarWidth + 12);
+  }
+  if (catEntries_.empty()) {
+    QFont handle = font();
+    handle.setBold(true);
+    handle.setPointSizeF(font().pointSizeF() * 0.9);
+    for (const double v : {globalMin_, globalMax_}) {
+      const int label = QFontMetrics(handle).horizontalAdvance(QString::number(v, 'f', 2));
+      width = std::max(width, 2 * (label + kHandleW + 3) + kBarWidth);
+    }
   }
   width = std::clamp(width, 90, 180);
   return {width, 340};
@@ -118,16 +126,13 @@ QSize ColorBarWidget::minimumSizeHint() const {
 QRectF ColorBarWidget::barRect() const {
   const int fh = fontMetrics().height();
   int top = kBarPad + fh + kLabelGap + kBarPad; // title  + max-label + gap
-  if (!title_.isEmpty()) {
-    QFont bold = font();
-    bold.setBold(true);
-    const QRect titleBox(0, 0, width() - 4, height());
-    top += QFontMetrics(bold).boundingRect(titleBox, Qt::TextWordWrap, title_).height() + kTitleTopPad;
-  }
+  if (!title_.isEmpty())
+    top += kTitleLines * fh + kTitleTopPad;
   int bottom = height() - fh - kLabelGap - kBarPad;
   if (bottom <= top + 40)
     bottom = top + 40;
-  return QRectF(kBarLeft, top, kBarWidth, bottom - top);
+  // Centered so it lines up with the title.
+  return QRectF((width() - kBarWidth) / 2.0, top, kBarWidth, bottom - top);
 }
 
 double ColorBarWidget::valueToY(double value) const {
@@ -237,8 +242,8 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
     QFont bold = base;
     bold.setBold(true);
     p.setFont(bold);
-    drawTextRect(QRectF(2.0, kTitleTopPad, width() - 4.0, height()),
-                 Qt::AlignHCenter | Qt::TextWordWrap,
+    drawTextRect(QRectF(2.0, kTitleTopPad, width() - 4.0, kTitleLines * fontMetrics().height()),
+                 Qt::AlignHCenter | Qt::AlignBottom | Qt::TextWordWrap,
                  title_);
     p.setFont(base);
   }
@@ -272,12 +277,11 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
     // min / max flanking labels (outside bar, same as continuous mode)
     p.setFont(small);
     drawTextRect(
-        QRectF(
-            bar.left(), bar.top() - sfm.height() - kLabelGap, width() - bar.left(), sfm.height()),
-        Qt::AlignLeft | Qt::AlignBottom,
+        QRectF(0.0, bar.top() - sfm.height() - kLabelGap, width(), sfm.height()),
+        Qt::AlignHCenter | Qt::AlignBottom,
         catEntries_.front().first);
-    drawTextRect(QRectF(bar.left(), bar.bottom() + kLabelGap, width() - bar.left(), sfm.height()),
-                 Qt::AlignLeft | Qt::AlignTop,
+    drawTextRect(QRectF(0.0, bar.bottom() + kLabelGap, width(), sfm.height()),
+                 Qt::AlignHCenter | Qt::AlignTop,
                  catEntries_.back().first);
     return; // skip gradient, handles, ticks
   }
@@ -338,13 +342,12 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
 
     // max label just above bar
     drawTextRect(
-        QRectF(
-            bar.left(), bar.top() - sfm.height() - kLabelGap, width() - bar.left(), sfm.height()),
-        Qt::AlignLeft | Qt::AlignBottom,
+        QRectF(0.0, bar.top() - sfm.height() - kLabelGap, width(), sfm.height()),
+        Qt::AlignHCenter | Qt::AlignBottom,
         QString::number(globalMax_, 'g', 4));
     // min label just below bar
-    drawTextRect(QRectF(bar.left(), bar.bottom() + kLabelGap, width() - bar.left(), sfm.height()),
-                 Qt::AlignLeft | Qt::AlignTop,
+    drawTextRect(QRectF(0.0, bar.bottom() + kLabelGap, width(), sfm.height()),
+                 Qt::AlignHCenter | Qt::AlignTop,
                  QString::number(globalMin_, 'g', 4));
     p.setFont(base);
   }
