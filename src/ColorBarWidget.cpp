@@ -73,8 +73,9 @@ void ColorBarWidget::setClipRange(double lower, double upper) {
 }
 
 void ColorBarWidget::setTitle(const QString& title) {
-  title_ = title;
-  setToolTip(title_);
+  // Zero-width spaces let snake_case names wrap after each underscore.
+  title_ = QString(title).replace(QLatin1Char('_'), QStringLiteral("_\u200B"));
+  setToolTip(title);
   update();
 }
 
@@ -117,8 +118,12 @@ QSize ColorBarWidget::minimumSizeHint() const {
 QRectF ColorBarWidget::barRect() const {
   const int fh = fontMetrics().height();
   int top = kBarPad + fh + kLabelGap + kBarPad; // title  + max-label + gap
-  if (!title_.isEmpty())
-    top += fh + kTitleTopPad;
+  if (!title_.isEmpty()) {
+    QFont bold = font();
+    bold.setBold(true);
+    const QRect titleBox(0, 0, width() - 4, height());
+    top += QFontMetrics(bold).boundingRect(titleBox, Qt::TextWordWrap, title_).height() + kTitleTopPad;
+  }
   int bottom = height() - fh - kLabelGap - kBarPad;
   if (bottom <= top + 40)
     bottom = top + 40;
@@ -212,7 +217,6 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
 
   const QRectF bar = barRect();
   const QFont base = font();
-  const QFontMetrics fm(base);
   const QColor txtCol = Qt::white;
   const QColor txtShadow(0, 0, 0, 220);
   auto drawTextRect = [&](const QRectF& rect, int flags, const QString& text) {
@@ -233,10 +237,9 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
     QFont bold = base;
     bold.setBold(true);
     p.setFont(bold);
-    const QRectF titleRect(2.0, kTitleTopPad, width() - 4.0, fm.height());
-    const QString elided =
-        QFontMetrics(bold).elidedText(title_, Qt::ElideRight, static_cast<int>(titleRect.width()));
-    drawTextRect(titleRect, Qt::AlignHCenter, elided);
+    drawTextRect(QRectF(2.0, kTitleTopPad, width() - 4.0, height()),
+                 Qt::AlignHCenter | Qt::TextWordWrap,
+                 title_);
     p.setFont(base);
   }
 
