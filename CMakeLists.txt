@@ -126,6 +126,7 @@ set(VV_CORE_SOURCES
   src/MeshRenderer.cpp
   src/PlaybackBar.cpp
   src/STLMeshParser.cpp
+  src/ScalarPager.cpp
   src/ScalarVizUtils.cpp
   src/TemporalSource.cpp
   src/VTKHDFMeshParser.cpp
@@ -147,6 +148,7 @@ set(VV_HEADERS
   src/include/MeshRenderer.h
   src/include/PlaybackBar.h
   src/include/STLMeshParser.h
+  src/include/ScalarPager.h
   src/include/ScalarVizUtils.h
   src/include/TemporalSource.h
   src/include/VTKHDFMeshParser.h

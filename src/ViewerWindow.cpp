@@ -2,6 +2,7 @@
 
 #include "ColorBarWidget.h"
 #include "PlaybackBar.h"
+#include "ScalarPager.h"
 #include "ScalarVizUtils.h"
 #include "TemporalSource.h"
 #include "mesh_utils.h"
@@ -37,6 +38,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <optional>
 #include <set>
@@ -81,6 +83,7 @@ constexpr double kPlaybackBaseFps = 15.0;
 constexpr int kPlaybackBarMargin = 16;
 constexpr int kPlaybackBarMaxWidth = 760;
 constexpr int kPlaybackBarHeight = 44;
+constexpr int kBottomOverlayGap = 8;
 
 QRect colorBarOverlayGeometry(const QWidget* viewport, const ColorBarWidget* colorBar) {
   const int height = std::clamp(static_cast<int>(viewport->height() * kOverlayHeightRatio),
@@ -106,6 +109,22 @@ QRect playbackBarGeometry(const QWidget* viewport) {
   const int y =
       std::max(kPlaybackBarMargin, viewport->height() - kPlaybackBarHeight - kPlaybackBarMargin);
   return QRect(x, y, width, kPlaybackBarHeight);
+}
+
+// Centered above whichever bottom bars (playback, annotation) are showing.
+QRect scalarPagerGeometry(const QWidget* viewport,
+                          const QWidget* pager,
+                          std::initializer_list<const QWidget*> barsBelow) {
+  int bottom = viewport->height() - kPlaybackBarMargin;
+  for (const QWidget* bar : barsBelow) {
+    if (bar && !bar->isHidden()) {
+      bottom = std::min(bottom, bar->geometry().top() - kBottomOverlayGap);
+    }
+  }
+  const QSize size = pager->sizeHint();
+  const int x = std::max(kPlaybackBarMargin, (viewport->width() - size.width()) / 2);
+  const int y = std::max(kPlaybackBarMargin, bottom - size.height());
+  return QRect(QPoint(x, y), size);
 }
 
 QString QStringFromUtf8(const std::string& value) {
@@ -242,7 +261,7 @@ public:
   explicit VtkMouseFilter(QWidget* vtkRoot,
                           QWidget* overlayColorBar,
                           QWidget* overlayTree,
-                          std::function<void()> onSpaceCycle,
+                          std::function<void(int step)> onSpaceCycle,
                           std::function<void()> onViewportResize,
                           std::function<bool(QMouseEvent*)> onPointerEvent,
                           std::function<void(bool active, bool erase)> onPaintHold,
@@ -363,7 +382,7 @@ protected:
     case QEvent::KeyPress: {
       auto* ke = static_cast<QKeyEvent*>(event);
       if (ke->key() == Qt::Key_Space && onSpaceCycle_) {
-        onSpaceCycle_();
+        onSpaceCycle_(ke->modifiers().testFlag(kStepBackModifier) ? -1 : 1);
         return true;
       }
       if (ke->key() == Qt::Key_Q) {
@@ -409,7 +428,7 @@ private:
   QPointer<QWidget> vtkRoot_;
   QPointer<QWidget> overlayColorBar_;
   QPointer<QWidget> overlayTree_;
-  std::function<void()> onSpaceCycle_;
+  std::function<void(int step)> onSpaceCycle_;
   std::function<void()> onViewportResize_;
   std::function<bool(QMouseEvent*)> onPointerEvent_;
   std::function<void(bool active, bool erase)> onPaintHold_;
@@ -544,7 +563,7 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult, const ViewerOptions& optio
       vtkWidget_,
       colorBar_,
       partsTree_,
-      [this]() { cycleScalar(); },
+      [this](int step) { cycleScalar(step); },
       [this]() { onViewportResize(); },
       options_.annotate ? std::function<bool(QMouseEvent*)>(
                               [this](QMouseEvent* e) { return handleAnnotatePointer(e); })
@@ -734,6 +753,9 @@ void ViewerWindow::setupNormalMode() {
   scalarFields_ = collectScalarUnion(load_.meshes.meshes);
   vectorFields_ = collectScalarUnion(load_.meshes.meshes, 3);
   if (!scalarFields_.empty()) {
+    scalarPager_ = new ScalarPager(vtkWidget_);
+    QObject::connect(
+        scalarPager_, &ScalarPager::stepRequested, this, [this](int step) { cycleScalar(step); });
     applyScalarAtIndex(0);
   } else {
     applyNoScalar();
@@ -1284,6 +1306,9 @@ void ViewerWindow::applyNoScalar() {
   colorBar_->setVisible(false);
   colorBar_->setTitle("Geometry");
   activeScalarIdx_ = -1;
+  if (scalarPager_) {
+    scalarPager_->setPage(QStringLiteral("Geometry"), 0, static_cast<int>(scalarFields_.size()));
+  }
 }
 
 void ViewerWindow::applyScalarAtIndex(int index) {
@@ -1310,6 +1335,9 @@ void ViewerWindow::applyScalarAtIndex(int index) {
   }
   activeScalarIdx_ = index;
   colorBar_->setTitle(scalarTitle(field));
+  if (scalarPager_) {
+    scalarPager_->setPage(scalarTitle(field), index + 1, static_cast<int>(scalarFields_.size()));
+  }
 
   // For temporal data, fix the color range to the union across sampled steps so
   // the colormap does not flicker as frames advance.
@@ -1352,21 +1380,11 @@ void ViewerWindow::applyScalarAtIndex(int index) {
   }
 }
 
-void ViewerWindow::cycleScalar() {
-  if (scalarFields_.empty()) {
-    applyNoScalar();
-    return;
-  }
-  if (activeScalarIdx_ < 0) {
-    applyScalarAtIndex(0);
-    return;
-  }
-  const int next = activeScalarIdx_ + 1;
-  if (next >= static_cast<int>(scalarFields_.size())) {
-    applyNoScalar();
-    return;
-  }
-  applyScalarAtIndex(next);
+void ViewerWindow::cycleScalar(int step) {
+  // Pages are plain geometry, then one per field, wrapping both ways.
+  const int pages = static_cast<int>(scalarFields_.size()) + 1;
+  const int page = ((activeScalarIdx_ + 1 + step) % pages + pages) % pages;
+  applyScalarAtIndex(page - 1);
 }
 
 // 'c': linear ↔ cyclic colormap for the active continuous field.
@@ -1406,6 +1424,11 @@ void ViewerWindow::onViewportResize() {
   if (annotationBar_) {
     annotationBar_->setGeometry(annotationBarGeometry(vtkWidget_, annotationBar_));
     annotationBar_->raise();
+  }
+  if (scalarPager_) {
+    scalarPager_->setGeometry(
+        scalarPagerGeometry(vtkWidget_, scalarPager_, {playbackBar_.data(), annotationBar_}));
+    scalarPager_->raise();
   }
 }
 

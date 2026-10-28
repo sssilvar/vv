@@ -3,6 +3,7 @@
 ### Added
 
 - Right-click a category in the colorbar to change its color or reset it; with `-e` the whole column follows.
+- A pager at the bottom of the view shows the active scalar field and steps through the fields; **Ctrl+Space** (**Option+Space** on macOS) steps back.
 
 ### Changed
 

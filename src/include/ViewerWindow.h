@@ -16,6 +16,7 @@
 
 class ColorBarWidget;
 class PlaybackBar;
+class ScalarPager;
 class QTimer;
 class QTreeWidget;
 class QVTKOpenGLNativeWidget;
@@ -72,7 +73,7 @@ private:
   // ── scalar handling ───────────────────────────────────────────────
   void applyScalarAtIndex(int index);
   void applyNoScalar();
-  void cycleScalar();
+  void cycleScalar(int step); // +1 forward, -1 back
   void cycleVectorField();
   void toggleCyclicColormap();
 
@@ -96,6 +97,7 @@ private:
 
   std::vector<ScalarField> scalarFields_;
   int activeScalarIdx_ = -1;
+  ScalarPager* scalarPager_ = nullptr;    // normal mode with at least one field
   std::vector<ScalarField> vectorFields_; // 3-component arrays, drawn as glyphs
   int activeVectorIdx_ = -1;
 

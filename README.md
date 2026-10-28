@@ -70,13 +70,7 @@ the square grid of its fields. `--annotate` needs a single file.
 
 ### Scalar fields
 
-Press **Space** to cycle through the available scalar fields (and back to plain
-geometry). Both **point-data** and **cell-data** scalars are supported; cell
-fields are labelled `… (cells)` in the colorbar title. Nodal fields are
-interpolated across each triangle, cell fields stay flat per triangle.
-Categorical integer fields (2–20 distinct values) get a discrete tab10/tab20
-colormap; continuous fields get a draggable clip range. Use `-e/--explode` to
-show every field at once in a facet grid sharing one camera.
+Press **Space** to cycle through the available scalar fields (and back to plain geometry), or **Ctrl+Space** (**Option+Space** on macOS) to step back. The pager at the bottom of the view shows the active field and its position, and its previous and next buttons step the same way. Both **point-data** and **cell-data** scalars are supported; cell fields are labelled `… (cells)` in the colorbar title. Nodal fields are interpolated across each triangle, cell fields stay flat per triangle. Categorical integer fields (2–20 distinct values) get a discrete tab10/tab20 colormap; continuous fields get a draggable clip range. Use `-e/--explode` to show every field at once in a facet grid sharing one camera.
 
 Right-click a category in the colorbar to pick another color for it, e.g. when two categories are hard to tell apart, or to reset it to its default; "More colors…" opens a full color picker. The color stays for that field until vv exits; with `-e` it applies to the whole column.
 
