@@ -37,6 +37,8 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <iterator>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vtkActor.h>
@@ -210,6 +212,23 @@ std::vector<std::pair<QString, QColor>> categoricalEntries(vtkLookupTable* lut,
                                         static_cast<QColorComponent>(rgba[2]))});
   }
   return entries;
+}
+
+// The category value shown at categoricalEntries()[entry].
+std::optional<double> categoryValue(const ScalarAnalysis& analysis, int entry) {
+  if (entry < 0 || static_cast<size_t>(entry) >= analysis.uniqueValues.size()) {
+    return std::nullopt;
+  }
+  return *std::next(analysis.uniqueValues.rbegin(), entry);
+}
+
+std::optional<std::array<double, 3>> lutRgb(const std::optional<QColor>& color) {
+  if (!color) {
+    return std::nullopt;
+  }
+  return std::array<double, 3>{static_cast<double>(color->redF()),
+                               static_cast<double>(color->greenF()),
+                               static_cast<double>(color->blueF())};
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -663,6 +682,24 @@ void ViewerWindow::setupFacetMode() {
                          facetColorBars_[i]->setClipRange(other.clipRange[0], other.clipRange[1]);
                        }
                      });
+    // Likewise a category recolored in one panel is recolored down the column.
+    QObject::connect(panelBar,
+                     &ColorBarWidget::categoryColorChanged,
+                     this,
+                     [this, column = panelInfo.column, analysis = panelInfo.analysis](
+                         int entry, const std::optional<QColor>& color) {
+                       const auto value = categoryValue(analysis, entry);
+                       for (size_t i = 0; value && i < facetColorBars_.size(); ++i) {
+                         FacetPanelInfo other;
+                         if (!facetColorBars_[i] || !renderer_.getFacetPanelInfo(i, other) ||
+                             other.column != column ||
+                             !renderer_.setFacetCategoryColor(i, *value, lutRgb(color))) {
+                           continue;
+                         }
+                         facetColorBars_[i]->setCategorical(
+                             categoricalEntries(renderer_.getFacetPanelLUT(i), other.analysis));
+                       }
+                     });
 
     facetColorBars_.push_back(panelBar);
   }
@@ -682,6 +719,17 @@ void ViewerWindow::setupNormalMode() {
                    &ColorBarWidget::clipRangeChanged,
                    this,
                    [this](double lo, double hi) { renderer_.setClipRange(lo, hi); });
+  QObject::connect(colorBar_,
+                   &ColorBarWidget::categoryColorChanged,
+                   this,
+                   [this](int entry, const std::optional<QColor>& color) {
+                     const ScalarAnalysis& analysis = renderer_.getActiveScalarAnalysis();
+                     const auto value = categoryValue(analysis, entry);
+                     if (value && renderer_.setCategoryColor(*value, lutRgb(color))) {
+                       colorBar_->setCategorical(
+                           categoricalEntries(renderer_.getActiveLUT(), analysis));
+                     }
+                   });
 
   scalarFields_ = collectScalarUnion(load_.meshes.meshes);
   vectorFields_ = collectScalarUnion(load_.meshes.meshes, 3);

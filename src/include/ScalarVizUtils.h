@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -21,6 +23,12 @@ struct ScalarField {
   FieldAssociation association = FieldAssociation::Point;
 };
 
+// Matplotlib tab20 palette: tab10 at the even entries, a tint of each after it.
+extern const double kTab20[20][3];
+
+// Category value -> RGB the user picked to replace its default color.
+using CategoryColors = std::map<double, std::array<double, 3>>;
+
 // Result of scalar field analysis — computed once, passed around.
 struct ScalarAnalysis {
   bool categorical = false;
@@ -28,6 +36,7 @@ struct ScalarAnalysis {
   // colormap whose two ends are the same color, or the wrap shows a false seam.
   bool cyclic = false;
   std::set<double> uniqueValues; // populated iff categorical == true
+  CategoryColors categoryColors; // applied over the default colors by buildLookupTable
 };
 
 // Fetch a named array from the point- or cell-data container of a dataset.
@@ -59,8 +68,10 @@ vtkSmartPointer<vtkLookupTable> createDefaultLookupTable(const double range[2],
 // Categorical LUT using tab10 (n≤10) or tab20 (n≤20). Uses indexed lookup.
 vtkSmartPointer<vtkLookupTable> createCategoricalLookupTable(const std::set<double>& uniqueValues);
 
-// Build LUT from a pre-computed ScalarAnalysis.
-vtkSmartPointer<vtkLookupTable> buildLookupTable(const ScalarAnalysis& analysis,
+// Build LUT from a pre-computed ScalarAnalysis. A categorical one gets its default
+// colors, then analysis.categoryColors over them.
+vtkSmartPointer<vtkLookupTable> buildLookupTable(const std::string& scalarName,
+                                                 const ScalarAnalysis& analysis,
                                                  const double range[2]);
 
 void applyLookupTableRange(vtkLookupTable* lut, const double range[2], bool cyclic = false);

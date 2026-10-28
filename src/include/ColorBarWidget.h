@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QContextMenuEvent>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QObject>
@@ -8,6 +9,7 @@
 #include <QString>
 #include <QWidget>
 #include <QtGlobal>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -32,6 +34,7 @@ inline QPointF mouseLocalPos(const QMouseEvent* ev) {
 ///   - Double-click handle for in-place numeric editing
 ///   - Tick marks and global min/max labels
 ///   - Title label
+///   - Right-click a categorical swatch to pick its color or reset it
 class ColorBarWidget : public QWidget {
   Q_OBJECT
 public:
@@ -64,12 +67,18 @@ signals:
   /// Emitted whenever the user moves a handle or edits a value.
   void clipRangeChanged(double lower, double upper);
 
+  /// Emitted when the user picks a color for a categorical swatch, or
+  /// std::nullopt to reset it to its default. entry indexes the list passed to
+  /// setCategorical, which the owner calls again to show the new color.
+  void categoryColorChanged(int entry, const std::optional<QColor>& color);
+
 protected:
   void paintEvent(QPaintEvent* event) override;
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
   void mouseDoubleClickEvent(QMouseEvent* event) override;
+  void contextMenuEvent(QContextMenuEvent* event) override;
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
   void enterEvent(QEnterEvent* event) override;
 #else
@@ -102,6 +111,8 @@ private:
   double valueToY(double value) const;
   double yToValue(double y) const;
   Handle hitTestHandle(const QPointF& pos, double tolerance = 10.0) const;
+  int categoryAt(const QPointF& pos) const; // -1 outside the swatches and their labels
+  void showCategoryMenu(int entry, const QPoint& globalPos);
   void emitClipChanged();
   void showInlineEditor(Handle handle);
   void commitInlineEditor();

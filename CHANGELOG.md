@@ -1,5 +1,9 @@
 # [Unreleased]
 
+### Added
+
+- Right-click a category in the colorbar to change its color or reset it; with `-e` the whole column follows.
+
 ### Changed
 
 - Retain temporary release artifacts and Docker build records for 3 days; published release downloads remain available.

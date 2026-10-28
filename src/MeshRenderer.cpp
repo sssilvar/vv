@@ -451,6 +451,9 @@ bool MeshRenderer::setActiveScalar(const std::string& scalarName, FieldAssociati
   activeScalarAnalysis = analyzeScalar(meshPtrs, scalarName, association);
   if (activeScalarAnalysis.categorical && sharedCatAnalysis.categorical)
     activeScalarAnalysis = sharedCatAnalysis;
+  if (const auto saved = categoryColors_.find({scalarName, association});
+      saved != categoryColors_.end())
+    activeScalarAnalysis.categoryColors = saved->second;
   activeScalarGlobalRange[0] = range[0];
   activeScalarGlobalRange[1] = range[1];
   clipRange[0] = range[0];
@@ -638,6 +641,31 @@ bool MeshRenderer::setClipRange(double minValue, double maxValue) {
   return found;
 }
 
+bool MeshRenderer::setCategoryColor(double value, const std::optional<std::array<double, 3>>& rgb) {
+  if (activeScalarName.empty() || !activeScalarAnalysis.categorical) {
+    return false;
+  }
+  CategoryColors& colors = activeScalarAnalysis.categoryColors;
+  if (rgb) {
+    colors[value] = *rgb;
+  } else {
+    colors.erase(value);
+  }
+  categoryColors_[{activeScalarName, activeScalarAssociation}] = colors;
+  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
+    setMapperScalar(sceneMeshes[index],
+                    mappers[index],
+                    activeScalarName,
+                    activeScalarAssociation,
+                    clipRange,
+                    activeScalarAnalysis);
+  }
+  if (context.window) {
+    context.window->Render();
+  }
+  return true;
+}
+
 bool MeshRenderer::toggleCyclicColormap() {
   if (activeScalarName.empty() || activeScalarAnalysis.categorical) {
     return false;
@@ -758,6 +786,32 @@ bool MeshRenderer::setFacetPanelClipRange(size_t panelIndex, double minValue, do
   }
   for (const auto& mapper : panel.scalarMappers) {
     mapper->SetScalarRange(panel.clipRange);
+  }
+  if (context.window) {
+    context.window->Render();
+  }
+  return true;
+}
+
+bool MeshRenderer::setFacetCategoryColor(size_t panelIndex,
+                                         double value,
+                                         const std::optional<std::array<double, 3>>& rgb) {
+  if (panelIndex >= facetPanels.size()) {
+    return false;
+  }
+  FacetPanelState& panel = facetPanels[panelIndex];
+  if (!panel.lut || !panel.analysis.categorical) {
+    return false;
+  }
+  if (rgb) {
+    panel.analysis.categoryColors[value] = *rgb;
+  } else {
+    panel.analysis.categoryColors.erase(value);
+  }
+  // Rebuilt rather than patched, so a removed override gets its default color back.
+  panel.lut = buildLookupTable(panel.title, panel.analysis, panel.clipRange);
+  for (const auto& mapper : panel.scalarMappers) {
+    mapper->SetLookupTable(panel.lut);
   }
   if (context.window) {
     context.window->Render();

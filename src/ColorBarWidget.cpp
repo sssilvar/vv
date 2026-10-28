@@ -1,13 +1,22 @@
 #include "ColorBarWidget.h"
 
+#include "ScalarVizUtils.h"
+
+#include <QColorDialog>
 #include <QCursor>
 #include <QDoubleValidator>
+#include <QGridLayout>
+#include <QLabel>
 #include <QLocale>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QToolButton>
+#include <QWidgetAction>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 // ── layout constants ────────────────────────────────────────────────
@@ -34,6 +43,21 @@ static double niceTickStep(double range, int maxTicks) {
     return 5.0 * mag;
   return 10.0 * mag;
 }
+
+// ── category color popup ────────────────────────────────────────────
+static constexpr int kSwatchColumns = 10;
+static constexpr std::array<QRgb, kSwatchColumns> kVividSwatches = {
+    0xFF0000,
+    0xFF8000,
+    0xFFFF00,
+    0x80FF00,
+    0x00C000,
+    0x00FFFF,
+    0x0080FF,
+    0x0000FF,
+    0x8000FF,
+    0xFF00FF,
+};
 
 // ═══════════════════════════════════════════════════════════════════
 ColorBarWidget::ColorBarWidget(QWidget* parent) : QWidget(parent) {
@@ -169,6 +193,16 @@ ColorBarWidget::Handle ColorBarWidget::hitTestHandle(const QPointF& pos, double 
   if (dL <= tolerance)
     return Lower;
   return None;
+}
+
+int ColorBarWidget::categoryAt(const QPointF& pos) const {
+  const QRectF bar = barRect();
+  if (catEntries_.empty() || pos.x() < bar.left() || pos.y() < bar.top() ||
+      pos.y() >= bar.bottom()) {
+    return -1;
+  }
+  const int n = static_cast<int>(catEntries_.size());
+  return std::min(static_cast<int>((pos.y() - bar.top()) * n / bar.height()), n - 1);
 }
 
 void ColorBarWidget::emitClipChanged() {
@@ -382,9 +416,102 @@ void ColorBarWidget::paintEvent(QPaintEvent*) {
   drawHandle(clipMin_, Lower);
 }
 
+// ── category color menu ─────────────────────────────────────────────
+void ColorBarWidget::showCategoryMenu(int entry, const QPoint& globalPos) {
+  // The menu runs its own event loop, which may replace the entries: copy this
+  // one and recheck the index afterwards.
+  const QColor current = catEntries_[static_cast<size_t>(entry)].second;
+  const QString title =
+      QStringLiteral("Color for ") + catEntries_[static_cast<size_t>(entry)].first;
+
+  QMenu menu(this);
+  // Lets the rounded corners show the view behind instead of a square frame.
+  menu.setAttribute(Qt::WA_TranslucentBackground);
+  menu.setStyleSheet(
+      "QMenu { background: rgba(20,20,20,235); border: 1px solid rgba(255,255,255,40);"
+      "  border-radius: 8px; padding: 4px 0; }"
+      "QMenu::item { color: #D8D8D8; padding: 5px 14px; }"
+      "QMenu::item:selected { background: rgba(255,255,255,30); }"
+      "QMenu::separator { height: 1px; background: rgba(255,255,255,30); margin: 4px 10px; }"
+      "QLabel { color: #A0A0A0; }"
+      "QToolButton { border: 2px solid #4A4A4A; border-radius: 4px; }"
+      "QToolButton:hover { border-color: #B0B0B0; }"
+      "QToolButton:checked { border-color: white; }");
+
+  auto* panel = new QWidget(&menu);
+  auto* grid = new QGridLayout(panel);
+  grid->setContentsMargins(12, 6, 12, 6);
+  grid->setSpacing(6);
+  auto* heading = new QLabel(title, panel);
+  heading->setAlignment(Qt::AlignHCenter);
+  grid->addWidget(heading, 0, 0, 1, kSwatchColumns);
+
+  QColor picked;
+  const auto addSwatch = [&](int row, int column, const QColor& color) {
+    auto* swatch = new QToolButton(panel);
+    swatch->setCheckable(true);
+    swatch->setChecked(color == current);
+    swatch->setFixedSize(22, 22);
+    swatch->setToolTip(color.name());
+    swatch->setStyleSheet(QStringLiteral("QToolButton { background: %1; }").arg(color.name()));
+    QObject::connect(swatch, &QToolButton::clicked, &menu, [&picked, &menu, color]() {
+      picked = color;
+      menu.close();
+    });
+    grid->addWidget(swatch, row + 1, column);
+  };
+  const auto tab20 = [](int index) {
+    return QColor::fromRgbF(static_cast<QColorComponent>(kTab20[index][0]),
+                            static_cast<QColorComponent>(kTab20[index][1]),
+                            static_cast<QColorComponent>(kTab20[index][2]));
+  };
+  for (int column = 0; column < kSwatchColumns; ++column) {
+    addSwatch(0, column, tab20(2 * column));
+    addSwatch(1, column, tab20(2 * column + 1));
+    addSwatch(2, column, QColor(kVividSwatches[static_cast<size_t>(column)]));
+    const auto grey = static_cast<QColorComponent>(1.0 - column / (kSwatchColumns - 1.0));
+    addSwatch(3, column, QColor::fromRgbF(grey, grey, grey));
+  }
+
+  auto* swatches = new QWidgetAction(&menu);
+  swatches->setDefaultWidget(panel);
+  menu.addAction(swatches);
+  menu.addSeparator();
+  const QAction* more = menu.addAction(QStringLiteral("More colors…"));
+  const QAction* reset = menu.addAction(QStringLiteral("Reset to default"));
+  const QAction* chosen = menu.exec(globalPos);
+  if (chosen == more) {
+    picked = QColorDialog::getColor(current, this, title);
+  }
+  if (static_cast<size_t>(entry) >= catEntries_.size()) {
+    return;
+  }
+  if (chosen == reset) {
+    emit categoryColorChanged(entry, std::nullopt);
+  } else if (picked.isValid()) {
+    emit categoryColorChanged(entry, picked);
+  }
+}
+
+void ColorBarWidget::contextMenuEvent(QContextMenuEvent* ev) {
+  const int entry = categorical_ ? categoryAt(ev->pos()) : -1;
+  if (entry < 0) {
+    QWidget::contextMenuEvent(ev);
+    return;
+  }
+  ev->accept();
+  showCategoryMenu(entry, ev->globalPos());
+}
+
 // ── mouse interaction ───────────────────────────────────────────────
 void ColorBarWidget::mousePressEvent(QMouseEvent* ev) {
   if (categorical_) {
+    // contextMenuEvent opens the menu; taking the press keeps the viewport behind
+    // from also starting a right-drag zoom.
+    if (ev->button() == Qt::RightButton && categoryAt(mouseLocalPos(ev)) >= 0) {
+      ev->accept();
+      return;
+    }
     QWidget::mousePressEvent(ev);
     return;
   }

@@ -39,8 +39,7 @@ static const double kTab10[10][3] = {
     {0.090, 0.745, 0.812},
 };
 
-// Matplotlib tab20 palette (20 colors).
-static const double kTab20[20][3] = {
+const double kTab20[20][3] = {
     {0.122, 0.467, 0.706}, {0.682, 0.780, 0.910}, {1.000, 0.498, 0.055}, {1.000, 0.733, 0.471},
     {0.173, 0.627, 0.173}, {0.596, 0.875, 0.541}, {0.839, 0.153, 0.157}, {1.000, 0.596, 0.588},
     {0.580, 0.404, 0.741}, {0.773, 0.690, 0.835}, {0.549, 0.337, 0.294}, {0.769, 0.612, 0.580},
@@ -209,11 +208,35 @@ vtkSmartPointer<vtkLookupTable> createCategoricalLookupTable(const std::set<doub
   return lut;
 }
 
-vtkSmartPointer<vtkLookupTable> buildLookupTable(const ScalarAnalysis& analysis,
+vtkSmartPointer<vtkLookupTable> buildLookupTable(const std::string& scalarName,
+                                                 const ScalarAnalysis& analysis,
                                                  const double range[2]) {
-  if (analysis.categorical)
-    return createCategoricalLookupTable(analysis.uniqueValues);
-  return createDefaultLookupTable(range, analysis.cyclic);
+  if (!analysis.categorical)
+    return createDefaultLookupTable(range, analysis.cyclic);
+  auto lut = createCategoricalLookupTable(analysis.uniqueValues);
+  // vv_scalar holds 1 + 0xRRGGBB per point, 0 if unpainted (see JsonMeshParser).
+  if (scalarName == "vv_scalar") {
+    for (double v : analysis.uniqueValues) {
+      const int rgb = static_cast<int>(v) - 1;
+      const vtkIdType idx = lut->GetAnnotatedValueIndex(v);
+      if (rgb < 0) {
+        lut->SetTableValue(idx, 0.6, 0.6, 0.6, 1.0);
+        continue;
+      }
+      lut->SetTableValue(
+          idx, (rgb >> 16 & 0xFF) / 255.0, (rgb >> 8 & 0xFF) / 255.0, (rgb & 0xFF) / 255.0, 1.0);
+      char label[8];
+      std::snprintf(label, sizeof(label), "#%06x", rgb & 0xFFFFFF);
+      lut->SetAnnotation(v, label);
+    }
+  }
+  for (const auto& [value, rgb] : analysis.categoryColors) {
+    const vtkIdType idx = lut->GetAnnotatedValueIndex(value);
+    if (idx >= 0) {
+      lut->SetTableValue(idx, rgb[0], rgb[1], rgb[2], 1.0);
+    }
+  }
+  return lut;
 }
 
 vtkSmartPointer<vtkLookupTable> createDefaultLookupTable(const double range[2], bool cyclic) {
@@ -272,24 +295,7 @@ bool setMapperScalar(vtkDataSet* mesh,
   // categorical LUTs) must stay flat per cell.
   mapper->SetInterpolateScalarsBeforeMapping((!cell && !analysis.categorical) ? 1 : 0);
 
-  auto lut = buildLookupTable(analysis, range);
-  // vv_scalar holds 1 + 0xRRGGBB per point, 0 if unpainted (see JsonMeshParser).
-  if (scalarName == "vv_scalar" && analysis.categorical) {
-    for (double v : analysis.uniqueValues) {
-      const int rgb = static_cast<int>(v) - 1;
-      const vtkIdType idx = lut->GetAnnotatedValueIndex(v);
-      if (rgb < 0) {
-        lut->SetTableValue(idx, 0.6, 0.6, 0.6, 1.0);
-        continue;
-      }
-      lut->SetTableValue(
-          idx, (rgb >> 16 & 0xFF) / 255.0, (rgb >> 8 & 0xFF) / 255.0, (rgb & 0xFF) / 255.0, 1.0);
-      char label[8];
-      std::snprintf(label, sizeof(label), "#%06x", rgb & 0xFFFFFF);
-      lut->SetAnnotation(v, label);
-    }
-  }
-  mapper->SetLookupTable(lut);
+  mapper->SetLookupTable(buildLookupTable(scalarName, analysis, range));
   mapper->SetScalarRange(range);
   return true;
 }

@@ -3,6 +3,8 @@
 #include "ScalarVizUtils.h"
 
 #include <array>
+#include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -74,11 +76,18 @@ public:
   vtkLookupTable* getActiveLUT() const;
   void getClipRange(double outRange[2]) const;
   bool setClipRange(double minValue, double maxValue);
+  // Recolor one category of the active categorical scalar; std::nullopt restores
+  // its default color. The color is kept for that field, so it survives cycling
+  // away and back.
+  bool setCategoryColor(double value, const std::optional<std::array<double, 3>>& rgb);
   bool setPartVisible(size_t partIndex, bool visible);
   size_t getFacetPanelCount() const;
   bool getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo) const;
   vtkLookupTable* getFacetPanelLUT(size_t panelIndex) const;
   bool setFacetPanelClipRange(size_t panelIndex, double minValue, double maxValue);
+  bool setFacetCategoryColor(size_t panelIndex,
+                             double value,
+                             const std::optional<std::array<double, 3>>& rgb);
   // Widen or narrow a panel's full range (what the colorbar ends show), not just
   // the clip window inside it — used to pin one range across every panel.
   bool setFacetPanelGlobalRange(size_t panelIndex, double minValue, double maxValue);
@@ -118,6 +127,7 @@ private:
   FieldAssociation activeScalarAssociation = FieldAssociation::Point;
   ScalarAnalysis activeScalarAnalysis;
   ScalarAnalysis sharedCatAnalysis; // non-empty = override per-scalar detection
+  std::map<std::pair<std::string, FieldAssociation>, CategoryColors> categoryColors_;
   double activeScalarGlobalRange[2] = {0.0, 1.0};
   double clipRange[2] = {0.0, 1.0};
   // Viewports sharing one camera; clipping follows the bounds of every mesh so
@@ -133,7 +143,7 @@ private:
   struct FacetPanelState {
     std::vector<vtkSmartPointer<vtkDataSetMapper>> scalarMappers; // share lut
     vtkSmartPointer<vtkLookupTable> lut;
-    std::string title;
+    std::string title; // scalar name, which buildLookupTable keys on
     bool hasScalar = false;
     size_t column = 0;
     ScalarAnalysis analysis;

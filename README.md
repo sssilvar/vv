@@ -78,6 +78,8 @@ Categorical integer fields (2–20 distinct values) get a discrete tab10/tab20
 colormap; continuous fields get a draggable clip range. Use `-e/--explode` to
 show every field at once in a facet grid sharing one camera.
 
+Right-click a category in the colorbar to pick another color for it, e.g. when two categories are hard to tell apart, or to reset it to its default; "More colors…" opens a full color picker. The color stays for that field until vv exits; with `-e` it applies to the whole column.
+
 `-r/--range min,max` pins the color range of every continuous field, in the
 single view and in every facet, e.g. `--range -80,40` for a transmembrane
 potential in mV. Without it, a time series uses the range sampled across the
