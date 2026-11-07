@@ -270,7 +270,8 @@ std::vector<vtkSmartPointer<vtkDataSet>> JsonMeshParser::parse(const std::string
     if (poly) {
       try {
         parseMeshPainterScalar(root, &poly);
-      } catch (const json::exception&) {
+      } catch (const json::exception& e) {
+        std::cerr << "vv: ignoring malformed mesh painter scalars: " << e.what() << '\n';
       }
       meshes.push_back(poly);
     }

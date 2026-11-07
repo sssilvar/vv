@@ -19,6 +19,11 @@ missingIncludeSystem
 # cppcheck's own informational notices.
 checkersReport
 
+# cppcheck 2.7 counts std::string_view as an expensive copy; it is a pointer and a
+# length, made to be passed by value.
+passedByValue:src/LucideIcon.cpp
+passedByValue:src/Colormaps.cpp
+
 # Subjective style rule: a short, clear raw loop is often more readable than an
 # <algorithm> call with a lambda. We don't enforce this.
 useStlAlgorithm

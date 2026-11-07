@@ -7,6 +7,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -14,32 +17,42 @@ concurrency:
 env:
   CI: true
 
-# Fast quality gate: format, a warnings-as-errors build, and cppcheck — all on a
-# single Linux runner with ccache. Multi-OS packaging runs only on release tags
-# (see release.yml), so PRs are not blocked on slow cross-platform builds.
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check tracked C++ sources
+        run: |
+          clang-format --version
+          git ls-files -z -- 'src/*.cpp' 'src/include/*.h' 'tests/*.cpp' 'tests/*.h' |
+            xargs -0 clang-format --dry-run --Werror
+
   quality:
+    needs: format
     runs-on: ubuntu-22.04
     name: Format + Warnings + cppcheck
+    timeout-minutes: 25
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build ccache clang-format clang-tidy cppcheck \
-            qtbase5-dev libfmt-dev libcxxopts-dev nlohmann-json3-dev \
+            qtbase5-dev libcxxopts-dev nlohmann-json3-dev \
             libvtk9-dev libvtk9-qt-dev \
             libgl-dev libglx-dev libxt-dev
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: ccache-${{ github.workflow }}-ubuntu-22.04
           max-size: 500M
-
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
@@ -47,29 +60,130 @@ jobs:
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DVV_ENABLE_WARNINGS=ON \
-            -DVV_WARNINGS_AS_ERRORS=ON
-
-      - name: Check formatting
-        run: |
-          cmake --build build --target format
-          git diff --exit-code
-
-      - name: Build (warnings as errors)
+            -DVV_ENABLE_WARNINGS=ON -DVV_WARNINGS_AS_ERRORS=ON \
+            -DBUILD_TESTING=ON
+      - name: Build
         run: cmake --build build -j"$(nproc)"
-
-      # Static analysis via build.sh so local and CI share the exact same flags,
-      # suppressions, and version probes (build already done above; --no-build
-      # just regenerates compile_commands and runs the analyzer).
-      - name: cppcheck (gate)
-        run: ./build.sh --no-build --cppcheck
-
-      # clang-tidy is advisory in CI: the runner's clang-tidy version differs from
-      # developers' and can surface version-specific findings, so it reports
-      # without blocking the merge. `build.sh --analyze` gates it locally.
-      - name: clang-tidy (advisory)
+      - name: Regression tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Static analysis gates
+        run: ./build.sh --no-build --cppcheck --clang-tidy-check
+      - name: Full clang-tidy review
+        if: github.event_name == 'workflow_dispatch'
         continue-on-error: true
         run: ./build.sh --no-build --clang-tidy
+      - name: CPU interaction benchmarks
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-results
+          build/tests/vv_viewer_tests benchmarkFacetSetup -iterations 5 -median 5 -o benchmark-results/cpu-setup.xml,xml -o -,txt
+          build/tests/vv_viewer_tests benchmarkColumnInteraction -iterations 1000 -median 5 -o benchmark-results/cpu-interaction.xml,xml -o -,txt
+      - name: Software OpenGL frame benchmark
+        timeout-minutes: 3
+        env:
+          QT_QPA_PLATFORM: xcb
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a build/tests/vv_render_benchmark --require-rendering --output benchmark-results/render.json
+      - name: Benchmark summary
+        if: always()
+        run: python3 scripts/benchmark-summary.py benchmark-results
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: benchmarks-linux-${{ github.sha }}
+          path: benchmark-results/
+          retention-days: 7
 
-      - name: Smoke test
-        run: ./build/vv --version
+  platforms:
+    needs: format
+    name: Tests and benchmarks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            shell: bash
+            platform: cocoa
+          - os: windows-latest
+            shell: 'msys2 {0}'
+            platform: windows
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          for pkg in cmake ninja ccache vtk qtbase cxxopts nlohmann-json; do
+            brew list --versions "$pkg" >/dev/null || brew install "$pkg"
+          done
+      - name: Set up MSYS2
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-vtk
+            mingw-w64-x86_64-fast_float
+            mingw-w64-x86_64-hdf5
+            mingw-w64-x86_64-cxxopts
+            mingw-w64-x86_64-nlohmann-json
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
+        if: runner.os == 'macOS'
+        with:
+          key: ccache-${{ github.workflow }}-${{ matrix.os }}
+          max-size: 500M
+      - name: Configure and build
+        run: |
+          set -euo pipefail
+          prefix=/mingw64
+          if [ "$RUNNER_OS" = macOS ]; then
+            prefix="$(brew --prefix qtbase);$(brew --prefix vtk)"
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+            -DVV_ENABLE_WARNINGS=ON -DVV_WARNINGS_AS_ERRORS=ON \
+            -DVV_QT_WINDOWS_DEPLOY=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_PREFIX_PATH="$prefix"
+          cmake --build build -j 4
+      - name: Regression tests
+        run: ctest --test-dir build --output-on-failure
+      - name: CPU interaction benchmarks
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-results
+          build/tests/vv_viewer_tests benchmarkFacetSetup -iterations 5 -median 5 -o benchmark-results/cpu-setup.xml,xml -o -,txt
+          build/tests/vv_viewer_tests benchmarkColumnInteraction -iterations 1000 -median 5 -o benchmark-results/cpu-interaction.xml,xml -o -,txt
+      - name: Native OpenGL frame benchmark
+        timeout-minutes: 3
+        env:
+          QT_QPA_PLATFORM: ${{ matrix.platform }}
+        run: build/tests/vv_render_benchmark --output benchmark-results/render.json
+      - name: Benchmark summary
+        if: always()
+        shell: python
+        run: |
+          import runpy, sys
+          sys.argv = ['scripts/benchmark-summary.py', 'benchmark-results']
+          runpy.run_path(sys.argv[0], run_name='__main__')
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: benchmarks-${{ matrix.os }}-${{ github.sha }}
+          path: benchmark-results/
+          retention-days: 7

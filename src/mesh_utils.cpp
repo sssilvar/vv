@@ -108,6 +108,11 @@ std::string stdinToTempFile() {
       return {};
     }
   }
-  fclose(out);
+  const bool readFailed = ferror(stdin) != 0;
+  const bool closeFailed = fclose(out) != 0;
+  if (readFailed || closeFailed) {
+    remove(tmpPath.c_str());
+    return {};
+  }
   return tmpPath;
 }

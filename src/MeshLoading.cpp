@@ -49,12 +49,10 @@ bool partColorFromMesh(vtkDataSet* mesh, std::array<double, 3>& color) {
   }
   auto* colorArray = vtkDataArray::SafeDownCast(mesh->GetFieldData()->GetArray("vv_part_color"));
   if (!colorArray || colorArray->GetNumberOfTuples() == 0 ||
-      colorArray->GetNumberOfComponents() < 3) {
+      colorArray->GetNumberOfComponents() != 3) {
     return false;
   }
-  double tuple[3] = {0.0, 0.0, 0.0};
-  colorArray->GetTuple(0, tuple);
-  color = {tuple[0], tuple[1], tuple[2]};
+  colorArray->GetTuple(0, color.data());
   return true;
 }
 
@@ -106,7 +104,7 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles) {
       if (tmpFile.empty()) {
         result.ok = false;
         result.exitCode = 5;
-        result.error = "Failed to create temp file for stdin";
+        result.error = "Failed to read stdin into a temporary file";
         return result;
       }
       realFilename = tmpFile;
