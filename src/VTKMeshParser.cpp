@@ -47,6 +47,15 @@ std::vector<vtkSmartPointer<vtkDataSet>> VTKMeshParser::parse(const std::string&
     // Clipped meshes (e.g. from ParaView) become UNSTRUCTURED_GRID.
     vtkNew<vtkDataSetReader> reader;
     reader->SetFileName(filename.c_str());
+    // Without these, only the first block of each attribute type per association is
+    // kept. The first block stays the active attribute; later ones become plain arrays.
+    reader->ReadAllScalarsOn();
+    reader->ReadAllVectorsOn();
+    reader->ReadAllNormalsOn();
+    reader->ReadAllTensorsOn();
+    reader->ReadAllColorScalarsOn();
+    reader->ReadAllTCoordsOn();
+    reader->ReadAllFieldsOn();
     reader->Update();
     vtkDataSet* ds = reader->GetOutput();
     if (ds && ds->GetNumberOfPoints() > 0) {

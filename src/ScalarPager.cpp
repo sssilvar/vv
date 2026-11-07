@@ -1,118 +1,194 @@
 #include "ScalarPager.h"
 
-#include <QColor>
+#include "LucideIcon.h"
+#include "OverlayStyle.h"
+
 #include <QHBoxLayout>
-#include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
-#include <QPainter>
-#include <QPainterPath>
-#include <QPen>
-#include <QPixmap>
 #include <QSize>
 #include <QToolButton>
-#include <QTransform>
 #include <QVBoxLayout>
 
 namespace {
-// Fixed so the buttons stay put while names of different lengths page through.
-constexpr int kTitleWidth = 280;
-const QColor kIconColor(232, 232, 232); // matches the title text color
+constexpr int kListIconSize = 14;
+constexpr int kListIconGap = 2;
+constexpr int kBadgeGap = 6;
+constexpr int kStepIconSize = 20;
+constexpr int kMargin = 6;
 
 enum class Direction { Previous, Next };
 
-// Lucide's chevrons-left and chevrons-right (https://lucide.dev, derived from
-// Feather under the MIT license): the SVG strokes, painted in the same 24x24 box
-// so no SVG module is needed.
-QIcon chevronsIcon(Direction direction) {
-  QPainterPath path;
-  path.moveTo(11.0, 17.0);
-  path.lineTo(6.0, 12.0);
-  path.lineTo(11.0, 7.0);
-  path.moveTo(18.0, 17.0);
-  path.lineTo(13.0, 12.0);
-  path.lineTo(18.0, 7.0);
-  if (direction == Direction::Next) {
-    path = QTransform().translate(24.0, 0.0).scale(-1.0, 1.0).map(path);
-  }
-  const QPen pen(kIconColor, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-  QIcon icon;
-  for (const int scale : {1, 2}) {
-    QPixmap pix(24 * scale, 24 * scale);
-    pix.fill(Qt::transparent);
-    QPainter painter(&pix);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.scale(scale, scale);
-    painter.strokePath(path, pen);
-    painter.end();
-    icon.addPixmap(pix);
-  }
-  return icon;
+// The name block is fixed so the pager keeps its size while names of different lengths
+// page through; the playback bar's is narrower, leaving its timeline the room.
+struct Metrics {
+  int nameWidth;
+  int buttonSize;
+};
+
+Metrics metricsFor(PagerPlacement placement) {
+  return placement == PagerPlacement::Capsule ? Metrics{236, 36} : Metrics{160, 32};
 }
 } // namespace
 
-ScalarPager::ScalarPager(QWidget* parent) : QWidget(parent) {
+QString facetPageLabel(std::size_t first, std::size_t count, std::size_t total) {
+  if (count == 1) {
+    return QStringLiteral("Field %1 of %2").arg(first + 1).arg(total);
+  }
+  return QStringLiteral("Fields %1–%2 of %3").arg(first + 1).arg(first + count).arg(total);
+}
+
+SpaceAction spaceAction(Qt::KeyboardModifiers modifiers, bool timeSeries) {
+  if (modifiers.testFlag(kStepBackModifier)) {
+    return SpaceAction::PreviousField;
+  }
+  if (timeSeries && !modifiers.testFlag(Qt::ShiftModifier)) {
+    return SpaceAction::PlayPause;
+  }
+  return SpaceAction::NextField;
+}
+
+ScalarPager::ScalarPager(PagerPlacement placement, QWidget* parent)
+    : QWidget(parent), placement_(placement) {
+  const Metrics metrics = metricsFor(placement);
+  const bool capsule = placement == PagerPlacement::Capsule;
   setObjectName("scalarPager");
-  setAttribute(Qt::WA_StyledBackground, true);
+  setAttribute(Qt::WA_StyledBackground, capsule);
+  // A press on the capsule's padding must not reach the viewport and start a rotation.
+  setAttribute(Qt::WA_NoMousePropagation, true);
   setFocusPolicy(Qt::NoFocus);
-  setStyleSheet("QWidget#scalarPager {"
-                "  background: rgba(20,20,20,200);"
-                "  border-radius: 8px;"
-                "}"
-                "QToolButton {"
-                "  background: rgba(255,255,255,18);"
-                "  border: none;"
-                "  border-radius: 4px;"
-                "}"
-                "QToolButton:hover { background: rgba(255,255,255,40); }"
-                "QLabel#scalarPagerTitle { color: #E8E8E8; font-size: 13px; }"
-                "QLabel#scalarPagerCounter { color: #A0A0A0; font-size: 11px; }");
+  setCursor(Qt::ArrowCursor);
+  const QString surface =
+      capsule ? QStringLiteral("QWidget#scalarPager { background: %1; border: 1px solid %2;"
+                               "  border-radius: %3px; }")
+                    .arg(overlay::css(overlay::kSurface),
+                         overlay::css(overlay::solidBorder(overlay::kSurfaceBorder)),
+                         QString::number(metrics.buttonSize / 2 + kMargin))
+              : QString();
+  setStyleSheet(surface + QStringLiteral("QToolButton { background: transparent; border: none;"
+                                         "  border-radius: 12px; }"
+                                         "QToolButton#scalarPagerStep { border-radius: %1px; }"
+                                         "QToolButton:hover { background: %2; }"
+                                         "QToolButton:pressed { background: %3; }"
+                                         "QLabel#scalarPagerTitle { color: %4; font-size: 13px;"
+                                         "  font-weight: 600; }"
+                                         "QLabel#scalarPagerDetail { color: %5; font-size: 11px; }")
+                              .arg(QString::number(metrics.buttonSize / 2),
+                                   overlay::css(overlay::kHover),
+                                   overlay::css(overlay::kSelected),
+                                   overlay::css(overlay::kText),
+                                   overlay::css(overlay::kTextSecondary)));
 
   auto* row = new QHBoxLayout(this);
-  row->setContentsMargins(6, 6, 6, 6);
-  row->setSpacing(8);
+  row->setContentsMargins(capsule ? kMargin : 0, kMargin, capsule ? kMargin : 0, kMargin);
+  row->setSpacing(capsule ? 4 : 2);
 
-  const auto makeButton = [this](Direction direction, const QString& name, const QString& keys) {
+  const auto makeButton = [this, &metrics](Direction direction) {
     auto* button = new QToolButton(this);
-    button->setIcon(chevronsIcon(direction));
-    button->setIconSize(QSize(20, 20));
-    button->setAccessibleName(name);
-    button->setToolTip(QStringLiteral("%1 (%2)").arg(name, keys));
-    // Keeps focus on the viewport, so Space keeps cycling instead of pressing the button.
+    button->setObjectName("scalarPagerStep");
+    button->setIcon(lucideIcon(
+        direction == Direction::Next ? Lucide::ChevronRight : Lucide::ChevronLeft, kStepIconSize));
+    button->setIconSize(QSize(kStepIconSize, kStepIconSize));
+    // Keeps focus on the viewport, so Space keeps working instead of pressing the button.
     button->setFocusPolicy(Qt::NoFocus);
-    button->setFixedSize(30, 36);
+    button->setFixedSize(metrics.buttonSize, metrics.buttonSize);
     const int step = direction == Direction::Next ? 1 : -1;
     connect(button, &QToolButton::clicked, this, [this, step]() { emit stepRequested(step); });
     return button;
   };
 
-  title_ = new QLabel(this);
+  // The name, its kind and the position badge let clicks through to the button under them.
+  name_ = new QToolButton(this);
+  name_->setAccessibleName(QStringLiteral("Fields"));
+  name_->setFocusPolicy(Qt::NoFocus);
+  name_->setFixedHeight(capsule ? metrics.buttonSize : 44);
+  auto* text = new QWidget(name_);
+  text->setFixedWidth(metrics.nameWidth);
+  text->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  title_ = new QLabel(text);
   title_->setObjectName("scalarPagerTitle");
-  title_->setAlignment(Qt::AlignCenter);
-  title_->setFixedWidth(kTitleWidth);
-  counter_ = new QLabel(this);
-  counter_->setObjectName("scalarPagerCounter");
-  counter_->setAlignment(Qt::AlignCenter);
+  auto* listIcon = new QLabel(text);
+  listIcon->setPixmap(lucideIcon(Lucide::ChevronDown, kListIconSize, overlay::kTextSecondary)
+                          .pixmap(kListIconSize, kListIconSize));
+  detail_ = new QLabel(text);
+  detail_->setObjectName("scalarPagerDetail");
+  position_ = overlay::badge(capsule ? static_cast<QWidget*>(name_) : text);
+  position_->setObjectName("scalarPagerPosition");
+  position_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  auto* titleRow = new QHBoxLayout;
+  titleRow->setSpacing(kListIconGap);
+  titleRow->addWidget(title_);
+  titleRow->addWidget(listIcon);
+  titleRow->addStretch(1);
+  auto* lines = new QVBoxLayout(text);
+  lines->setContentsMargins(0, 0, 0, 0);
+  lines->setSpacing(capsule ? 0 : 3);
+  lines->addLayout(titleRow);
+  auto* content = new QHBoxLayout(name_);
+  content->setSpacing(10);
+  content->addWidget(text);
+  if (capsule) {
+    lines->addWidget(detail_);
+    content->setContentsMargins(10, 0, 8, 1);
+    content->addWidget(position_, 0, Qt::AlignVCenter);
+  } else {
+    auto* detailRow = new QHBoxLayout;
+    detailRow->setSpacing(kBadgeGap);
+    detailRow->addWidget(detail_);
+    detailRow->addWidget(position_);
+    detailRow->addStretch(1);
+    lines->addLayout(detailRow);
+    content->setContentsMargins(8, 0, 8, 0);
+  }
+  connect(name_, &QToolButton::clicked, this, [this]() { emit listRequested(); });
 
-  auto* text = new QVBoxLayout;
-  text->setSpacing(0);
-  text->addWidget(title_);
-  text->addWidget(counter_);
-
-  const QString back = QKeySequence(static_cast<int>(kStepBackModifier) | Qt::Key_Space)
-                           .toString(QKeySequence::NativeText);
-  row->addWidget(makeButton(Direction::Previous, QStringLiteral("Previous field"), back));
-  row->addLayout(text);
-  row->addWidget(
-      makeButton(Direction::Next, QStringLiteral("Next field"), QStringLiteral("Space")));
+  const auto spaceWith = [](Qt::KeyboardModifier modifier) {
+    return QKeySequence(static_cast<int>(modifier) | Qt::Key_Space)
+        .toString(QKeySequence::NativeText);
+  };
+  previousKeys_ = spaceWith(kStepBackModifier);
+  nextKeys_ = capsule ? QStringLiteral("Space") : spaceWith(Qt::ShiftModifier);
+  previous_ = makeButton(Direction::Previous);
+  next_ = makeButton(Direction::Next);
+  row->addWidget(previous_);
+  row->addWidget(name_);
+  row->addWidget(next_);
+  setStepNames(QStringLiteral("Previous field"), QStringLiteral("Next field"));
+  fitName();
 }
 
-void ScalarPager::setPage(const QString& title, int position, int count) {
-  // The first page is set before the label is shown; polishing applies the
-  // style sheet's font so the elision measures with it.
+void ScalarPager::setStepNames(const QString& previous, const QString& next) {
+  previous_->setAccessibleName(previous);
+  previous_->setToolTip(QStringLiteral("%1 (%2)").arg(previous, previousKeys_));
+  next_->setAccessibleName(next);
+  next_->setToolTip(QStringLiteral("%1 (%2)").arg(next, nextKeys_));
+}
+
+void ScalarPager::fitName() {
+  // A tool button sizes to its own text and icon, not to the labels inside it.
+  name_->layout()->invalidate();
+  name_->setFixedWidth(name_->layout()->minimumSize().width());
+}
+
+void ScalarPager::setPage(const QString& title, const QString& detail, int position, int count) {
+  // The first page is set before the labels are shown; polishing applies the style
+  // sheet's fonts so the elision and the badge measure with them.
   title_->ensurePolished();
-  const QString shown = title_->fontMetrics().elidedText(title, Qt::ElideMiddle, kTitleWidth);
+  detail_->ensurePolished();
+  position_->ensurePolished();
+  const int nameWidth = metricsFor(placement_).nameWidth;
+  const int titleWidth = nameWidth - kListIconSize - kListIconGap;
+  const QString shown = title_->fontMetrics().elidedText(title, Qt::ElideMiddle, titleWidth);
   title_->setText(shown);
-  title_->setToolTip(shown == title ? QString() : title);
-  counter_->setText(QStringLiteral("%1/%2").arg(position).arg(count));
+  // As wide as the last position, so paging never resizes the pager.
+  position_->setText(QStringLiteral("%1 / %1").arg(count));
+  position_->setMinimumWidth(position_->sizeHint().width());
+  position_->setText(QStringLiteral("%1 / %2").arg(position).arg(count));
+  const int detailWidth = placement_ == PagerPlacement::Capsule
+                              ? nameWidth
+                              : nameWidth - position_->minimumWidth() - kBadgeGap;
+  detail_->setText(detail_->fontMetrics().elidedText(detail, Qt::ElideRight, detailWidth));
+  fitName();
+  const QString hint = QStringLiteral("Show every field");
+  name_->setToolTip(shown == title ? hint : title + QLatin1Char('\n') + hint);
 }

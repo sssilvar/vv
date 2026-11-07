@@ -107,7 +107,7 @@ bool VTKHDFTemporalSource::sampledScalarRange(const std::string& scalarName,
       continue;
     }
     double range[2];
-    arr->GetRange(range);
+    arr->GetFiniteRange(range);
     if (!any) {
       lo = range[0];
       hi = range[1];

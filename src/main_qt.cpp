@@ -1,4 +1,5 @@
 #include "MeshLoading.h"
+#include "TemporalSource.h"
 #include "ViewerWindow.h"
 #include "version.h"
 
@@ -11,10 +12,14 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
-#include <cstdio>
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cxxopts.hpp>
 #include <iostream>
+#include <locale>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 #ifdef __APPLE__
@@ -28,13 +33,33 @@ struct Args {
   bool explode_view = false;
   bool common_cat_lut = false;
   bool annotate = false;
-  std::string range; // "min,max": pin the color range for continuous fields
+  std::optional<std::array<double, 2>> range;
   bool version = false;
   bool help = false;
 };
 
+// Accepts exactly "min,max" with finite min < max; the classic locale keeps the
+// decimal separator independent of the user's environment.
+std::optional<std::array<double, 2>> parseRange(const std::string& text) {
+  std::istringstream input(text);
+  input.imbue(std::locale::classic());
+  std::array<double, 2> range{};
+  char delimiter = '\0';
+  if (!(input >> range[0] >> delimiter >> range[1]) || delimiter != ',' ||
+      !std::isfinite(range[0]) || !std::isfinite(range[1]) || range[0] >= range[1]) {
+    return std::nullopt;
+  }
+  // Skipping trailing whitespace may set failbit once eof is reached; only eof matters.
+  input >> std::ws;
+  if (!input.eof()) {
+    return std::nullopt;
+  }
+  return range;
+}
+
 Args parseArgs(int argc, char* argv[]) {
   Args args;
+  std::string range;
   cxxopts::Options options("vv", "A Qt-based mesh viewer");
   options.positional_help("<meshfile> [<meshfile2> ...]");
   options.add_options()(
@@ -45,11 +70,11 @@ Args parseArgs(int argc, char* argv[]) {
       "Share one categorical colormap across all categorical scalars for cross-scalar comparison",
       cxxopts::value<bool>(args.common_cat_lut))(
       "a,annotate",
-      "Annotation mode: paint a per-cell 'label' array with a surface brush",
+      "Start in annotation mode, painting a per-cell 'label' array (B toggles it)",
       cxxopts::value<bool>(args.annotate))(
       "r,range",
       "Pin the color range for continuous scalars, e.g. -80,40",
-      cxxopts::value<std::string>(args.range))(
+      cxxopts::value<std::string>(range))(
       "v,version", "Show version and exit", cxxopts::value<bool>(args.version))(
       "h,help", "Show help and exit", cxxopts::value<bool>(args.help))(
       "meshfiles",
@@ -57,8 +82,9 @@ Args parseArgs(int argc, char* argv[]) {
       cxxopts::value<std::vector<std::string>>(args.meshfiles));
   options.parse_positional({"meshfiles"});
 
+  bool hasRange = false;
   try {
-    options.parse(argc, argv);
+    hasRange = options.parse(argc, argv).count("range") != 0;
     // cxxopts exceptions all derive from std::exception; catching the base type
     // works across cxxopts versions (older ones lack the cxxopts::exceptions
     // namespace) and keeps the Ubuntu/Docker system-cxxopts build green.
@@ -78,6 +104,13 @@ Args parseArgs(int argc, char* argv[]) {
   if (args.meshfiles.empty()) {
     std::cerr << "Usage: vv <meshfile> [<meshfile2> ...]\n" << options.help() << '\n';
     std::exit(1);
+  }
+  if (hasRange) {
+    args.range = parseRange(range);
+    if (!args.range) {
+      std::cerr << "vv: --range expects finite min,max with min < max (e.g. -80,40)\n";
+      std::exit(1);
+    }
   }
   return args;
 }
@@ -133,11 +166,15 @@ void addWindowsQtPluginPath() {
 } // namespace
 #endif
 
-// ═════════════════════════════════════════════════════════════════════
 int main(int argc, char* argv[]) try {
   Args args = parseArgs(argc, argv);
 
-  // ── Qt + VTK setup ────────────────────────────────────────────
+  MeshLoadResult loadResult = loadMeshes(args.meshfiles);
+  if (!loadResult.ok) {
+    std::cerr << loadResult.error << '\n';
+    return loadResult.exitCode;
+  }
+
   QSurfaceFormat format = QVTKOpenGLNativeWidget::defaultFormat();
   format.setSwapInterval(0);
   format.setSamples(0);
@@ -150,31 +187,19 @@ int main(int argc, char* argv[]) try {
 
   QApplication app(argc, argv);
 
-  MeshLoadResult loadResult = loadMeshes(args.meshfiles);
-  if (!loadResult.ok) {
-    std::cerr << loadResult.error << '\n';
-    return loadResult.exitCode;
-  }
-
   ViewerOptions viewerOptions;
-  if (!args.range.empty()) {
-    double lo = 0.0, hi = 0.0;
-    if (std::sscanf(args.range.c_str(), "%lf,%lf", &lo, &hi) != 2 || lo >= hi) {
-      std::cerr << "vv: --range expects min,max with min < max (e.g. -80,40)\n";
-      return 1;
-    }
-    viewerOptions.hasFixedRange = true;
-    viewerOptions.fixedRange[0] = lo;
-    viewerOptions.fixedRange[1] = hi;
-  }
+  viewerOptions.fixedRange = args.range;
   viewerOptions.explodeView = args.explode_view;
   viewerOptions.commonCatLut = args.common_cat_lut;
   const bool singleFile = args.meshfiles.size() == 1;
-  viewerOptions.annotate = args.annotate && !args.explode_view && singleFile;
+  const bool timeSeries = loadResult.temporal && loadResult.temporal->playable();
+  viewerOptions.annotate = args.annotate && !args.explode_view && singleFile && !timeSeries;
   if (args.annotate && args.explode_view) {
     std::cerr << "Warning: --annotate is not supported with --explode; ignoring --annotate.\n";
   } else if (args.annotate && !singleFile) {
     std::cerr << "Warning: --annotate needs a single mesh file; ignoring --annotate.\n";
+  } else if (args.annotate && timeSeries) {
+    std::cerr << "Warning: --annotate is not supported for a time series; ignoring --annotate.\n";
   }
 
   ViewerWindow window(std::move(loadResult), viewerOptions);

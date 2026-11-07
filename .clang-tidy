@@ -39,14 +39,15 @@ Checks: >
   -readability-use-concise-preprocessor-directives,
   -readability-redundant-casting,
   -bugprone-float-loop-counter,
+  -bugprone-signed-bitwise,
   -clang-analyzer-security.FloatLoopCounter,
   -performance-inefficient-string-concatenation
 
 # Only diagnose our own headers, not VTK/Qt system headers.
 HeaderFilterRegex: 'src/include/.*\.h$'
 
-# Real bug-class findings fail CI; modernize/readability stay advisory so a newer
-# clang-tidy adding stricter style checks doesn't unexpectedly break the build.
+# Local analysis treats these findings as errors. CI gates the smaller explicit
+# correctness set in build.sh; this full configuration is advisory there.
 WarningsAsErrors: 'bugprone-*,clang-analyzer-*,performance-*,portability-*'
 
 FormatStyle: file

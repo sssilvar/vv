@@ -7,7 +7,6 @@ RUN apt-get update && apt-get install -y \
     git \
     ninja-build \
     qtbase5-dev \
-    libfmt-dev \
     libcxxopts-dev \
     nlohmann-json3-dev \
     libvtk9-dev \

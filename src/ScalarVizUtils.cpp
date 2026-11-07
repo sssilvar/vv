@@ -1,15 +1,59 @@
 #include "ScalarVizUtils.h"
 
+#include "TemporalSource.h"
+
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <vtkCellData.h>
+#include <vtkCellPicker.h>
 #include <vtkDataArray.h>
 #include <vtkDataSetAttributes.h>
+#include <vtkGenericCell.h>
+#include <vtkInformation.h>
+#include <vtkInformationObjectBaseKey.h>
 #include <vtkNamedColors.h>
+#include <vtkNew.h>
 #include <vtkPointData.h>
 #include <vtkType.h>
+
+namespace {
+
+// vtkCellPicker reports a hit on a triangle strip, poly-line or poly-vertex in one of
+// its sub-cells, whose vertex order it picks itself; these protected helpers rebuild
+// that sub-cell. Never instantiated.
+struct PickedSubCell : vtkCellPicker {
+  using vtkCellPicker::HasSubCells;
+  using vtkCellPicker::SubCellFromCell;
+};
+
+// Where an array keeps the table its file attached once setMapperScalar takes it off.
+vtkInformationObjectBaseKey* fileTableKey() {
+  // VTK's key manager deletes keys at exit.
+  static auto* const key =
+      new vtkInformationObjectBaseKey("FILE_LOOKUP_TABLE", "vv", "vtkLookupTable");
+  return key;
+}
+
+// vv_scalar holds 1 + 0xRRGGBB per painted point and 0 elsewhere (see JsonMeshParser).
+constexpr char kPaintedField[] = "vv_scalar";
+constexpr std::array<double, 3> kUnpaintedGray = {0.6, 0.6, 0.6};
+
+CategoryColors paintedColors(const std::set<double>& values) {
+  CategoryColors colors;
+  for (const double value : values) {
+    const int hex = static_cast<int>(value) - 1;
+    colors[value] = hex < 0 ? kUnpaintedGray
+                            : std::array<double, 3>{(hex >> 16 & 0xFF) / 255.0,
+                                                    (hex >> 8 & 0xFF) / 255.0,
+                                                    (hex & 0xFF) / 255.0};
+  }
+  return colors;
+}
+
+} // namespace
 
 vtkDataArray*
 arrayForAssociation(vtkDataSet* mesh, const std::string& name, FieldAssociation association) {
@@ -25,27 +69,102 @@ arrayForAssociation(vtkDataSet* mesh, const std::string& name, FieldAssociation 
   return attrs->GetArray(name.c_str());
 }
 
-// Matplotlib tab10 palette (10 colors).
-static const double kTab10[10][3] = {
-    {0.122, 0.467, 0.706},
-    {1.000, 0.498, 0.055},
-    {0.173, 0.627, 0.173},
-    {0.839, 0.153, 0.157},
-    {0.580, 0.404, 0.741},
-    {0.549, 0.337, 0.294},
-    {0.890, 0.467, 0.761},
-    {0.498, 0.498, 0.498},
-    {0.737, 0.741, 0.133},
-    {0.090, 0.745, 0.812},
-};
+std::optional<CellPoint>
+cellPointAtPick(vtkDataSet* mesh, vtkIdType cellId, int subId, const double pcoords[3]) {
+  if (!mesh || cellId < 0 || cellId >= mesh->GetNumberOfCells()) {
+    return std::nullopt;
+  }
+  vtkNew<vtkGenericCell> cell;
+  mesh->GetCell(cellId, cell);
+  if (PickedSubCell::HasSubCells(cell->GetCellType())) {
+    PickedSubCell::SubCellFromCell(cell, subId);
+  }
+  CellPoint at;
+  at.cell = cellId;
+  at.weights.resize(static_cast<size_t>(cell->GetNumberOfPoints()));
+  if (at.weights.empty()) {
+    return std::nullopt;
+  }
+  // On a degenerate cell, such as a triangle at a mesh's pole, the picker measures
+  // the hit along an edge of zero length, which gives NaN. That edge's far vertex
+  // sits on the edge's origin, so no weight needs to move along it.
+  double finite[3];
+  std::transform(pcoords, pcoords + 3, finite, [](double coordinate) {
+    return std::isfinite(coordinate) ? coordinate : 0.0;
+  });
+  double position[3];
+  cell->EvaluateLocation(subId, finite, position, at.weights.data());
+  at.points.reserve(at.weights.size());
+  for (vtkIdType vertex = 0; vertex < cell->GetNumberOfPoints(); ++vertex) {
+    at.points.push_back(cell->GetPointId(static_cast<int>(vertex)));
+  }
+  return at;
+}
 
-const double kTab20[20][3] = {
-    {0.122, 0.467, 0.706}, {0.682, 0.780, 0.910}, {1.000, 0.498, 0.055}, {1.000, 0.733, 0.471},
-    {0.173, 0.627, 0.173}, {0.596, 0.875, 0.541}, {0.839, 0.153, 0.157}, {1.000, 0.596, 0.588},
-    {0.580, 0.404, 0.741}, {0.773, 0.690, 0.835}, {0.549, 0.337, 0.294}, {0.769, 0.612, 0.580},
-    {0.890, 0.467, 0.761}, {0.969, 0.714, 0.824}, {0.498, 0.498, 0.498}, {0.780, 0.780, 0.780},
-    {0.737, 0.741, 0.133}, {0.859, 0.859, 0.553}, {0.090, 0.745, 0.812}, {0.620, 0.855, 0.898},
-};
+std::optional<double> fieldValueAt(vtkDataSet* mesh,
+                                   const ScalarField& field,
+                                   const ScalarAnalysis& analysis,
+                                   const CellPoint& at) {
+  vtkDataArray* values = arrayForAssociation(mesh, field.name, field.association);
+  if (!values || values->GetNumberOfComponents() != 1) {
+    return std::nullopt;
+  }
+  const vtkIdType tuples = values->GetNumberOfTuples();
+  if (field.association == FieldAssociation::Cell) {
+    if (at.cell < 0 || at.cell >= tuples) {
+      return std::nullopt;
+    }
+    return values->GetComponent(at.cell, 0);
+  }
+  if (at.points.empty() || at.points.size() != at.weights.size() ||
+      std::any_of(at.points.begin(), at.points.end(), [tuples](vtkIdType point) {
+        return point < 0 || point >= tuples;
+      })) {
+    return std::nullopt;
+  }
+  if (analysis.categorical) {
+    const auto heaviest =
+        std::distance(at.weights.begin(), std::max_element(at.weights.begin(), at.weights.end()));
+    return values->GetComponent(at.points[static_cast<size_t>(heaviest)], 0);
+  }
+  double value = 0.0;
+  for (size_t vertex = 0; vertex < at.points.size(); ++vertex) {
+    value += at.weights[vertex] * values->GetComponent(at.points[vertex], 0);
+  }
+  return value;
+}
+
+std::optional<double> fieldValueAtPick(vtkDataSet* mesh,
+                                       const std::string& name,
+                                       FieldAssociation association,
+                                       const ScalarAnalysis& analysis,
+                                       vtkIdType cellId,
+                                       int subId,
+                                       const double pcoords[3]) {
+  const std::optional<CellPoint> at = cellPointAtPick(mesh, cellId, subId, pcoords);
+  return at ? fieldValueAt(mesh, {name, association}, analysis, *at) : std::nullopt;
+}
+
+int readTraceFrames(TemporalSource& source,
+                    vtkDataSet* frame,
+                    const CellPoint& at,
+                    const ScalarField& field,
+                    const ScalarAnalysis& analysis,
+                    ProbeTrace& trace,
+                    std::chrono::steady_clock::duration budget) {
+  const auto start = std::chrono::steady_clock::now();
+  int count = 0;
+  for (std::optional<int> step = trace.next(); step; step = trace.next()) {
+    const std::optional<double> value =
+        source.readStepInto(*step, frame) ? fieldValueAt(frame, field, analysis, at) : std::nullopt;
+    trace.fill(value.value_or(std::numeric_limits<double>::quiet_NaN()));
+    ++count;
+    if (std::chrono::steady_clock::now() - start >= budget) {
+      break;
+    }
+  }
+  return count;
+}
 
 bool computeScalarGlobalRange(const std::vector<vtkDataSet*>& meshes,
                               const std::string& scalarName,
@@ -62,7 +181,7 @@ bool computeScalarGlobalRange(const std::vector<vtkDataSet*>& meshes,
     }
 
     double range[2];
-    arr->GetRange(range);
+    arr->GetFiniteRange(range);
     minValue = std::min(minValue, range[0]);
     maxValue = std::max(maxValue, range[1]);
     foundAny = true;
@@ -75,6 +194,39 @@ bool computeScalarGlobalRange(const std::vector<vtkDataSet*>& meshes,
   outRange[0] = minValue;
   outRange[1] = maxValue;
   return true;
+}
+
+std::vector<size_t> computeScalarHistogram(const std::vector<vtkDataSet*>& meshes,
+                                           const std::string& scalarName,
+                                           FieldAssociation association,
+                                           const double range[2],
+                                           size_t bins) {
+  std::vector<size_t> counts(bins, 0);
+  const double span = range[1] - range[0];
+  // Bins over an infinite span (an infinite end, or ends more than DBL_MAX apart) have
+  // no finite width, and a tiny span overflows the scale: both would give NaN bin
+  // positions. A tiny span then counts like an empty one, all in the first bin.
+  if (bins == 0 || !std::isfinite(span)) {
+    return counts;
+  }
+  const double inverseWidth = static_cast<double>(bins) / span;
+  const double scale = span > 0.0 && std::isfinite(inverseWidth) ? inverseWidth : 0.0;
+  for (vtkDataSet* mesh : meshes) {
+    vtkDataArray* arr = arrayForAssociation(mesh, scalarName, association);
+    if (!arr || arr->GetNumberOfComponents() != 1) {
+      continue;
+    }
+    const vtkIdType n = arr->GetNumberOfTuples();
+    for (vtkIdType i = 0; i < n; ++i) {
+      const double value = arr->GetComponent(i, 0);
+      // Written so NaN fails it too; infinities fail it since the range is finite.
+      if (!(value >= range[0] && value <= range[1])) {
+        continue;
+      }
+      ++counts[std::min(static_cast<size_t>((value - range[0]) * scale), bins - 1)];
+    }
+  }
+  return counts;
 }
 
 static bool isIntegerType(vtkDataArray* arr) {
@@ -126,7 +278,7 @@ ScalarAnalysis analyzeScalar(const std::vector<vtkDataSet*>& meshes,
 
   // Integer arrays: collect up to 20 unique (rounded) values.
   // Float arrays: collect up to 20 unique values (no rounding).
-  const bool painted = scalarName == "vv_scalar";
+  const bool painted = scalarName == kPaintedField;
   const int limit = painted ? 256 : 20;
   auto unique = collectUniqueValues(meshes, scalarName, association, isInt, limit);
   const int n = static_cast<int>(unique.size());
@@ -134,9 +286,20 @@ ScalarAnalysis analyzeScalar(const std::vector<vtkDataSet*>& meshes,
   if ((n >= 2 || painted) && n <= limit) {
     result.categorical = true;
     result.uniqueValues = std::move(unique);
-  } else {
-    result.cyclic = scalarName.find("phase") != std::string::npos ||
-                    scalarName.find("Phase") != std::string::npos;
+    if (painted) {
+      result.fileColors = paintedColors(result.uniqueValues);
+      return result;
+    }
+    for (vtkDataSet* mesh : meshes) {
+      if (vtkLookupTable* table =
+              fileLookupTable(arrayForAssociation(mesh, scalarName, association))) {
+        result.fileColors = fileCategoryColors(table, result.uniqueValues);
+        break;
+      }
+    }
+  } else if (scalarName.find("phase") != std::string::npos ||
+             scalarName.find("Phase") != std::string::npos) {
+    result.colormap.map = &defaultColormap(ColormapGroup::Cyclic);
   }
   return result;
 }
@@ -178,22 +341,50 @@ ScalarAnalysis buildCommonCatAnalysis(const std::vector<vtkDataSet*>& meshes) {
   return result;
 }
 
-vtkSmartPointer<vtkLookupTable> createCategoricalLookupTable(const std::set<double>& uniqueValues) {
-  const int n = static_cast<int>(uniqueValues.size());
-  const bool useTab20 = (n > 10);
-  const int paletteSize = useTab20 ? 20 : 10;
+CategoryColors fileCategoryColors(vtkLookupTable* table, const std::set<double>& values) {
+  if (!table) {
+    return {};
+  }
+  const vtkIdType entries = table->GetNumberOfTableValues();
+  const bool byValue = std::all_of(values.begin(), values.end(), [entries](double value) {
+    return value >= 0.0 && value < static_cast<double>(entries) && value == std::floor(value);
+  });
+  if (!byValue && static_cast<vtkIdType>(values.size()) > entries) {
+    return {};
+  }
+  CategoryColors colors;
+  vtkIdType rank = 0;
+  for (const double value : values) {
+    double rgba[4];
+    table->GetTableValue(byValue ? static_cast<vtkIdType>(value) : rank++, rgba);
+    colors[value] = {rgba[0], rgba[1], rgba[2]};
+  }
+  return colors;
+}
 
+vtkLookupTable* fileLookupTable(vtkDataArray* array) {
+  if (!array) {
+    return nullptr;
+  }
+  if (vtkLookupTable* attached = array->GetLookupTable()) {
+    return attached;
+  }
+  return array->HasInformation()
+             ? vtkLookupTable::SafeDownCast(array->GetInformation()->Get(fileTableKey()))
+             : nullptr;
+}
+
+vtkSmartPointer<vtkLookupTable> createCategoricalLookupTable(const std::set<double>& uniqueValues,
+                                                             const CategoryColoring& coloring,
+                                                             const CategoryColors& fileColors) {
   auto lut = vtkSmartPointer<vtkLookupTable>::New();
-  lut->SetNumberOfTableValues(n);
+  lut->SetNumberOfTableValues(static_cast<vtkIdType>(uniqueValues.size()));
   lut->SetIndexedLookup(1);
 
-  int idx = 0;
-  for (double v : uniqueValues) {
-    // Index the 2D palette directly: keeps the static-array element known to be
-    // initialized (no pointer-to-array variable that clang-format reflows).
-    const int row = idx % paletteSize;
-    const double* c = useTab20 ? kTab20[row] : kTab10[row];
-    lut->SetTableValue(idx, c[0], c[1], c[2], 1.0);
+  size_t rank = 0;
+  for (const double v : uniqueValues) {
+    const std::array<double, 3> c = categoryColor(coloring, fileColors, v, rank);
+    lut->SetTableValue(static_cast<vtkIdType>(rank), c[0], c[1], c[2], 1.0);
     // Annotation label: show integer if the value is whole, else decimal.
     char label[32];
     if (v == std::floor(v)) {
@@ -202,7 +393,7 @@ vtkSmartPointer<vtkLookupTable> createCategoricalLookupTable(const std::set<doub
       std::snprintf(label, sizeof(label), "%.3g", v);
     }
     lut->SetAnnotation(v, label);
-    ++idx;
+    ++rank;
   }
   lut->Build();
   return lut;
@@ -212,55 +403,50 @@ vtkSmartPointer<vtkLookupTable> buildLookupTable(const std::string& scalarName,
                                                  const ScalarAnalysis& analysis,
                                                  const double range[2]) {
   if (!analysis.categorical)
-    return createDefaultLookupTable(range, analysis.cyclic);
-  auto lut = createCategoricalLookupTable(analysis.uniqueValues);
-  // vv_scalar holds 1 + 0xRRGGBB per point, 0 if unpainted (see JsonMeshParser).
-  if (scalarName == "vv_scalar") {
-    for (double v : analysis.uniqueValues) {
-      const int rgb = static_cast<int>(v) - 1;
-      const vtkIdType idx = lut->GetAnnotatedValueIndex(v);
-      if (rgb < 0) {
-        lut->SetTableValue(idx, 0.6, 0.6, 0.6, 1.0);
-        continue;
+    return createColormapLookupTable(analysis.colormap, range);
+  auto lut =
+      createCategoricalLookupTable(analysis.uniqueValues, analysis.coloring, analysis.fileColors);
+  // A painted category is named by its color.
+  if (scalarName == kPaintedField) {
+    for (const double v : analysis.uniqueValues) {
+      const int hex = static_cast<int>(v) - 1;
+      if (hex >= 0) {
+        char label[8];
+        std::snprintf(label, sizeof(label), "#%06x", hex & 0xFFFFFF);
+        lut->SetAnnotation(v, label);
       }
-      lut->SetTableValue(
-          idx, (rgb >> 16 & 0xFF) / 255.0, (rgb >> 8 & 0xFF) / 255.0, (rgb & 0xFF) / 255.0, 1.0);
-      char label[8];
-      std::snprintf(label, sizeof(label), "#%06x", rgb & 0xFFFFFF);
-      lut->SetAnnotation(v, label);
-    }
-  }
-  for (const auto& [value, rgb] : analysis.categoryColors) {
-    const vtkIdType idx = lut->GetAnnotatedValueIndex(value);
-    if (idx >= 0) {
-      lut->SetTableValue(idx, rgb[0], rgb[1], rgb[2], 1.0);
     }
   }
   return lut;
 }
 
-vtkSmartPointer<vtkLookupTable> createDefaultLookupTable(const double range[2], bool cyclic) {
+vtkSmartPointer<vtkLookupTable> createColormapLookupTable(const ColormapChoice& colormap,
+                                                          const double range[2]) {
+  constexpr int kEntries = 256;
   auto lut = vtkSmartPointer<vtkLookupTable>::New();
-  lut->SetNumberOfTableValues(256);
-  applyLookupTableRange(lut, range, cyclic);
-  return lut;
-}
-
-void applyLookupTableRange(vtkLookupTable* lut, const double range[2], bool cyclic) {
-  if (!lut) {
-    return;
+  lut->SetNumberOfTableValues(kEntries);
+  for (int i = 0; i < kEntries; ++i) {
+    const std::array<double, 3> rgb =
+        sampleColormap(*colormap.map, i / (kEntries - 1.0), colormap.reversed);
+    lut->SetTableValue(i, rgb[0], rgb[1], rgb[2], 1.0);
   }
-
   lut->SetRange(range);
-  // Full hue wheel wraps red→red so a cyclic field has no discontinuity.
-  lut->SetHueRange(0.0, cyclic ? 1.0 : 0.8);
+  if (colormap.outside == OutOfRange::Gray) {
+    const double gray[4] = {kOutOfRangeGray[0], kOutOfRangeGray[1], kOutOfRangeGray[2], 1.0};
+    lut->SetBelowRangeColor(gray);
+    lut->SetAboveRangeColor(gray);
+    lut->UseBelowRangeColorOn();
+    lut->UseAboveRangeColorOn();
+  }
 
   double meshColor[3];
   vtkNew<vtkNamedColors> colors;
   colors->GetColorRGB("Grey", meshColor);
   const double nanColor[4] = {meshColor[0], meshColor[1], meshColor[2], 1.0};
   lut->SetNanColor(nanColor);
-  lut->Build();
+  // The NaN and gray colors came after the table values, which copied the old ones.
+  lut->BuildSpecialColors();
+  return lut;
 }
 
 bool setMapperScalar(vtkDataSet* mesh,
@@ -273,10 +459,14 @@ bool setMapperScalar(vtkDataSet* mesh,
     return false;
   }
 
-  const auto* arr = arrayForAssociation(mesh, scalarName, association);
+  vtkDataArray* arr = arrayForAssociation(mesh, scalarName, association);
   if (!arr) {
     mapper->ScalarVisibilityOff();
     return false;
+  }
+  if (vtkLookupTable* attached = arr->GetLookupTable()) {
+    arr->GetInformation()->Set(fileTableKey(), attached);
+    arr->SetLookupTable(nullptr);
   }
 
   const bool cell = (association == FieldAssociation::Cell);

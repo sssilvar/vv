@@ -87,7 +87,6 @@ command -v ldd >/dev/null || die "ldd not found"
 
 STAGE="stage/$STAGE_NAME"
 
-# ── stage the binary + Qt/VTK/MinGW runtime ─────────────────────────────
 run "rm -rf '$STAGE'"
 run "mkdir -p '$STAGE'"
 run "cp '$BUILD_DIR/vv.exe' '$STAGE/'"
@@ -111,7 +110,6 @@ for _ in 1 2 3 4; do
 done
 info "Staged $(find "$STAGE" -name '*.dll' | wc -l) DLLs into $STAGE"
 
-# ── smoke-test the bundle with only its own DLLs ───────────────────────
 # `vv --version` prints and exits before any window/QApplication is created,
 # so this fails fast on a missing DLL without needing a display.
 if [ "$DO_SMOKE" = 1 ]; then
@@ -137,7 +135,6 @@ sign() {
 # Sign vv.exe *before* it goes into the bundle, so the unpacked app is signed too.
 [ -n "${VV_SIGN_CMD:-}" ] && sign "$STAGE/vv.exe"
 
-# ── portable single-exe (default) ──────────────────────────────────────
 if [ "$DO_PORTABLE" = 1 ]; then
   stage_win="$(cygpath -w "$(cd "$STAGE" && pwd)")"
   exe_win="$(cygpath -w "$OUT_ABS/$STAGE_NAME.exe")"
@@ -164,7 +161,6 @@ if [ "$DO_PORTABLE" = 1 ]; then
   fi
 fi
 
-# ── extract-and-run folder zip (opt-in) ────────────────────────────────
 if [ "$DO_ZIP" = 1 ]; then
   out_win="$(cygpath -w "$OUT_ABS/$STAGE_NAME.zip")"
   (cd stage && powershell -Command "Compress-Archive -Force -Path '$STAGE_NAME' -DestinationPath '$out_win'")

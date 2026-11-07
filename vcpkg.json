@@ -6,7 +6,6 @@
       "name": "vtk",
       "features": [ "qt", "opengl" ]
     },
-    "fmt",
     "cxxopts",
     "nlohmann-json"
   ]
