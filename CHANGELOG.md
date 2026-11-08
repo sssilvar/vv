@@ -27,6 +27,7 @@
 
 ### Changed
 
+- Split the README into a quick-start page, usage and build guides, and shared contributor guidance; correct dependency requirements and document supported inputs.
 - Continuous legend values use range-aware rounding with at least two significant digits for nonzero bounds and trimmed trailing zeros; typed bounds keep their meaningful digits until dragged or reset, and hover and editing retain precise values.
 
 - Window titles lead with the filename, summarize comparisons with the first filename and remaining count, and name standard input explicitly; single-file windows expose the full path through native document metadata.

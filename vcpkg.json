@@ -4,7 +4,7 @@
   "dependencies": [
     {
       "name": "vtk",
-      "features": [ "qt", "opengl" ]
+      "features": ["qt", "opengl"]
     },
     "cxxopts",
     "nlohmann-json"
