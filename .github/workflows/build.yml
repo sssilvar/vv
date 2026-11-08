@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -84,7 +84,7 @@ jobs:
         timeout-minutes: 3
         env:
           QT_QPA_PLATFORM: xcb
-          LIBGL_ALWAYS_SOFTWARE: '1'
+          LIBGL_ALWAYS_SOFTWARE: "1"
         run: xvfb-run -a build/tests/vv_render_benchmark --require-rendering --output benchmark-results/render.json
       - name: Benchmark summary
         if: always()
@@ -109,7 +109,7 @@ jobs:
             shell: bash
             platform: cocoa
           - os: windows-latest
-            shell: 'msys2 {0}'
+            shell: "msys2 {0}"
             platform: windows
     defaults:
       run:

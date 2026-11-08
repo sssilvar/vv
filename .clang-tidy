@@ -48,6 +48,6 @@ HeaderFilterRegex: 'src/include/.*\.h$'
 
 # Local analysis treats these findings as errors. CI gates the smaller explicit
 # correctness set in build.sh; this full configuration is advisory there.
-WarningsAsErrors: 'bugprone-*,clang-analyzer-*,performance-*,portability-*'
+WarningsAsErrors: "bugprone-*,clang-analyzer-*,performance-*,portability-*"
 
 FormatStyle: file
