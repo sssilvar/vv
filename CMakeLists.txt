@@ -138,7 +138,7 @@ if(VV_ENABLE_SANITIZERS)
   if(WIN32 OR NOT CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
     message(FATAL_ERROR "VV_ENABLE_SANITIZERS requires GCC or Clang on macOS/Linux")
   endif()
-  target_compile_options(vv_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_compile_options(vv_options INTERFACE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
   target_link_options(vv_options INTERFACE -fsanitize=address,undefined)
 endif()
 

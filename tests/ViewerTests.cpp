@@ -789,6 +789,10 @@ private slots:
   }
 
   void benchmarkFacetSetup() {
+    if (qEnvironmentVariableIntValue("VV_RUN_BENCHMARKS") != 1) {
+      QTest::qSkip("Set VV_RUN_BENCHMARKS=1 to run performance measurements.", __FILE__, __LINE__);
+      return;
+    }
     QFETCH(int, files);
     QFETCH(int, side);
     vtkNew<CountingWindow> window;
@@ -809,6 +813,10 @@ private slots:
   }
 
   void benchmarkColumnInteraction() {
+    if (qEnvironmentVariableIntValue("VV_RUN_BENCHMARKS") != 1) {
+      QTest::qSkip("Set VV_RUN_BENCHMARKS=1 to run performance measurements.", __FILE__, __LINE__);
+      return;
+    }
     vtkNew<CountingWindow> window;
     ViewerOptions options;
     options.explodeView = true;

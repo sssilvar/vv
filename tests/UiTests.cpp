@@ -723,7 +723,10 @@ private slots:
       legend.resize(legend.fitPanel(panel, 8));
       QTimer::singleShot(0, &legend, []() {
         auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-        for (QAction* section : menu ? menu->actions() : QList<QAction*>()) {
+        if (!menu) {
+          return;
+        }
+        for (QAction* section : menu->actions()) {
           if (!section->menu()) {
             continue;
           }
@@ -745,7 +748,10 @@ private slots:
     legend.setColormap({findColormap("viridis"), false});
     QTimer::singleShot(0, &legend, []() {
       auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-      for (QAction* action : menu ? menu->actions() : QList<QAction*>()) {
+      if (!menu) {
+        return;
+      }
+      for (QAction* action : menu->actions()) {
         if (action->text() == QStringLiteral("Reverse")) {
           menu->setActiveAction(action);
           QTest::keyClick(menu, Qt::Key_Return);
@@ -775,6 +781,8 @@ private slots:
       }
     });
     guard.start(2000);
+    // Qt 5's singleShotImpl owns this functor; Clang 14 cannot see the handoff.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     QTimer::singleShot(0, &legend, []() {
       auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
       QVERIFY(menu);
@@ -974,7 +982,10 @@ private slots:
     QVERIFY(second);
     QTimer::singleShot(0, &panel, []() {
       auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-      for (QAction* action : menu ? menu->actions() : QList<QAction*>()) {
+      if (!menu) {
+        return;
+      }
+      for (QAction* action : menu->actions()) {
         if (action->text() == QStringLiteral("Reset to default")) {
           menu->setActiveAction(action);
           QTest::keyClick(menu, Qt::Key_Return);
@@ -988,8 +999,10 @@ private slots:
 
     QTimer::singleShot(0, &panel, []() {
       auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-      for (QToolButton* swatch :
-           menu ? menu->findChildren<QToolButton*>() : QList<QToolButton*>()) {
+      if (!menu) {
+        return;
+      }
+      for (QToolButton* swatch : menu->findChildren<QToolButton*>()) {
         if (swatch->toolTip() == QStringLiteral("#ff00ff")) {
           swatch->click();
         }

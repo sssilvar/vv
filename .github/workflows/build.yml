@@ -37,7 +37,7 @@ jobs:
   quality:
     needs: format
     runs-on: ubuntu-22.04
-    name: Format + Warnings + cppcheck
+    name: Linux tests and analysis
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -45,7 +45,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build ccache clang-format clang-tidy cppcheck \
+            build-essential cmake ninja-build ccache clang-format clang-tidy cppcheck clazy \
             qtbase5-dev libcxxopts-dev nlohmann-json3-dev \
             libvtk9-dev libvtk9-qt-dev \
             libgl-dev libglx-dev libxt-dev
@@ -67,7 +67,18 @@ jobs:
       - name: Regression tests
         run: ctest --test-dir build --output-on-failure
       - name: Static analysis gates
-        run: ./build.sh --no-build --cppcheck --clang-tidy-check
+        run: ./build.sh --no-build --cppcheck-check --clang-tidy-check
+      - name: Clazy trial
+        continue-on-error: true
+        run: |
+          mkdir -p analysis-results
+          ./build.sh --no-build --clazy 2>&1 | tee analysis-results/clazy.log
+      - name: Unused-function audit
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        run: |
+          mkdir -p analysis-results
+          ./build.sh --no-build --unused-functions 2>&1 | tee analysis-results/unused-functions.log
       - name: Full clang-tidy review
         if: github.event_name == 'workflow_dispatch'
         continue-on-error: true
@@ -75,6 +86,7 @@ jobs:
       - name: CPU interaction benchmarks
         env:
           QT_QPA_PLATFORM: offscreen
+          VV_RUN_BENCHMARKS: "1"
         run: |
           set -euo pipefail
           mkdir -p benchmark-results
@@ -94,6 +106,54 @@ jobs:
         with:
           name: benchmarks-linux-${{ github.sha }}
           path: benchmark-results/
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: analysis-linux-${{ github.sha }}
+          path: analysis-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  sanitizers:
+    needs: format
+    name: Linux ASan and UBSan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache \
+            qtbase5-dev libcxxopts-dev nlohmann-json3-dev \
+            libvtk9-dev libvtk9-qt-dev libgl-dev libglx-dev libxt-dev \
+            xvfb xauth openbox libgl1-mesa-dri
+      - uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
+        with:
+          key: ccache-${{ github.workflow }}-sanitizers-ubuntu-22.04
+          max-size: 500M
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+            -DVV_ENABLE_SANITIZERS=ON \
+            -DVV_TEST_QPA_PLATFORM=xcb \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build -j 4
+      - name: Regression tests under sanitizers
+        env:
+          ASAN_OPTIONS: fast_unwind_on_malloc=0
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan-fontconfig.supp:print_suppressions=1
+        run: xvfb-run -a ./scripts/test-sanitizers.sh build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: sanitizer-test-logs
+          path: build/Testing/Temporary/
+          if-no-files-found: ignore
           retention-days: 7
 
   platforms:
@@ -164,6 +224,7 @@ jobs:
       - name: CPU interaction benchmarks
         env:
           QT_QPA_PLATFORM: offscreen
+          VV_RUN_BENCHMARKS: "1"
         run: |
           set -euo pipefail
           mkdir -p benchmark-results

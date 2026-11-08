@@ -6,13 +6,14 @@ vtk_module_autoinit(TARGETS vv_renderer_tests MODULES ${VTK_LIBRARIES})
 add_test(NAME panel-layout COMMAND vv_renderer_tests)
 set_tests_properties(panel-layout PROPERTIES TIMEOUT 30)
 
-# Overlay widgets under Qt Test, on the offscreen platform so no display is needed.
+# Qt 5's offscreen backend leaks screen objects at shutdown; allow xcb under Xvfb.
+set(VV_TEST_QPA_PLATFORM "offscreen" CACHE STRING "Qt platform plugin for widget and viewer tests")
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
 add_executable(vv_ui_tests UiTests.cpp)
 set_target_properties(vv_ui_tests PROPERTIES AUTOMOC ON)
 target_link_libraries(vv_ui_tests PRIVATE vv_options vv_ui Qt${QT_VERSION_MAJOR}::Test)
 add_test(NAME ui COMMAND vv_ui_tests)
-set_tests_properties(ui PROPERTIES TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+set_tests_properties(ui PROPERTIES TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=${VV_TEST_QPA_PLATFORM}")
 
 add_executable(vv_mesh_tests MeshLoadingTests.cpp)
 target_link_libraries(vv_mesh_tests PRIVATE vv_options vv_mesh)
@@ -39,9 +40,12 @@ add_executable(vv_viewer_tests ViewerTests.cpp)
 set_target_properties(vv_viewer_tests PROPERTIES AUTOMOC ON)
 target_link_libraries(vv_viewer_tests PRIVATE vv_options vv_viewer Qt${QT_VERSION_MAJOR}::Test)
 vtk_module_autoinit(TARGETS vv_viewer_tests MODULES ${VTK_LIBRARIES})
-add_test(NAME viewer COMMAND vv_viewer_tests windowTitle multipartWindowTitle annotationCloseDuringStroke hiddenPinVisibility
-  colorPanelTypedValuesKeepPrecision facetColumnUpdates missingFieldColumns overflowCategoryEditing matchingProbeViews unpinInteractions pinnedFacetPresentation playbackPreservesComparisonGeometry)
-set_tests_properties(viewer PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+add_test(NAME viewer COMMAND vv_viewer_tests)
+set_tests_properties(viewer PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=${VV_TEST_QPA_PLATFORM}")
+if(VV_ENABLE_SANITIZERS)
+  # Full allocation backtraces make this integration run substantially slower.
+  set_tests_properties(viewer PROPERTIES TIMEOUT 120)
+endif()
 
 add_executable(vv_render_benchmark RenderBenchmark.cpp)
 target_link_libraries(vv_render_benchmark PRIVATE vv_options vv_viewer VTK::FiltersSources)

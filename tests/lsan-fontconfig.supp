@@ -1,0 +1,5 @@
+# Qt 5 leaves Fontconfig 2.13.1 initialized; forcing FcFini resets shared state.
+# Match initialization only, not the library's later font or application stacks.
+# Other leaks within FcInit are also excluded by this exception.
+# https://raw.githubusercontent.com/fontconfig/fontconfig/2.13.1/src/fcinit.c
+leak:^FcInit$

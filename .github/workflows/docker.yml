@@ -11,28 +11,52 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build:
+    if: github.event_name == 'pull_request'
     name: Build Docker image (cached)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: 3
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          cache-from: type=gha
+
+  publish:
+    if: github.event_name != 'pull_request'
+    name: Publish Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Login to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -40,7 +64,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/vv
           tags: |
@@ -48,19 +72,16 @@ jobs:
             type=ref,event=tag
             type=sha,prefix=sha-
 
-      - name: Build (and optionally push)
-        uses: docker/build-push-action@v6
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         env:
           DOCKER_BUILD_RECORD_RETENTION_DAYS: 3
         with:
           context: .
           file: ./Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          # PR caches are scoped to the PR and never reused, so only branches and
-          # tags write. ignore-error keeps a flaky cache export (the GHA backend
-          # intermittently answers "error writing layer blob: not_found") from
-          # failing a build that already succeeded.
-          cache-to: ${{ github.event_name == 'pull_request' && '' || 'type=gha,mode=max,ignore-error=true' }}
+          # Cache export failures must not discard a successfully published image.
+          cache-to: type=gha,mode=max,ignore-error=true

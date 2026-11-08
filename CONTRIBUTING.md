@@ -34,9 +34,15 @@ cmake --build build/dev
 (cd build/dev && ctest --output-on-failure)
 ```
 
-Apply the platform-specific prefix/toolchain settings from the [build guide](docs/building.md#platform-setup) to this build directory as needed. These tests are bounded by CTest timeouts. Widget and viewer tests use Qt's offscreen platform and do not require a display; OpenGL frame benchmarks run separately.
+Apply the platform-specific prefix/toolchain settings from the [build guide](docs/building.md#platform-setup) to this build directory as needed. These tests are bounded by CTest timeouts. Widget and viewer tests default to Qt's offscreen platform and do not require a display; OpenGL frame benchmarks run separately.
 
-For ASan/UBSan on macOS/Linux with GCC or Clang, add `-DVV_ENABLE_SANITIZERS=ON` to the configure command and rebuild before running CTest.
+For ASan/UBSan on macOS/Linux with GCC or Clang, add `-DVV_ENABLE_SANITIZERS=ON` to the configure command and rebuild before running CTest. Sanitizer findings terminate the affected test instead of recovering. CI runs this configuration in a separate Linux job.
+
+Linux sanitizer CI configures `-DVV_TEST_QPA_PLATFORM=xcb` and runs `xvfb-run -a ./scripts/test-sanitizers.sh BUILD_DIR`, keeping leak detection enabled with full allocation backtraces (`ASAN_OPTIONS=fast_unwind_on_malloc=0`). Install Xvfb, xauth and Openbox for this run; the helper waits for Openbox to manage windows so native focus tests work, and stops it when CTest exits. The viewer check allows 120 seconds for allocation tracing; ordinary builds keep its 30-second timeout. Qt 5.15.3's offscreen backend retains screen objects at shutdown even in a standalone Qt program; xcb cleans up those objects.
+
+These tests exercise raster widgets and count VTK render submissions without creating an OpenGL context. The helper sets `QT_XCB_GL_INTEGRATION=none` to avoid Qt initializing Mesa while choosing visuals for raster windows. The separate required frame benchmark exercises real OpenGL rendering.
+
+CI sets `LSAN_OPTIONS=suppressions=$PWD/tests/lsan-fontconfig.supp:print_suppressions=1` for a single [initialization-only exception](tests/lsan-fontconfig.supp). Fontconfig 2.13.1 retains 288 bytes after a standalone `FcInit()` call; its `FcFini()` cleanup resets global state shared with other clients. The anchored `^FcInit$` rule excludes allocations made inside that initialization function, including any other initialization-time library leaks. Later font matching and application callbacks remain checked. Sanitizer test logs retain suppression counts even on successful CI runs. Inspect complete allocation paths before changing exceptions; library-name patterns also match application allocations whose stacks pass through those libraries.
 
 ### Formatting
 
@@ -51,26 +57,28 @@ cmake --build build/dev --target format-check
 
 ### Static analysis
 
-With cppcheck and clang-tidy installed, use the helper against the development build:
+With cppcheck, clang-tidy and Clazy installed, use the helper against the development build:
 
 ```sh
-./build.sh -d build/dev -t Debug --no-build --cppcheck --clang-tidy-check
+./build.sh -d build/dev -t Debug --no-build --cppcheck-check --clang-tidy-check
+./build.sh -d build/dev -t Debug --no-build --clazy
 ./build.sh -d build/dev -t Debug --no-build --clang-tidy
+./build.sh -d build/dev -t Debug --no-build --unused-functions
 ```
 
-The helper configures a compilation database even with `--no-build`. Its cppcheck flags and [.cppcheck-suppressions](.cppcheck-suppressions) account for Qt moc/autogen false positives; use the helper rather than maintaining a second analysis command. On macOS, the helper also finds clang-tidy in an installed Homebrew LLVM toolchain and supplies the SDK path.
+The helper configures a compilation database even with `--no-build`. Its cppcheck flags and [.cppcheck-suppressions](.cppcheck-suppressions) account for Qt moc/autogen false positives; use the helper rather than maintaining a second analysis command. `--cppcheck-check` prints findings from [.cppcheck-advisory](.cppcheck-advisory) without failing on them; `--cppcheck` treats all unsuppressed findings as errors. On macOS, the helper also finds clang-tidy in an installed Homebrew LLVM toolchain and supplies the SDK path to both Clang-based analyzers. Tests are included when the build has `BUILD_TESTING=ON`.
 
-[CI](.github/workflows/build.yml) gates formatting, strict builds, regression tests, cppcheck and the selected clang-tidy correctness checks. The full [.clang-tidy](.clang-tidy) configuration, including readability and modernization findings, is advisory in manually dispatched runs.
+[CI](.github/workflows/build.yml) gates formatting, strict builds, regression tests, sanitizers, cppcheck and the selected clang-tidy correctness checks. Clazy's initial explicit Qt correctness set is advisory on every run. The full [.clang-tidy](.clang-tidy) configuration and the unused-function audit are advisory in manually dispatched runs. Review unused-function findings against other platforms, Qt versions, tests and generated Qt callers before removing code; the audit covers only the configured build.
 
 ## Performance checks
 
-With `BUILD_TESTING=ON`, CMake builds `vv_render_benchmark` but does not register it with CTest. Run CPU and frame workloads explicitly:
+With `BUILD_TESTING=ON`, CMake builds `vv_render_benchmark` but does not register it with CTest. CTest discovers all viewer test methods; CPU benchmarks skip unless `VV_RUN_BENCHMARKS=1` is set. Run CPU and frame workloads explicitly:
 
 ```sh
 mkdir -p benchmark-results
-QT_QPA_PLATFORM=offscreen build/dev/tests/vv_viewer_tests benchmarkFacetSetup \
+QT_QPA_PLATFORM=offscreen VV_RUN_BENCHMARKS=1 build/dev/tests/vv_viewer_tests benchmarkFacetSetup \
   -iterations 5 -median 5 -o benchmark-results/cpu-setup.xml,xml -o -,txt
-QT_QPA_PLATFORM=offscreen build/dev/tests/vv_viewer_tests benchmarkColumnInteraction \
+QT_QPA_PLATFORM=offscreen VV_RUN_BENCHMARKS=1 build/dev/tests/vv_viewer_tests benchmarkColumnInteraction \
   -iterations 1000 -median 5 -o benchmark-results/cpu-interaction.xml,xml -o -,txt
 build/dev/tests/vv_render_benchmark --require-rendering --output benchmark-results/render.json
 python3 scripts/benchmark-summary.py benchmark-results

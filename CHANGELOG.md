@@ -2,6 +2,7 @@
 
 ### Added
 
+- Linux ASan/UBSan regression checks, an advisory Clazy trial and a manual unused-function audit; analyzer runs include configured tests.
 - Cross-platform viewer integration tests, median CPU interaction benchmarks and OpenGL frame benchmarks with driver metadata, p50/p95 timings and nonempty-frame checks.
 
 - Optional regression tests for CLI validation, mesh color metadata, stdin I/O failures and build-helper safety, plus ASan/UBSan builds on macOS/Linux.
@@ -27,6 +28,10 @@
 
 ### Changed
 
+- Linux sanitizer tests use raster xcb windows and Openbox under Xvfb, avoid unused GLX initialization, and keep full allocation backtraces with an initialization-only Fontconfig exception instead of blanket library suppressions.
+- Viewer regression tests discover new test methods automatically, with CPU benchmarks enabled separately through `VV_RUN_BENCHMARKS=1`.
+- Known cppcheck Qt false-positive checks remain visible as advisory diagnostics in CI; the remaining static analysis checks still gate changes.
+- Release builds run regression tests before packaging, check the Linux AppImage launch and verify pinned packaging tools; Docker PR builds have read-only permissions and pinned actions.
 - Split the README into a quick-start page, usage and build guides, and shared contributor guidance; correct dependency requirements and document supported inputs.
 - Continuous legend values use range-aware rounding with at least two significant digits for nonzero bounds and trimmed trailing zeros; typed bounds keep their meaningful digits until dragged or reset, and hover and editing retain precise values.
 
@@ -55,6 +60,7 @@
 
 ### Fixed
 
+- Fix Clang 14 popup-test analysis with explicit null checks and a call-site exception for Qt-owned timer functors.
 - Continuous legends keep small nonzero bounds readable after clamping and size their value columns independently, growing within their panel when needed.
 
 - Double-clicking a continuous legend's clip value edits it in place; its handles remain drag controls.
