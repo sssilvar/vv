@@ -93,6 +93,8 @@ QT_QPA_PLATFORM=xcb LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a \
 
 The examples use a POSIX shell; Windows CI runs them in MSYS2. Native platforms without OpenGL 3.2 report rendering as unavailable when `--require-rendering` is omitted. They do not substitute CPU measurements for rendered frames.
 
+macOS CI uses `--smoke` because hosted runners use Apple's software OpenGL renderer. This keeps all style, rotation and viewport scenarios, sample counts and nonempty-frame checks, using a 300 × 200 viewport and lower sphere resolution. Local runs use the full 900 × 600 workload by default; JSON results and CI summaries identify the workload, dimensions and mesh size. Compare timings only for matching workloads and renderers.
+
 Frame workloads cover nested transparent shells in one and four viewports, Solid/X-ray/Glass, rest and rotation, plus style changes and their first frame. They wait for GPU completion and reject empty frames. Results include commit, platform, Qt/VTK and driver metadata.
 
 Compare timings on the same OS and renderer. Correctness, nonempty rendering and bounded render submissions are gates; hardware-dependent timing values are observations, not end-to-end input latency or guarantees for another GPU.
