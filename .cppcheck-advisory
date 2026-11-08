@@ -1,0 +1,8 @@
+# Keep these diagnostics visible without failing the CI gate.
+# cppcheck 2.7 follows Qt connection registration as a constructor-time slot call:
+# https://github.com/sssilvar/vv/actions/runs/42467754177
+virtualCallInConstructor
+
+# It also reuses a member function's result after the members it reads change:
+# https://github.com/sssilvar/vv/actions/runs/42468201900
+knownConditionTrueFalse

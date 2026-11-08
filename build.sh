@@ -12,8 +12,11 @@
 #   -c, --clean                  Remove the build directory before configuring
 #       --no-build               Configure only; skip the compile step
 #       --cppcheck               Run cppcheck static analysis after building
+#       --cppcheck-check         Gate cppcheck with known noisy checks advisory
+#       --unused-functions       Audit unused functions in this build configuration
 #       --clang-tidy             Run clang-tidy over the compilation database
 #       --clang-tidy-check       Gate stable clang-tidy correctness checks
+#       --clazy                  Run the initial Qt correctness check set
 #       --analyze                Shorthand for --cppcheck --clang-tidy
 #       --format-check           Verify clang-format cleanliness (no changes)
 #       --install                Install the binary after a successful build
@@ -46,8 +49,11 @@ JOBS=""
 CLEAN=0
 DO_BUILD=1
 RUN_CPPCHECK=0
+RUN_CPPCHECK_CHECK=0
+RUN_UNUSED_FUNCTIONS=0
 RUN_CLANG_TIDY=0
 RUN_CLANG_TIDY_CHECK=0
+RUN_CLAZY=0
 RUN_FORMAT_CHECK=0
 DO_INSTALL=0
 
@@ -64,8 +70,11 @@ while [ $# -gt 0 ]; do
     -c|--clean) CLEAN=1; shift ;;
     --no-build) DO_BUILD=0; shift ;;
     --cppcheck) RUN_CPPCHECK=1; shift ;;
+    --cppcheck-check) RUN_CPPCHECK_CHECK=1; shift ;;
+    --unused-functions) RUN_UNUSED_FUNCTIONS=1; shift ;;
     --clang-tidy) RUN_CLANG_TIDY=1; shift ;;
     --clang-tidy-check) RUN_CLANG_TIDY_CHECK=1; shift ;;
+    --clazy) RUN_CLAZY=1; shift ;;
     --analyze) RUN_CPPCHECK=1; RUN_CLANG_TIDY=1; shift ;;
     --format-check) RUN_FORMAT_CHECK=1; shift ;;
     --install) DO_INSTALL=1; shift ;;
@@ -122,26 +131,38 @@ if [ "$DO_BUILD" = 1 ]; then
   run cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" -j "$JOBS"
 fi
 
-if [ "$RUN_CPPCHECK" = 1 ]; then
+run_cppcheck() {
   command -v cppcheck >/dev/null || die "cppcheck not found"
   [ -f "$BUILD_DIR/compile_commands.json" ] || die "missing $BUILD_DIR/compile_commands.json"
   info "Running cppcheck…"
   # --check-level=exhaustive needs cppcheck >= 2.11; older distros (e.g. Ubuntu
   # 22.04 ships 2.7) reject the flag, so probe for it instead of assuming.
-  cppcheck_args=(--project="$BUILD_DIR/compile_commands.json")
+  local cppcheck_args=(--project="$BUILD_DIR/compile_commands.json")
   if cppcheck --check-level=exhaustive --version >/dev/null 2>&1; then
     cppcheck_args+=(--check-level=exhaustive)
   fi
   run cppcheck \
     "${cppcheck_args[@]}" \
-    --enable=warning,style,performance,portability \
+    --std=c++17 \
     --suppressions-list="$SCRIPT_DIR/.cppcheck-suppressions" \
     --inline-suppr \
     -i "$BUILD_DIR" \
     --library=qt \
     --quiet \
-    --error-exitcode=1
-  info "cppcheck clean."
+    --error-exitcode=1 "$@"
+  info "cppcheck complete."
+}
+
+if [ "$RUN_CPPCHECK" = 1 ]; then
+  run_cppcheck --enable=warning,style,performance,portability
+fi
+if [ "$RUN_CPPCHECK_CHECK" = 1 ]; then
+  run_cppcheck --enable=warning,style,performance,portability \
+    "--exitcode-suppressions=$SCRIPT_DIR/.cppcheck-advisory"
+fi
+if [ "$RUN_UNUSED_FUNCTIONS" = 1 ]; then
+  run mkdir -p "$BUILD_DIR/cppcheck-unused"
+  run_cppcheck --enable=unusedFunction "--cppcheck-build-dir=$BUILD_DIR/cppcheck-unused"
 fi
 
 # A small set of checks whose findings are real defects and stable across
@@ -151,6 +172,29 @@ CLANG_TIDY_GATE_CHECKS='-*,clang-analyzer-*,-clang-analyzer-security.FloatLoopCo
 CLANG_TIDY_GATE_CHECKS+=',bugprone-use-after-move,bugprone-dangling-handle,bugprone-sizeof-expression'
 CLANG_TIDY_GATE_CHECKS+=',bugprone-suspicious-memset-usage,bugprone-integer-division'
 CLANG_TIDY_GATE_CHECKS+=',bugprone-virtual-near-miss,bugprone-infinite-loop,bugprone-string-constructor'
+
+if [ "$RUN_CLANG_TIDY" = 1 ] || [ "$RUN_CLANG_TIDY_CHECK" = 1 ] || [ "$RUN_CLAZY" = 1 ]; then
+  [ -f "$BUILD_DIR/compile_commands.json" ] || die "missing $BUILD_DIR/compile_commands.json"
+  analysis_dirs=(src)
+  if grep -Eiq '^BUILD_TESTING:BOOL=(1|ON|YES|TRUE|Y)$' "$BUILD_DIR/CMakeCache.txt"; then
+    analysis_dirs+=(tests)
+  fi
+  # Generated moc/autogen units remain outside this source list.
+  analysis_files=()
+  analysis_platform="$(uname)"
+  while IFS= read -r -d '' f; do
+    # The stdin test target is Unix-only, including when running from MSYS2.
+    case "$analysis_platform/$f" in
+      MINGW*/tests/StdinTests.cpp|MSYS*/tests/StdinTests.cpp) continue ;;
+    esac
+    analysis_files+=("$f")
+  done \
+    < <(find "${analysis_dirs[@]}" -name '*.cpp' -print0)
+  clang_args=(-p "$BUILD_DIR")
+  if [ "$(uname)" = Darwin ] && command -v xcrun >/dev/null; then
+    clang_args+=("--extra-arg=-isysroot$(xcrun --show-sdk-path)")
+  fi
+fi
 
 run_clang_tidy() {
   # Prefer PATH; fall back to a Homebrew LLVM install (Apple doesn't ship clang-tidy).
@@ -162,20 +206,8 @@ run_clang_tidy() {
     [ -x "$llvm_prefix/bin/clang-tidy" ] && clang_tidy="$llvm_prefix/bin/clang-tidy"
   fi
   [ -n "$clang_tidy" ] || die "clang-tidy not found (try: brew install llvm)"
-  [ -f "$BUILD_DIR/compile_commands.json" ] || die "missing $BUILD_DIR/compile_commands.json"
   info "Running clang-tidy ($clang_tidy)…"
-  # Only our own sources; skip generated autogen/moc translation units.
-  # (Portable array fill — macOS ships bash 3.2, which lacks `mapfile`.)
-  local files=()
-  while IFS= read -r f; do files+=("$f"); done \
-    < <(find src -name '*.cpp' -not -path '*/build/*')
-  # On macOS a Homebrew clang-tidy needs the SDK sysroot to find libc++/system
-  # headers, since the compile DB was produced by AppleClang.
-  local tidy_args=(-p "$BUILD_DIR" --quiet "$@")
-  if [ "$(uname)" = "Darwin" ] && command -v xcrun >/dev/null; then
-    tidy_args+=("--extra-arg=-isysroot$(xcrun --show-sdk-path)")
-  fi
-  run "$clang_tidy" "${tidy_args[@]}" "${files[@]}"
+  run "$clang_tidy" "${clang_args[@]}" --quiet "$@" "${analysis_files[@]}"
   info "clang-tidy clean."
 }
 
@@ -184,6 +216,23 @@ if [ "$RUN_CLANG_TIDY_CHECK" = 1 ]; then
 fi
 if [ "$RUN_CLANG_TIDY" = 1 ]; then
   run_clang_tidy
+fi
+if [ "$RUN_CLAZY" = 1 ]; then
+  command -v clazy-standalone >/dev/null || die "clazy-standalone not found"
+  clazy_args=(--extra-arg=-Werror)
+  if [ "$(uname)" = Darwin ] && command -v brew >/dev/null; then
+    llvm_prefix="$(brew --prefix llvm 2>/dev/null || true)"
+    if [ -x "$llvm_prefix/bin/clang" ]; then
+      # Homebrew installs Clazy outside LLVM's bin directory, hiding builtin headers.
+      clazy_args+=("--extra-arg=-resource-dir=$("$llvm_prefix/bin/clang" -print-resource-dir)")
+    fi
+  fi
+  clazy_checks='connect-non-signal,lambda-in-connect,lambda-unique-connection'
+  clazy_checks+=',temporary-iterator,writing-to-temporary,wrong-qevent-cast'
+  clazy_checks+=',connect-3arg-lambda,returning-data-from-temporary'
+  CLAZY_HEADER_FILTER='(^|/)(src/include|tests)/' \
+    run clazy-standalone "${clang_args[@]}" "-checks=$clazy_checks" \
+      "${clazy_args[@]}" "${analysis_files[@]}"
 fi
 
 if [ "$DO_INSTALL" = 1 ]; then

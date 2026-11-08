@@ -9,10 +9,6 @@
 *:*moc_*.cpp
 *:*mocs_compilation.cpp
 
-# Public widget/API methods (e.g. PlaybackBar::isPlaying) are intentionally part
-# of the class surface even when the current callers don't use them all.
-unusedFunction
-
 # Third-party headers we cannot fix; not worth the noise.
 missingIncludeSystem
 
