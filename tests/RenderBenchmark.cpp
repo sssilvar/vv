@@ -50,14 +50,20 @@ int main(int argc, char** argv) {
   parser.addHelpOption();
   parser.addOption({"output", "Write benchmark JSON to this file.", "path"});
   parser.addOption({"require-rendering", "Fail if OpenGL 3.2 is unavailable."});
+  parser.addOption({"smoke", "Use a smaller scene for software rendering checks."});
   parser.process(app);
 
+  const bool smoke = parser.isSet("smoke");
+  const int width = smoke ? 300 : 900;
+  const int height = smoke ? 200 : 600;
+  const int sphereResolution = smoke ? 24 : 64;
   QJsonObject result{{"os", QSysInfo::prettyProductName()},
                      {"architecture", QSysInfo::currentCpuArchitecture()},
                      {"qt", qVersion()},
                      {"vtk", vtkVersion::GetVTKVersion()},
-                     {"width", 900},
-                     {"height", 600}};
+                     {"workload", smoke ? "smoke" : "full"},
+                     {"width", width},
+                     {"height", height}};
   QOffscreenSurface surface;
   surface.setFormat(format);
   surface.create();
@@ -77,6 +83,8 @@ int main(int argc, char** argv) {
   result.insert(
       "driver",
       QString::fromLatin1(reinterpret_cast<const char*>(functions->glGetString(GL_VERSION))));
+  std::cerr << "OpenGL renderer: " << result.value("renderer").toString().toStdString() << " ("
+            << result.value("driver").toString().toStdString() << ")" << std::endl;
   context.doneCurrent();
 
   QJsonArray measurements;
@@ -84,7 +92,7 @@ int main(int argc, char** argv) {
   for (const int files : {1, 4}) {
     vtkNew<vtkRenderWindow> window;
     window->SetOffScreenRendering(1);
-    window->SetSize(900, 600);
+    window->SetSize(width, height);
     window->SetMultiSamples(0);
     vtkNew<vtkRenderWindowInteractor> interactor;
     MeshRenderer renderer;
@@ -92,8 +100,8 @@ int main(int argc, char** argv) {
     vtkNew<vtkAppendPolyData> shells;
     for (int layer = 0; layer < 4; ++layer) {
       vtkNew<vtkSphereSource> sphere;
-      sphere->SetThetaResolution(64);
-      sphere->SetPhiResolution(64);
+      sphere->SetThetaResolution(sphereResolution);
+      sphere->SetPhiResolution(sphereResolution);
       sphere->SetRadius(1.0 - layer * 0.15);
       sphere->SetCenter(layer * 0.06, 0.0, 0.0);
       shells->AddInputConnection(sphere->GetOutputPort());
@@ -119,6 +127,11 @@ int main(int argc, char** argv) {
     renderer.setActiveScalar("voltage", FieldAssociation::Point);
     auto* style = vtkInteractorStyle::SafeDownCast(interactor->GetInteractorStyle());
     for (const SurfaceStyle look : {SurfaceStyle::Solid, SurfaceStyle::XRay, SurfaceStyle::Glass}) {
+      const char* name = look == SurfaceStyle::Glass  ? "glass"
+                         : look == SurfaceStyle::XRay ? "xray"
+                                                      : "solid";
+      std::cerr << "Rendering " << files << "-file " << name << " scene at " << width << 'x'
+                << height << std::endl;
       const auto styleStart = std::chrono::steady_clock::now();
       renderer.setSurfaceLook({look, 0.4, 0.5});
       window->WaitForCompletion();
@@ -162,9 +175,6 @@ int main(int argc, char** argv) {
         }
         validFrames = validFrames && nonempty;
         std::sort(samples.begin(), samples.end());
-        const char* name = look == SurfaceStyle::Glass  ? "glass"
-                           : look == SurfaceStyle::XRay ? "xray"
-                                                        : "solid";
         measurements.append(QJsonObject{
             {"files", files},
             {"style", name},

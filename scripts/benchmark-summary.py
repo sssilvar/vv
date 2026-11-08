@@ -39,7 +39,10 @@ def summarize(directory: Path) -> str:
         else:
             lines.extend([
                 f"Driver: {data['renderer']} ({data['driver']}). "
-                f"Viewport: {data['width']} × {data['height']}.",
+                f"Workload: **{data.get('workload', 'full')}**. "
+                f"Viewport: {data['width']} × {data['height']}. "
+                f"Mesh: {data['points_per_mesh']:,} points and "
+                f"{data['triangles_per_mesh']:,} triangles per file.",
                 "",
                 "| Files | Style | Moving | Style change ms | p50 ms | p95 ms | Depth peeling |",
                 "| ---: | --- | --- | ---: | ---: | ---: | --- |",

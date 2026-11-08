@@ -168,9 +168,11 @@ jobs:
           - os: macos-15
             shell: bash
             platform: cocoa
+            render_args: --smoke
           - os: windows-latest
             shell: "msys2 {0}"
             platform: windows
+            render_args: ""
     defaults:
       run:
         shell: ${{ matrix.shell }}
@@ -234,7 +236,7 @@ jobs:
         timeout-minutes: 3
         env:
           QT_QPA_PLATFORM: ${{ matrix.platform }}
-        run: build/tests/vv_render_benchmark --output benchmark-results/render.json
+        run: build/tests/vv_render_benchmark ${{ matrix.render_args }} --output benchmark-results/render.json
       - name: Benchmark summary
         if: always()
         shell: python
