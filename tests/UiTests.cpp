@@ -713,7 +713,7 @@ private slots:
     QSignalSpy chosen(&legend, &ColorBarWidget::colormapChosen);
     QSignalSpy clipped(&legend, &ColorBarWidget::clipRangeChanged);
     QTimer guard;
-    connect(&guard, &QTimer::timeout, []() {
+    connect(&guard, &QTimer::timeout, &guard, []() {
       if (QWidget* popup = QApplication::activePopupWidget()) {
         popup->close();
       }
@@ -773,7 +773,7 @@ private slots:
     legend.setColormap({findColormap("magma"), true});
     QSignalSpy chosen(&legend, &ColorBarWidget::colormapChosen);
     QTimer guard;
-    connect(&guard, &QTimer::timeout, []() {
+    connect(&guard, &QTimer::timeout, &guard, []() {
       for (QWidget* widget : QApplication::topLevelWidgets()) {
         if (auto* menu = qobject_cast<QMenu*>(widget)) {
           menu->close();
@@ -972,7 +972,7 @@ private slots:
             });
     // Closes a menu left open, so a regression fails instead of waiting in QMenu::exec.
     QTimer guard;
-    connect(&guard, &QTimer::timeout, []() {
+    connect(&guard, &QTimer::timeout, &guard, []() {
       if (QWidget* popup = QApplication::activePopupWidget()) {
         popup->close();
       }
@@ -2102,7 +2102,8 @@ private slots:
     // The playback bar's field buttons name the keys that step fields there.
     PlaybackBar bar(frameTimes(3, 1.0));
     bar.pager()->setPage(QStringLiteral("vm"), QStringLiteral("Points · continuous"), 1, 4);
-    const QString next = QKeySequence(Qt::SHIFT | Qt::Key_Space).toString(QKeySequence::NativeText);
+    const QString next = QKeySequence(static_cast<int>(Qt::SHIFT) | Qt::Key_Space)
+                             .toString(QKeySequence::NativeText);
     QCOMPARE(buttonNamed(bar, QStringLiteral("Next field"))->toolTip(),
              QStringLiteral("Next field (%1)").arg(next));
     ScalarPager capsule(PagerPlacement::Capsule);

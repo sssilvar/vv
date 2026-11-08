@@ -191,7 +191,7 @@ private slots:
       }
     });
     QTimer guard;
-    connect(&guard, &QTimer::timeout, []() {
+    connect(&guard, &QTimer::timeout, &guard, []() {
       if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
         box->reject();
       }
@@ -216,7 +216,7 @@ private slots:
         QMetaObject::invokeMethod(dialog, "accept");
       }
     });
-    connect(&guard, &QTimer::timeout, []() {
+    connect(&guard, &QTimer::timeout, &guard, []() {
       if (auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
         dialog->reject();
       }
@@ -766,7 +766,7 @@ private slots:
     });
     pick.start(10);
     QTimer guard;
-    connect(&guard, &QTimer::timeout, []() {
+    connect(&guard, &QTimer::timeout, &guard, []() {
       if (QWidget* popup = QApplication::activePopupWidget()) {
         popup->close();
       }

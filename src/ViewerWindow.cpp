@@ -2269,7 +2269,7 @@ void ViewerWindow::buildRail() {
   // Qt reads Ctrl as Cmd on macOS. A search field takes neither, so it opens the palette
   // while one has the focus, and closes it from its own.
   auto* palette = new QAction(QStringLiteral("Command palette"), this);
-  palette->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_K));
+  palette->setShortcut(QKeySequence(static_cast<int>(Qt::CTRL) | Qt::Key_K));
   addAction(palette);
   QObject::connect(palette, &QAction::triggered, this, [this]() { togglePalette(); });
 
