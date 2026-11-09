@@ -342,7 +342,7 @@ QSize AnnotationBar::fitWidth(int maxWidth) {
     for (size_t i = 1; i < groups_.size(); ++i) {
       separators_[i - 1]->setVisible(std::find(starts.begin(), starts.end(), i) == starts.end());
     }
-    rowStarts_ = starts;
+    rowStarts_ = std::move(starts);
   }
   return sizeHint();
 }
