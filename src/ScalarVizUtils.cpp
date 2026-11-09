@@ -240,7 +240,8 @@ static std::set<double> collectUniqueValues(const std::vector<vtkDataSet*>& mesh
                                             const std::string& scalarName,
                                             FieldAssociation association,
                                             bool roundToInt,
-                                            int maxUnique) {
+                                            int maxUnique,
+                                            bool& hasNaN) {
   std::set<double> unique;
   for (vtkDataSet* mesh : meshes) {
     auto* arr = arrayForAssociation(mesh, scalarName, association);
@@ -249,6 +250,10 @@ static std::set<double> collectUniqueValues(const std::vector<vtkDataSet*>& mesh
     const vtkIdType n = arr->GetNumberOfTuples();
     for (vtkIdType i = 0; i < n; ++i) {
       double v = arr->GetComponent(i, 0);
+      if (!std::isfinite(v)) {
+        hasNaN = hasNaN || std::isnan(v);
+        continue;
+      }
       if (roundToInt)
         v = std::round(v);
       unique.insert(v);
@@ -280,10 +285,10 @@ ScalarAnalysis analyzeScalar(const std::vector<vtkDataSet*>& meshes,
   // Float arrays: collect up to 20 unique values (no rounding).
   const bool painted = scalarName == kPaintedField;
   const int limit = painted ? 256 : 20;
-  auto unique = collectUniqueValues(meshes, scalarName, association, isInt, limit);
+  auto unique = collectUniqueValues(meshes, scalarName, association, isInt, limit, result.hasNaN);
   const int n = static_cast<int>(unique.size());
 
-  if ((n >= 2 || painted) && n <= limit) {
+  if ((n >= 2 || (n == 1 && result.hasNaN) || painted) && n <= limit) {
     result.categorical = true;
     result.uniqueValues = std::move(unique);
     if (painted) {
@@ -380,6 +385,7 @@ vtkSmartPointer<vtkLookupTable> createCategoricalLookupTable(const std::set<doub
   auto lut = vtkSmartPointer<vtkLookupTable>::New();
   lut->SetNumberOfTableValues(static_cast<vtkIdType>(uniqueValues.size()));
   lut->SetIndexedLookup(1);
+  lut->SetNanColor(coloring.nanColor[0], coloring.nanColor[1], coloring.nanColor[2], 1.0);
 
   size_t rank = 0;
   for (const double v : uniqueValues) {

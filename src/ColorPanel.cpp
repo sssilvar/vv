@@ -554,16 +554,14 @@ void ColorPanel::setCategories(const std::vector<PaletteOption>& palettes,
   }
 
   entries_ = entries;
+  int slot = 0;
   for (size_t index = 0; index < entries.size(); ++index) {
     if (index == categoryRows_.size()) {
       auto* row = new QToolButton(categoryScroll_->widget());
       row->setObjectName("colorPanelCategory");
       row->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
       row->setIconSize(QSize(kCategorySwatch + kCategoryGap, kCategorySwatch));
-      row->setFixedSize(kCategoryWidth, kCategoryHeight);
       row->setFocusPolicy(Qt::NoFocus);
-      categoryGrid_->addWidget(
-          row, static_cast<int>(index) / kColumns, static_cast<int>(index) % kColumns);
       connect(row, &QToolButton::clicked, this, [this, row, index]() {
         if (index >= entries_.size()) {
           return;
@@ -585,8 +583,20 @@ void ColorPanel::setCategories(const std::vector<PaletteOption>& palettes,
     QToolButton* row = categoryRows_[index];
     const auto& [label, color] = entries[index];
     row->ensurePolished();
+    const int needed =
+        row->fontMetrics().horizontalAdvance(label) + kCategorySwatch + kCategoryGap + 16;
+    const int span = std::clamp(
+        (needed + kCategoryWidth + 2 * kSpacing - 1) / (kCategoryWidth + kSpacing), 1, kColumns);
+    if (slot % kColumns + span > kColumns) {
+      slot += kColumns - slot % kColumns;
+    }
+    categoryGrid_->removeWidget(row);
+    categoryGrid_->addWidget(row, slot / kColumns, slot % kColumns, 1, span);
+    slot += span;
+    const int width = span * kCategoryWidth + (span - 1) * kSpacing;
+    row->setFixedSize(width, kCategoryHeight);
     row->setText(row->fontMetrics().elidedText(
-        label, Qt::ElideMiddle, kCategoryWidth - kCategorySwatch - kCategoryGap - 16));
+        label, Qt::ElideMiddle, width - kCategorySwatch - kCategoryGap - 16));
     row->setAccessibleName(QStringLiteral("Color of %1").arg(label));
     row->setToolTip(QStringLiteral("Change the color of %1").arg(label));
     row->setIcon(categorySwatch(color));
@@ -596,7 +606,7 @@ void ColorPanel::setCategories(const std::vector<PaletteOption>& palettes,
     categoryRows_[index]->setVisible(false);
   }
   // Every row up to kCategoryRows, then the list scrolls.
-  const int rows = static_cast<int>((entries.size() + kColumns - 1) / kColumns);
+  const int rows = (slot + kColumns - 1) / kColumns;
   const int shown = std::min(rows, kCategoryRows);
   categoryScroll_->setFixedHeight(std::max(0, shown * (kCategoryHeight + kSpacing) - kSpacing));
 }

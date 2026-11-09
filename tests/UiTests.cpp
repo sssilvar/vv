@@ -925,9 +925,11 @@ private slots:
   void colorPanelEmitsPaletteAndRecolor() {
     ColorPanel panel;
     panel.setField(QStringLiteral("regions"));
-    const std::vector<std::pair<QString, QColor>> entries = {{QStringLiteral("1"), Qt::red},
-                                                             {QStringLiteral("2"), Qt::green},
-                                                             {QStringLiteral("3"), Qt::blue}};
+    const std::vector<std::pair<QString, QColor>> entries = {
+        {QStringLiteral("1"), Qt::red},
+        {QStringLiteral("2"), Qt::green},
+        {QStringLiteral("3"), Qt::blue},
+        {QStringLiteral("NaN / No value"), Qt::gray}};
     std::vector<PaletteOption> palettes = {
         {QStringLiteral("default"), QStringLiteral("Default"), QString(), {Qt::red, Qt::green}},
         {QStringLiteral("okabe-ito"), QStringLiteral("Okabe-Ito"), QString(), {Qt::yellow}}};
@@ -980,6 +982,10 @@ private slots:
     guard.start(2000);
     QAbstractButton* second = buttonNamed(panel, QStringLiteral("Color of 2"));
     QVERIFY(second);
+    QAbstractButton* missing = buttonNamed(panel, QStringLiteral("Color of NaN / No value"));
+    QVERIFY(missing);
+    QCOMPARE(missing->text(), QStringLiteral("NaN / No value"));
+    QVERIFY(!missing->geometry().intersects(second->geometry()));
     QTimer::singleShot(0, &panel, []() {
       auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
       if (!menu) {
@@ -1008,9 +1014,9 @@ private slots:
         }
       }
     });
-    QTest::mouseClick(second, Qt::LeftButton);
+    QTest::mouseClick(missing, Qt::LeftButton);
     QVERIFY(recolored.size() == 2);
-    QCOMPARE(recolored.back().first, 1);
+    QCOMPARE(recolored.back().first, 3);
     QVERIFY(recolored.back().second == QColor(Qt::magenta));
 
     panel.setColormap(ColormapChoice());

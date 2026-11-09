@@ -13,6 +13,9 @@
 // Category value -> RGB.
 using CategoryColors = std::map<double, std::array<double, 3>>;
 
+inline constexpr std::array<double, 3> kCategoryNanColor = {
+    85.0 / 255.0, 85.0 / 255.0, 85.0 / 255.0};
+
 // The colors a categorical field's categories take, in ascending value order.
 struct CategoryPalette {
   std::string_view id;
@@ -41,6 +44,7 @@ struct CategoryColoring {
   bool custom = false; // draws customColors over customBase
   const CategoryPalette* customBase = &categoryPalettes().front();
   CategoryColors customColors; // kept when a palette is picked, so Custom can come back
+  std::array<double, 3> nanColor = kCategoryNanColor; // independent of the finite palette
 };
 
 // The color of the category with this value, the rank-th lowest of its field. Default
@@ -57,6 +61,7 @@ bool pickPalette(CategoryColoring& coloring, std::string_view id);
 // Gives one category its own color, which makes the coloring custom: over the palette
 // shown, as a new set, unless it is custom already. std::nullopt gives the category back
 // its palette color, and the palette itself once no category has its own.
+// NaN edits or resets nanColor independently, without entering customColors.
 void recolorCategory(CategoryColoring& coloring,
                      double value,
                      const std::optional<std::array<double, 3>>& rgb);

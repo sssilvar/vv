@@ -32,6 +32,7 @@ struct ScalarField {
 // Result of scalar field analysis — computed once, passed around.
 struct ScalarAnalysis {
   bool categorical = false;
+  bool hasNaN = false;
   std::set<double> uniqueValues; // populated iff categorical == true
   CategoryColoring coloring;     // categorical fields
   // The colors the file gives every category, which the Default palette draws; empty
@@ -48,8 +49,8 @@ struct ScalarAnalysis {
 vtkDataArray*
 arrayForAssociation(vtkDataSet* mesh, const std::string& name, FieldAssociation association);
 
-// Inspect scalar field across all meshes: detect categorical (2–20 unique integer-domain values)
-// vs continuous. Integer-typed VTK arrays are always treated as categorical candidates. A
+// Inspect scalar field across all meshes: 2 to 20 distinct finite values, or one plus NaN,
+// are categorical. NaNs are tracked separately from uniqueValues. A
 // categorical field takes fileColors from the first array that carries a table (see
 // fileCategoryColors), or for vv_scalar from the colors its values encode.
 ScalarAnalysis analyzeScalar(const std::vector<vtkDataSet*>& meshes,

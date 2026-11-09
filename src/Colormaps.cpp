@@ -352,6 +352,10 @@ bool pickPalette(CategoryColoring& coloring, std::string_view id) {
 void recolorCategory(CategoryColoring& coloring,
                      double value,
                      const std::optional<std::array<double, 3>>& rgb) {
+  if (std::isnan(value)) {
+    coloring.nanColor = rgb.value_or(kCategoryNanColor);
+    return;
+  }
   if (rgb) {
     if (!coloring.custom) {
       coloring.custom = true;

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -909,6 +910,78 @@ bool categoryColored(vtkLookupTable* lut, double value, const std::array<double,
          sameColor(lut, lut->GetAnnotatedValueIndex(value), rgb);
 }
 
+bool checkCategoryNaNs(MeshRenderer& renderer) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto mesh = categoricalCells("nan_zones", 6);
+  auto* field = mesh->GetCellData()->GetArray("nan_zones");
+  const std::array<double, 6> values = {nan, 0.0, nan, 1.0, nan, 0.0};
+  for (size_t i = 0; i < values.size(); ++i) {
+    field->SetComponent(static_cast<vtkIdType>(i), 0, values[i]);
+  }
+  mesh->GetPointData()->AddArray(field);
+  renderer.setup({mesh}, {{"cells", {0}}}, {{0.0, 0.5, 1.0}});
+  const std::array<double, 3> magenta = {1.0, 0.0, 1.0};
+  const CategoryPalette& defaults = categoryPalettes().front();
+  for (const int count : {0, 1, 2, 20, 21}) {
+    const auto candidate = categoricalCells("limits", count + 1);
+    candidate->GetCellData()->GetArray("limits")->SetComponent(count, 0, nan);
+    const auto analysis = analyzeScalar({candidate}, "limits", FieldAssociation::Cell);
+    if (analysis.categorical != (count >= 1 && count <= 20) ||
+        (analysis.categorical &&
+         (!analysis.hasNaN || analysis.uniqueValues.size() != static_cast<size_t>(count)))) {
+      std::cerr << "NaN changed the finite category limit\n";
+      return false;
+    }
+  }
+  for (const auto association : {FieldAssociation::Point, FieldAssociation::Cell}) {
+    renderer.setActiveScalar("nan_zones", association);
+    const auto& analysis = renderer.getActiveScalarAnalysis();
+    if (!analysis.categorical || !analysis.hasNaN ||
+        analysis.uniqueValues != std::set<double>{0.0, 1.0} ||
+        renderer.getActiveLUT()->GetNumberOfAnnotatedValues() != 2) {
+      std::cerr << "NaN entered the finite category values\n";
+      return false;
+    }
+    if (!renderer.setCategoryColor(nan, magenta) ||
+        !categoryColored(renderer.getActiveLUT(), 0.0, defaults.colors[0]) ||
+        !categoryColored(renderer.getActiveLUT(), 1.0, defaults.colors[1])) {
+      std::cerr << "Recoloring NaN changed a finite category\n";
+      return false;
+    }
+    auto* mapped = renderer.context.actors.front()->GetMapper()->MapScalars(1.0);
+    if (!mapped || mapped->GetComponent(0, 0) != 255.0 || mapped->GetComponent(0, 1) != 0.0 ||
+        mapped->GetComponent(0, 2) != 255.0) {
+      std::cerr << "The mapper did not draw NaN in its chosen color\n";
+      return false;
+    }
+    if (!renderer.getActiveScalarAnalysis().coloring.customColors.empty()) {
+      std::cerr << "NaN entered the custom category map\n";
+      return false;
+    }
+    renderer.clearActiveScalar();
+    renderer.setActiveScalar("nan_zones", association);
+    double rgb[3];
+    renderer.getActiveLUT()->GetColor(nan, rgb);
+    if (!nearColor(rgb, magenta)) {
+      std::cerr << "A field lost its NaN color after cycling\n";
+      return false;
+    }
+    renderer.setCategoryPalette("okabe-ito");
+    renderer.getActiveLUT()->GetColor(nan, rgb);
+    if (!nearColor(rgb, magenta)) {
+      std::cerr << "A palette change overwrote the NaN color\n";
+      return false;
+    }
+    renderer.setCategoryColor(nan, std::nullopt);
+    renderer.getActiveLUT()->GetColor(nan, rgb);
+    if (!nearColor(rgb, kCategoryNanColor)) {
+      std::cerr << "Reset did not restore the NaN color\n";
+      return false;
+    }
+  }
+  return true;
+}
+
 // Default draws the colors a file's table gives a field. A palette picked for a field, or a
 // category recolored, which makes its colors custom, stays with that field as fields cycle.
 bool checkCategoryPalettes(MeshRenderer& renderer) {
@@ -1098,9 +1171,9 @@ int main() {
   }
   return checkColormaps(renderer) && checkSurfaceLook(renderer, interactor) && checkHistogram() &&
                  checkNonFiniteValues() && checkProbe(renderer) && checkGlass(renderer) &&
-                 checkCategoricalTable(renderer) && checkCategoryPalettes(renderer) &&
-                 checkDegeneratePick() && checkPin(renderer) && checkTrace() &&
-                 checkFacetPages(renderer)
+                 checkCategoricalTable(renderer) && checkCategoryNaNs(renderer) &&
+                 checkCategoryPalettes(renderer) && checkDegeneratePick() && checkPin(renderer) &&
+                 checkTrace() && checkFacetPages(renderer)
              ? 0
              : 1;
 }

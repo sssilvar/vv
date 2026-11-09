@@ -23,7 +23,9 @@
 #include <QtTest>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
+#include <string_view>
 #include <vtkActor.h>
 #include <vtkActorCollection.h>
 #include <vtkCellArray.h>
@@ -616,6 +618,114 @@ private slots:
     enter(max, QStringLiteral("99999"));
     QCOMPARE(view->colorBar_->valueText(view->colorBar_->clipMax_), QStringLiteral("1000"));
     QCOMPARE(view->colorBar_->width(), initialWidth);
+  }
+
+  void categoricalNaNColors_data() {
+    QTest::addColumn<bool>("explode");
+    QTest::addColumn<bool>("cells");
+    QTest::addColumn<bool>("common");
+    for (const bool explode : {false, true}) {
+      for (const bool cells : {false, true}) {
+        for (const bool common : {false, true}) {
+          const auto name = QStringLiteral("%1-%2-%3").arg(explode).arg(cells).arg(common);
+          QTest::newRow(qPrintable(name)) << explode << cells << common;
+        }
+      }
+    }
+  }
+
+  void categoricalNaNColors() {
+    QFETCH(bool, explode);
+    QFETCH(bool, cells);
+    QFETCH(bool, common);
+    vtkNew<CountingWindow> window;
+    auto load = testMeshes(2, 3);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (size_t i = 0; i < load.meshes.meshes.size(); ++i) {
+      auto* mesh = load.meshes.meshes[i].Get();
+      mesh->GetPointData()->Initialize();
+      auto* attributes = cells ? static_cast<vtkDataSetAttributes*>(mesh->GetCellData())
+                               : static_cast<vtkDataSetAttributes*>(mesh->GetPointData());
+      const auto count = cells ? mesh->GetNumberOfCells() : mesh->GetNumberOfPoints();
+      for (const char* name : {"af_sources", "finite"}) {
+        vtkNew<vtkFloatArray> field;
+        field->SetName(name);
+        for (vtkIdType j = 0; j < count; ++j) {
+          field->InsertNextValue(static_cast<float>(j % 2));
+        }
+        if (i == 1 && std::string_view(name) == "af_sources") {
+          field->SetComponent(count - 1, 0, nan);
+        }
+        attributes->AddArray(field);
+      }
+    }
+    ViewerOptions options;
+    options.explodeView = explode;
+    options.commonCatLut = common;
+    auto view = viewer(window, std::move(load), options);
+    std::vector<ColorBarWidget*> bars;
+    if (explode) {
+      for (size_t i = 0; i < view->facetColorBars_.size(); ++i) {
+        FacetPanelInfo info;
+        QVERIFY(view->renderer_.getFacetPanelInfo(i, info));
+        if (info.title == "af_sources") {
+          QVERIFY(info.analysis.hasNaN);
+          bars.push_back(view->facetColorBars_[i]);
+        } else {
+          QVERIFY(!info.analysis.hasNaN);
+          QCOMPARE(view->facetColorBars_[i]->catEntries_.size(), size_t(2));
+        }
+      }
+      QCOMPARE(bars.size(), size_t(2));
+    } else {
+      view->applyScalarAtIndex(0);
+      bars.push_back(view->colorBar_);
+    }
+    for (auto* bar : bars) {
+      QVERIFY(bar);
+      QCOMPARE(bar->catEntries_.size(), size_t(3));
+      QCOMPARE(bar->catEntries_.back().first, QStringLiteral("NaN / No value"));
+      QVERIFY(bar->subtitle_.contains(QStringLiteral("2 categories")));
+    }
+    const auto original = bars.front()->catEntries_;
+
+    int before = window->renders;
+    emit bars.front()->categoryColorChanged(2, QColor(Qt::magenta));
+    QCOMPARE(window->renders - before, 1);
+    for (auto* bar : bars) {
+      QCOMPARE(bar->catEntries_[0], original[0]);
+      QCOMPARE(bar->catEntries_[1], original[1]);
+      QCOMPARE(bar->catEntries_[2].second, QColor(Qt::magenta));
+    }
+    if (!explode) {
+      QAbstractButton* missing = nullptr;
+      for (auto* button : view->colorPanel_->findChildren<QAbstractButton*>()) {
+        if (button->accessibleName() == QStringLiteral("Color of NaN / No value")) {
+          missing = button;
+          break;
+        }
+      }
+      QVERIFY(missing);
+      QCOMPARE(missing->accessibleName(), QStringLiteral("Color of NaN / No value"));
+      view->applyScalarAtIndex(1);
+      QCOMPARE(view->colorBar_->catEntries_.size(), size_t(2));
+      view->applyScalarAtIndex(0);
+      QCOMPARE(view->colorBar_->catEntries_.back().second, QColor(Qt::magenta));
+      before = window->renders;
+      emit view->colorPanel_->categoryColorChanged(2, QColor(Qt::cyan));
+      QCOMPARE(window->renders - before, 1);
+      QCOMPARE(view->colorBar_->catEntries_.back().second, QColor(Qt::cyan));
+    }
+    emit bars.front()->paletteChosen(QStringLiteral("okabe-ito"));
+    const auto expected = explode ? QColor(Qt::magenta) : QColor(Qt::cyan);
+    for (auto* bar : bars) {
+      QCOMPARE(bar->catEntries_.back().second, expected);
+    }
+
+    emit bars.front()->categoryColorChanged(2, std::nullopt);
+    for (auto* bar : bars) {
+      QCOMPARE(bar->catEntries_.back().second, original.back().second);
+    }
   }
 
   void facetColumnUpdates() {

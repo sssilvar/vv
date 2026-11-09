@@ -60,6 +60,7 @@
 
 ### Fixed
 
+- Categorical fields containing NaNs expose an editable NaN / No value swatch in legends and the Color panel, defaulting to gray (#555555) and retaining finite category colors and per-field missing-value colors across palette changes and exploded columns.
 - Bound macOS CI rendering cost with a smaller benchmark workload for Apple's software OpenGL renderer, retaining every rendering scenario and nonempty-frame check.
 - Fix Clang 14 popup-test analysis with explicit null checks and a call-site exception for Qt-owned timer functors.
 - Continuous legends keep small nonzero bounds readable after clamping and size their value columns independently, growing within their panel when needed.

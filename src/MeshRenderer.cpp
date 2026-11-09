@@ -493,7 +493,9 @@ void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>
     if (computeScalarGlobalRange(allPtrs, field.name, field.association, state.globalRange)) {
       state.analysis = analyzeScalar(allPtrs, field.name, field.association);
       if (state.analysis.categorical && sharedCatAnalysis.categorical) {
+        const bool hasNaN = state.analysis.hasNaN;
         state.analysis = sharedCatAnalysis;
+        state.analysis.hasNaN = hasNaN;
       }
       std::copy_n(state.globalRange, 2, state.clipRange);
     }
@@ -892,8 +894,11 @@ bool MeshRenderer::setActiveScalar(const std::string& scalarName, FieldAssociati
 ScalarAnalysis MeshRenderer::analyzeField(const std::string& scalarName,
                                           FieldAssociation association) const {
   ScalarAnalysis analysis = analyzeScalar(rawMeshPointers(sceneMeshes), scalarName, association);
-  if (analysis.categorical && sharedCatAnalysis.categorical)
+  if (analysis.categorical && sharedCatAnalysis.categorical) {
+    const bool hasNaN = analysis.hasNaN;
     analysis = sharedCatAnalysis;
+    analysis.hasNaN = hasNaN;
+  }
   if (const auto saved = categoryColorings_.find({scalarName, association});
       saved != categoryColorings_.end())
     analysis.coloring = saved->second;

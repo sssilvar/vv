@@ -54,6 +54,7 @@
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
@@ -266,24 +267,27 @@ QString fromView(std::string_view text) {
 }
 
 // Legend rows for a categorical scalar: analysis unique values + LUT colors,
-// in ascending value order. Rows stop at the first value the table lacks, so row i
-// stays analysis value i (see categoryValue).
+// in ascending value order, then NaN if present (see categoryValue).
 std::vector<std::pair<QString, QColor>> categoricalEntries(vtkLookupTable* lut,
                                                            const ScalarAnalysis& analysis) {
   std::vector<std::pair<QString, QColor>> entries;
   if (!lut) {
     return entries;
   }
-  entries.reserve(analysis.uniqueValues.size());
+  entries.reserve(analysis.uniqueValues.size() + (analysis.hasNaN ? 1 : 0));
   for (const double value : analysis.uniqueValues) {
     const vtkIdType row = lut->GetAnnotatedValueIndex(value);
     if (row < 0 || row >= lut->GetNumberOfTableValues()) {
-      break;
+      return entries;
     }
     double rgba[4];
     lut->GetTableValue(row, rgba);
     entries.push_back(
         {QString::fromStdString(lut->GetAnnotation(row)), qColor({rgba[0], rgba[1], rgba[2]})});
+  }
+  if (analysis.hasNaN) {
+    const double* rgba = lut->GetNanColor();
+    entries.push_back({QStringLiteral("NaN / No value"), qColor({rgba[0], rgba[1], rgba[2]})});
   }
   return entries;
 }
@@ -331,6 +335,9 @@ QString paletteId(const CategoryColoring& coloring) {
 
 // The category value shown at categoricalEntries()[entry].
 std::optional<double> categoryValue(const ScalarAnalysis& analysis, int entry) {
+  if (analysis.hasNaN && entry >= 0 && static_cast<size_t>(entry) == analysis.uniqueValues.size()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
   if (entry < 0 || static_cast<size_t>(entry) >= analysis.uniqueValues.size()) {
     return std::nullopt;
   }

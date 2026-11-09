@@ -114,6 +114,7 @@ public:
   bool setCategoryPalette(std::string_view id);
   // Recolor one category of the active categorical field, which makes its colors custom;
   // std::nullopt gives it its palette color back (see recolorCategory). Kept like the palette.
+  // NaN changes the separate missing-value color, leaving finite categories alone.
   bool setCategoryColor(double value, const std::optional<std::array<double, 3>>& rgb);
   // Draw the active continuous field with the colormap of this id, reversed or
   // not; the analysis reports it. Like category colors, it is kept for that field.

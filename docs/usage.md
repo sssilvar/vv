@@ -52,7 +52,7 @@ Legends shrink with their panels. Categorical legends use chips when rows would 
 
 The field pager shows the active field, its point/cell association and its position in the list. Its arrows step fields, including plain geometry; clicking the name opens a searchable list. Single-component arrays are scalar fields; three-component arrays are available as [vector glyphs](#view-controls-and-probing).
 
-Point-data fields interpolate across triangles; cell-data fields stay flat per cell. Integer fields with 2 to 20 distinct values are categorical and use one color per category. Other scalar fields use a continuous colormap.
+Point-data fields interpolate across triangles; cell-data fields stay flat per cell. Fields with 2 to 20 distinct finite values, or one finite value plus NaN, are categorical and use one color per category. Other scalar fields use a continuous colormap.
 
 ### Continuous fields
 
@@ -72,7 +72,9 @@ In exploded view, click a continuous legend's gradient or right-click its card t
 
 The Color panel, legend's Palette menu and command palette also offer Tab10, Tab20, Okabe-Ito (colorblind-safe), Set2, Paired and Dark2. Longer category lists reuse palette colors with lighter, then darker variants.
 
-Click a legend swatch or right-click its row to recolor a category or reset it to its palette color. **More colors…** opens a full picker. Editing creates **Custom**, which overlays your choices on the current palette. Switching palettes retains Custom; editing another category starts a new Custom over the palette then shown. Choices last until vv exits and apply to the whole column in exploded view.
+Click a legend swatch or right-click its row to recolor a category or reset it to its palette color. **More colors…** opens a full picker. Editing a finite category creates **Custom**, which overlays your choices on the current palette. Switching palettes retains Custom; editing another category starts a new Custom over the palette then shown. Choices last until vv exits and apply to the whole column in exploded view.
+
+Categorical fields containing NaNs also show a **NaN / No value** swatch in the legend and Color panel. Edit or reset it with the same color menu. Its color is independent of the finite categories and stays unchanged when switching palettes.
 
 With `--common-cat-lut`, categorical fields share their union of values. A value takes the same color wherever the same palette is selected. Default then uses vv's ten colors rather than a field-specific file table.
 
