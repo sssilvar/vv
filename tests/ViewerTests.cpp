@@ -655,7 +655,10 @@ private slots:
       if (!editor || !editor->isVisible())
         return false;
       QTest::keyClicks(editor, input);
-      QTest::keyClick(editor, Qt::Key_Return);
+      // Not keyClick: its QPointer guard trips a clang-analyzer 18 false use-after-free.
+      // The editor outlives Return, so press and release are equivalent here.
+      QTest::keyPress(editor, Qt::Key_Return);
+      QTest::keyRelease(editor, Qt::Key_Return);
       return true;
     };
     QVERIFY(enter(0, QStringLiteral("100.1234567890123")));

@@ -41,7 +41,6 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
-#include <QPointer>
 #include <QSignalBlocker>
 #include <QSize>
 #include <QStringList>
@@ -422,12 +421,16 @@ public:
                           QObject* parent = nullptr)
       : QObject(parent), vtkRoot_(vtkRoot), onSpace_(std::move(onSpace)),
         onPointerEvent_(std::move(onPointerEvent)), onHover_(std::move(onHover)),
-        onClick_(std::move(onClick)), onPaintHold_(std::move(onPaintHold)) {}
+        onClick_(std::move(onClick)), onPaintHold_(std::move(onPaintHold)) {
+    if (vtkRoot_) {
+      connect(vtkRoot_, &QObject::destroyed, this, [this] { vtkRoot_ = nullptr; });
+    }
+  }
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override {
     auto* widget = qobject_cast<QWidget*>(watched);
-    QWidget* vtkRoot = vtkRoot_.data();
+    QWidget* vtkRoot = vtkRoot_;
     if (!widget || !vtkRoot) {
       return QObject::eventFilter(watched, event);
     }
@@ -594,7 +597,9 @@ private:
     }
   }
 
-  QPointer<QWidget> vtkRoot_;
+  // Not a QPointer: clang-analyzer 18 reports a false use-after-free in
+  // ~QWeakPointer when it analyzes this class's implicit destructor.
+  QWidget* vtkRoot_;
   std::function<void(Qt::KeyboardModifiers)> onSpace_;
   std::function<bool(QMouseEvent*)> onPointerEvent_;
   std::function<void(const std::optional<QPointF>&)> onHover_;
