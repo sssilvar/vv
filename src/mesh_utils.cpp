@@ -8,7 +8,9 @@
 #else
 #include <unistd.h>
 #endif
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -115,4 +117,14 @@ std::string stdinToTempFile() {
     return {};
   }
   return tmpPath;
+}
+
+bool endsWithIgnoreCase(const std::string& value, const std::string& suffix) {
+  if (value.size() < suffix.size()) {
+    return false;
+  }
+  return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin(), [](char a, char b) {
+    return std::tolower(static_cast<unsigned char>(a)) ==
+           std::tolower(static_cast<unsigned char>(b));
+  });
 }

@@ -5,6 +5,7 @@
 #include "JsonMeshParser.h"
 #include "LSDynaMeshParser.h"
 #include "MeshParser.h"
+#include "NiftiMeshParser.h"
 #include "STLMeshParser.h"
 #include "TemporalSource.h"
 #include "VTKHDFMeshParser.h"
@@ -16,6 +17,7 @@
 #include <array>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <system_error>
 #include <vtkDataArray.h>
 #include <vtkFieldData.h>
@@ -67,6 +69,7 @@ std::vector<std::unique_ptr<MeshParser>> buildParsers() {
   parsers.emplace_back(std::make_unique<FSurfMeshParser>());
   parsers.emplace_back(std::make_unique<LSDynaMeshParser>());
   parsers.emplace_back(std::make_unique<STLMeshParser>());
+  parsers.emplace_back(std::make_unique<NiftiMeshParser>());
   return parsers;
 }
 
@@ -142,13 +145,21 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles) {
       result.temporalMesh = result.meshes.meshes.size();
     }
 
-    if (parsedMeshes.empty()) {
+    std::optional<Volume> volume = selected->volume();
+    if (volume) {
+      result.volumes.push_back(
+          {std::move(*volume), basenameOf(filename), result.meshes.meshes.size()});
+    }
+    if (parsedMeshes.empty() && !volume) {
       result.ok = false;
       result.exitCode = 3;
       result.error = "Failed to parse mesh: " + filename;
       return result;
     }
 
+    if (parsedMeshes.empty()) {
+      continue; // a volume without surfaces shows only in the slice views
+    }
     MeshGroup group;
     group.name = basenameOf(filename);
 
@@ -179,4 +190,21 @@ MeshLoadResult loadMeshes(const std::vector<std::string>& meshfiles) {
   result.ok = true;
   result.exitCode = 0;
   return result;
+}
+
+void overlayGroups(LoadedMeshes& meshes) {
+  if (meshes.groups.size() < 2) {
+    return;
+  }
+  MeshGroup merged;
+  for (const MeshGroup& group : meshes.groups) {
+    merged.name += (merged.name.empty() ? "" : " + ") + group.name;
+    for (const size_t part : group.partIndices) {
+      if (group.partIndices.size() > 1) {
+        meshes.partNames[part] = group.name + " · " + meshes.partNames[part];
+      }
+      merged.partIndices.push_back(part);
+    }
+  }
+  meshes.groups = {std::move(merged)};
 }

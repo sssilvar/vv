@@ -31,6 +31,7 @@ namespace {
 struct Args {
   std::vector<std::string> meshfiles;
   bool explode_view = false;
+  bool overlay = false;
   bool common_cat_lut = false;
   bool annotate = false;
   std::optional<std::array<double, 2>> range;
@@ -66,6 +67,9 @@ Args parseArgs(int argc, char* argv[]) {
       "e,explode",
       "One panel per scalar; with several files, a row per file and a column per scalar",
       cxxopts::value<bool>(args.explode_view))(
+      "o,overlay",
+      "Show all files together in one view instead of side by side",
+      cxxopts::value<bool>(args.overlay))(
       "C,common-cat-lut",
       "Share one categorical colormap across all categorical scalars for cross-scalar comparison",
       cxxopts::value<bool>(args.common_cat_lut))(
@@ -173,6 +177,14 @@ int main(int argc, char* argv[]) try {
   if (!loadResult.ok) {
     std::cerr << loadResult.error << '\n';
     return loadResult.exitCode;
+  }
+  const bool volumes = !loadResult.volumes.empty();
+  if (volumes && args.explode_view) {
+    std::cerr << "Warning: slice views are not shown with --explode.\n";
+  }
+  // The slice views share one 3-D view, which shows every file.
+  if (args.overlay || (volumes && !args.explode_view)) {
+    overlayGroups(loadResult.meshes);
   }
 
   QSurfaceFormat format = QVTKOpenGLNativeWidget::defaultFormat();

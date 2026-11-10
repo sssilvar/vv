@@ -11,5 +11,8 @@ std::string readHeader(FILE* f, size_t nbytes = 200);
 // Read up to nbytes from filename
 std::string readHeader(const std::string& filename, size_t nbytes = 200);
 
+// Whether value ends with suffix, ignoring ASCII case
+bool endsWithIgnoreCase(const std::string& value, const std::string& suffix);
+
 // Write all of stdin to a newly created temp file, return temp file path or empty on error
 std::string stdinToTempFile();

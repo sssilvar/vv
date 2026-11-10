@@ -2,6 +2,8 @@
 
 ### Added
 
+- Open NIfTI volumes (`.nii`, `.nii.gz`) in axial, coronal and sagittal slice views beside the 3-D view: grayscale with window/level, a linked crosshair, zoom and pan, and label maps as outlines or filled masks (**M**) that match their per-label surfaces in 3-D.
+- `-o`, `--overlay` shows all files together in one view instead of side by side.
 - Linux ASan/UBSan regression checks, an advisory Clazy trial and a manual unused-function audit; analyzer runs include configured tests.
 - Cross-platform viewer integration tests, median CPU interaction benchmarks and OpenGL frame benchmarks with driver metadata, p50/p95 timings and nonempty-frame checks.
 

@@ -21,6 +21,7 @@
 #include <vtkFeatureEdges.h>
 #include <vtkGenericCell.h>
 #include <vtkGlyph3D.h>
+#include <vtkImageSlice.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLineSource.h>
 #include <vtkLookupTable.h>
@@ -411,6 +412,24 @@ void MeshRenderer::finishPanels(const std::vector<vtkSmartPointer<vtkDataSet>>& 
   for (const auto& ren : panelRenderers_) {
     ren->AddObserver(vtkCommand::StartEvent, clipCb_);
   }
+}
+
+void MeshRenderer::addImagePlanes(const std::vector<vtkSmartPointer<vtkImageSlice>>& planes,
+                                  const std::array<double, 6>& bounds) {
+  if (!renderer || planes.empty()) {
+    return;
+  }
+  for (const auto& plane : planes) {
+    renderer->AddViewProp(plane);
+  }
+  vtkBoundingBox bbox(bounds.data());
+  // Without meshes, sceneBounds_ holds only its placeholder unit box.
+  if (!sceneMeshes.empty()) {
+    bbox.AddBounds(sceneBounds_);
+  }
+  bbox.GetBounds(sceneBounds_);
+  renderer->ResetCamera(sceneBounds_);
+  fittedCameraMTime_ = renderer->GetActiveCamera()->GetMTime();
 }
 
 void MeshRenderer::start() {

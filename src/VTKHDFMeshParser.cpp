@@ -4,7 +4,6 @@
 #include "mesh_utils.h"
 
 #include <algorithm>
-#include <cctype>
 #include <iostream>
 #include <vtkHDFReader.h>
 #include <vtkInformation.h>
@@ -21,16 +20,6 @@ bool hasHDF5Magic(const std::string& filename) {
     return false;
   }
   return std::equal(std::begin(kMagic), std::end(kMagic), header.begin());
-}
-
-bool endsWithIgnoreCase(const std::string& value, const std::string& suffix) {
-  if (value.size() < suffix.size()) {
-    return false;
-  }
-  return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin(), [](char a, char b) {
-    return std::tolower(static_cast<unsigned char>(a)) ==
-           std::tolower(static_cast<unsigned char>(b));
-  });
 }
 
 } // namespace

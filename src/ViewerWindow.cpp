@@ -16,9 +16,11 @@
 #include "ProbeCard.h"
 #include "ScalarPager.h"
 #include "ScalarVizUtils.h"
+#include "SliceView.h"
 #include "StylePanel.h"
 #include "TemporalSource.h"
 #include "ToolRail.h"
+#include "VolumeScene.h"
 #include "mesh_utils.h"
 
 #include <QAbstractScrollArea>
@@ -40,11 +42,13 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QPixmap>
 #include <QSignalBlocker>
 #include <QSize>
 #include <QStringList>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <QVTKOpenGLNativeWidget.h>
 #include <QWheelEvent>
 #include <algorithm>
@@ -84,6 +88,8 @@ namespace {
 
 constexpr int kOverlayMargin = 16;
 constexpr int kRailIconSize = 20;
+// Between the 3-D view and the slice views, and between slice views.
+constexpr int kSliceViewGap = 4;
 constexpr int kRailPanelGap = 8;
 constexpr int kFacetLegendMargin = 8;
 constexpr double kPlaybackBaseFps = 15.0;
@@ -444,7 +450,9 @@ protected:
 
     const bool insideVtkWidget = (widget == vtkRoot || vtkRoot->isAncestorOf(widget));
     if (!insideVtkWidget) {
-      return QObject::eventFilter(watched, event);
+      // A focused slice view keeps the viewer's keys.
+      return (qobject_cast<SliceView*>(widget) && handleKey(event)) ||
+             QObject::eventFilter(watched, event);
     }
 
     // Overlays (rail, panels, legends, bars) handle their own events. A wheel turn
@@ -554,50 +562,49 @@ protected:
     case QEvent::TouchUpdate:
     case QEvent::TouchEnd:
       return true; // block trackpad rotate / pinch gestures
-    case QEvent::KeyPress: {
-      auto* ke = static_cast<QKeyEvent*>(event);
-      if (ke->key() == Qt::Key_Space && onSpace_) {
-        onSpace_(ke->modifiers());
-        return true;
-      }
-      // Closing rather than quitting lets the window ask about unsaved labels.
-      if (ke->key() == Qt::Key_Q) {
-        vtkRoot->window()->close();
-        return true;
-      }
-      // Hold 'a' to paint, 'e' to erase; ignore X11 auto-repeat so the hold sticks.
-      if (!ke->isAutoRepeat() && onPaintHold_ &&
-          (ke->key() == Qt::Key_A || ke->key() == Qt::Key_E)) {
-        onPaintHold_(true, ke->key() == Qt::Key_E);
-        return true;
-      }
-      break;
-    }
-    case QEvent::KeyRelease: {
-      auto* ke = static_cast<QKeyEvent*>(event);
-      if (!ke->isAutoRepeat() && onPaintHold_ &&
-          (ke->key() == Qt::Key_A || ke->key() == Qt::Key_E)) {
-        onPaintHold_(false, false);
-        return true;
-      }
-      break;
-    }
-    case QEvent::ShortcutOverride: {
-      auto* ke = static_cast<QKeyEvent*>(event);
-      if (ke->key() == Qt::Key_Space || ke->key() == Qt::Key_Q || ke->key() == Qt::Key_A ||
-          ke->key() == Qt::Key_E) {
-        ke->accept();
-        return true;
-      }
-      break;
-    }
     default:
+      if (handleKey(event)) {
+        return true;
+      }
       break;
     }
     return QObject::eventFilter(watched, event);
   }
 
 private:
+  // Space, Q and the paint holds, which no QAction carries; true when consumed.
+  bool handleKey(QEvent* event) {
+    if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease &&
+        event->type() != QEvent::ShortcutOverride) {
+      return false;
+    }
+    auto* ke = static_cast<QKeyEvent*>(event);
+    const bool paintKey = ke->key() == Qt::Key_A || ke->key() == Qt::Key_E;
+    if (event->type() == QEvent::ShortcutOverride) {
+      if (ke->key() == Qt::Key_Space || ke->key() == Qt::Key_Q || paintKey) {
+        ke->accept();
+        return true;
+      }
+      return false;
+    }
+    const bool pressed = event->type() == QEvent::KeyPress;
+    if (pressed && ke->key() == Qt::Key_Space && onSpace_) {
+      onSpace_(ke->modifiers());
+      return true;
+    }
+    // Closing rather than quitting lets the window ask about unsaved labels.
+    if (pressed && ke->key() == Qt::Key_Q) {
+      vtkRoot_->window()->close();
+      return true;
+    }
+    // Hold 'a' to paint, 'e' to erase; ignore X11 auto-repeat so the hold sticks.
+    if (!ke->isAutoRepeat() && onPaintHold_ && paintKey) {
+      onPaintHold_(pressed, pressed && ke->key() == Qt::Key_E);
+      return true;
+    }
+    return false;
+  }
+
   void hover(const std::optional<QPointF>& pos) const {
     if (onHover_) {
       onHover_(pos);
@@ -745,6 +752,9 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult,
   } else {
     setupNormalMode();
   }
+  if (volumeScene_) {
+    renderer_.addImagePlanes(volumeScene_->planes(), volumeScene_->worldBounds());
+  }
   buildRail();
   if (load_.meshes.groups.size() > 1) {
     const size_t count =
@@ -787,7 +797,48 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult,
   vtkWidget_->setFocus();
 }
 
+ViewerWindow::~ViewerWindow() = default;
+
+QWidget* ViewerWindow::buildSliceViews(QWidget* parent) {
+  volumeScene_ = std::make_unique<VolumeScene>(load_.volumes, partColors_);
+  auto* column = new QWidget(parent);
+  auto* layout = new QVBoxLayout(column);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(kSliceViewGap);
+  for (const SliceOrientation orientation :
+       {SliceOrientation::Axial, SliceOrientation::Coronal, SliceOrientation::Sagittal}) {
+    auto* view = new SliceView(*volumeScene_, orientation, column);
+    connect(view, &SliceView::sceneChanged, this, &ViewerWindow::refreshSliceViews);
+    layout->addWidget(view, 1);
+    sliceViews_.push_back(view);
+  }
+  if (volumeScene_->hasLabels()) {
+    auto* fill =
+        new QAction(lucideIcon(Lucide::Brush, kRailIconSize), QStringLiteral("Fill labels"), this);
+    fill->setCheckable(true);
+    fill->setShortcut(QKeySequence(Qt::Key_M));
+    addAction(fill);
+    commands_.push_back(fill);
+    connect(fill, &QAction::toggled, this, [this](bool filled) {
+      volumeScene_->setOutline(!filled);
+      refreshSliceViews();
+    });
+  }
+  return column;
+}
+
+void ViewerWindow::refreshSliceViews() {
+  for (SliceView* view : sliceViews_) {
+    view->refresh();
+  }
+  vtkWidget_->renderWindow()->Render();
+}
+
 void ViewerWindow::setupWindowTitle() {
+  if (load_.meshes.names.empty() && !load_.volumes.empty()) {
+    setWindowTitle(QStringFromUtf8(load_.volumes.front().name) + QStringLiteral("[*] - vv"));
+    return;
+  }
   if (load_.meshes.names.empty() || load_.meshes.names.front().empty()) {
     setWindowTitle(QStringLiteral("vv[*]"));
     return;
@@ -815,7 +866,16 @@ void ViewerWindow::buildViewport(vtkGenericOpenGLRenderWindow* renderWindow) {
   vtkWidget_ = new MeshViewport(central, [this]() { onViewportResize(); });
   vtkWidget_->setFocusPolicy(Qt::StrongFocus);
   vtkWidget_->setAttribute(Qt::WA_AcceptTouchEvents, false);
-  layout->addWidget(vtkWidget_, 1);
+  layout->addWidget(vtkWidget_, 3);
+  if (!load_.volumes.empty() && !options_.explodeView) {
+    // The gaps between the views show the window behind them.
+    QPalette frame = central->palette();
+    frame.setColor(QPalette::Window, overlay::kPopupSurface);
+    central->setPalette(frame);
+    central->setAutoFillBackground(true);
+    layout->setSpacing(kSliceViewGap);
+    layout->addWidget(buildSliceViews(central), 2);
+  }
   setCentralWidget(central);
 
   renderWindow->SetMultiSamples(0);
@@ -1084,6 +1144,14 @@ void ViewerWindow::changeVisibility(const std::vector<LayerVisibilityChange>& ch
     parts.push_back({group.partIndices[static_cast<size_t>(change.part)], change.visible});
   }
   renderer_.setPartsVisible(parts);
+  if (volumeScene_) {
+    for (const PartVisibilityChange& part : parts) {
+      volumeScene_->setPartVisible(part.part, part.visible);
+    }
+    for (SliceView* view : sliceViews_) {
+      view->refresh();
+    }
+  }
   refreshProbe();
 }
 
@@ -2271,6 +2339,9 @@ void ViewerWindow::buildRail() {
       this,
       [this]() {
         renderer_.resetCamera();
+        for (SliceView* view : sliceViews_) {
+          view->resetCamera();
+        }
         refreshProbe();
       });
   QObject::connect(addTool(Lucide::Camera, QStringLiteral("Save snapshot"), QKeySequence()),

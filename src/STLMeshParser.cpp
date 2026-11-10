@@ -1,7 +1,7 @@
 #include "STLMeshParser.h"
 
-#include <algorithm>
-#include <cctype>
+#include "mesh_utils.h"
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -12,12 +12,7 @@
 // Binary STL has no magic number (its 80-byte header may even begin with
 // "solid", like ASCII STL), so the extension is the only reliable signal.
 bool STLMeshParser::canParse(const std::string& filename) {
-  constexpr std::size_t kExtLen = 4;
-  if (filename.size() < kExtLen)
-    return false;
-  return std::equal(filename.end() - kExtLen, filename.end(), ".stl", [](char a, char b) {
-    return std::tolower(static_cast<unsigned char>(a)) == b;
-  });
+  return endsWithIgnoreCase(filename, ".stl");
 }
 
 std::vector<vtkSmartPointer<vtkDataSet>> STLMeshParser::parse(const std::string& filename) {
