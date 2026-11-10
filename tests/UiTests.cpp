@@ -1345,7 +1345,7 @@ private slots:
 
     const QList<QLabel*> keys = panel->findChildren<QLabel*>("stylePanelKey");
     const auto key = std::find_if(
-        keys.begin(), keys.end(), [](const QLabel* label) { return label->text() == "1"; });
+        keys.begin(), keys.end(), [](const QLabel* label) { return label->text() == "S"; });
     QVERIFY(key != keys.end());
     const auto* tile = qobject_cast<QToolButton*>((*key)->parentWidget());
     QVERIFY(tile);

@@ -1415,7 +1415,7 @@ void ViewerWindow::setAnnotating(bool on) {
   if (scalarPager_) {
     scalarPager_->setVisible(!on);
   }
-  syncDigitKeys();
+  syncAnnotateKeys();
   syncColorPanel();
   applyTool();
   refreshProbe();
@@ -1698,11 +1698,7 @@ bool ViewerWindow::saveAnnotations() {
   return true;
 }
 
-void ViewerWindow::syncDigitKeys() {
-  // Both sets use the digits, and a key with two enabled actions triggers neither.
-  for (QAction* key : styleKeys_) {
-    key->setEnabled(styleAction_->isChecked() && !annotating_);
-  }
+void ViewerWindow::syncAnnotateKeys() {
   for (QAction* key : annotateKeys_) {
     key->setEnabled(annotating_);
   }
@@ -2174,7 +2170,7 @@ void ViewerWindow::buildRail() {
     return action;
   };
 
-  layersAction_ = addTool(Lucide::Layers, QStringLiteral("Layers"), QKeySequence(Qt::Key_L));
+  layersAction_ = addTool(Lucide::Layers, QStringLiteral("Layers"), QKeySequence());
   layersAction_->setCheckable(true);
   if (options_.explodeView || load_.meshes.groups.empty()) {
     layersAction_->setEnabled(false);
@@ -2187,7 +2183,7 @@ void ViewerWindow::buildRail() {
     layoutOverlays();
   });
 
-  colorAction_ = addTool(Lucide::Palette, QStringLiteral("Color"), QKeySequence(Qt::Key_C));
+  colorAction_ = addTool(Lucide::Palette, QStringLiteral("Color"), QKeySequence());
   colorAction_->setCheckable(true);
   QObject::connect(colorAction_, &QAction::toggled, this, [this](bool open) {
     // The histogram is only computed while someone can see it.
@@ -2204,49 +2200,33 @@ void ViewerWindow::buildRail() {
   panels_->addAction(layersAction_);
   panels_->addAction(colorAction_);
 
-  styleAction_ = addTool(Lucide::Box, QStringLiteral("Style"), QKeySequence(Qt::Key_S));
+  styleAction_ = addTool(Lucide::Box, QStringLiteral("Style"), QKeySequence());
   styleAction_->setCheckable(true);
   panels_->addAction(styleAction_);
   QObject::connect(styleAction_, &QAction::toggled, this, [this](bool open) {
     stylePanel_->setVisible(open);
-    syncDigitKeys();
     layoutOverlays();
   });
-  // Only while the panel is open, so the digits stay free otherwise.
+  // S and W replace VTK's own surface and wireframe keys, which vv's camera style drops.
+  // X and G toggle their style from anywhere, back to the last opaque one, which for
+  // S and W is the style they set.
   struct StyleKey {
-    Qt::Key key;
-    SurfaceStyle style;
-  };
-  for (const StyleKey styleKey : {StyleKey{Qt::Key_1, SurfaceStyle::Solid},
-                                  StyleKey{Qt::Key_2, SurfaceStyle::SolidWithEdges},
-                                  StyleKey{Qt::Key_3, SurfaceStyle::Wireframe}}) {
-    auto* action = new QAction(this);
-    action->setShortcut(QKeySequence(styleKey.key));
-    action->setEnabled(false);
-    addAction(action);
-    QObject::connect(action, &QAction::triggered, this, [this, style = styleKey.style]() {
-      SurfaceLook look = renderer_.getSurfaceLook();
-      look.style = style;
-      setSurfaceLook(look);
-    });
-    styleKeys_.push_back(action);
-  }
-  // X and G toggle their style from anywhere, back to the last opaque one.
-  struct SeeThroughKey {
     Lucide icon;
     const char* name;
     Qt::Key key;
     SurfaceStyle style;
   };
-  for (const SeeThroughKey seeThroughKey :
-       {SeeThroughKey{Lucide::ScanEye, "X-ray", Qt::Key_X, SurfaceStyle::XRay},
-        SeeThroughKey{Lucide::Gem, "Glass", Qt::Key_G, SurfaceStyle::Glass}}) {
+  for (const StyleKey styleKey :
+       {StyleKey{Lucide::Box, "Solid", Qt::Key_S, SurfaceStyle::Solid},
+        StyleKey{Lucide::Globe, "Wireframe", Qt::Key_W, SurfaceStyle::Wireframe},
+        StyleKey{Lucide::ScanEye, "X-ray", Qt::Key_X, SurfaceStyle::XRay},
+        StyleKey{Lucide::Gem, "Glass", Qt::Key_G, SurfaceStyle::Glass}}) {
     auto* action = new QAction(
-        lucideIcon(seeThroughKey.icon, kRailIconSize), QString::fromUtf8(seeThroughKey.name), this);
-    action->setShortcut(QKeySequence(seeThroughKey.key));
+        lucideIcon(styleKey.icon, kRailIconSize), QString::fromUtf8(styleKey.name), this);
+    action->setShortcut(QKeySequence(styleKey.key));
     addAction(action);
     commands_.push_back(action);
-    QObject::connect(action, &QAction::triggered, this, [this, style = seeThroughKey.style]() {
+    QObject::connect(action, &QAction::triggered, this, [this, style = styleKey.style]() {
       SurfaceLook look = renderer_.getSurfaceLook();
       look.style = look.style == style ? styleBeforeSeeThrough_ : style;
       setSurfaceLook(look);
@@ -2290,7 +2270,6 @@ void ViewerWindow::buildRail() {
   }
   QObject::connect(
       annotateAction_, &QAction::toggled, this, [this](bool on) { setAnnotating(on); });
-  // Live while annotating; the digits pick labels then, not styles.
   for (int label = 1; label <= kNumLabels; ++label) {
     auto* action = new QAction(this);
     action->setShortcut(QKeySequence(Qt::Key_0 + label));
@@ -2320,7 +2299,7 @@ void ViewerWindow::buildRail() {
   addAction(undo);
   QObject::connect(undo, &QAction::triggered, this, [this]() { undoStroke(); });
   annotateKeys_.push_back(undo);
-  syncDigitKeys();
+  syncAnnotateKeys();
 
   vectorsAction_ = addTool(Lucide::Wind, QStringLiteral("Vector glyphs"), QKeySequence(Qt::Key_V));
   vectorsAction_->setCheckable(true);

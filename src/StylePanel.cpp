@@ -34,14 +34,14 @@ struct Tile {
   SurfaceStyle style;
   Lucide icon;
   const char* name;
-  const char* key;
+  const char* key; // nullptr: no shortcut
 };
 
 // The opaque styles, then the see-through ones.
 constexpr Tile kTiles[] = {
-    {SurfaceStyle::Solid, Lucide::Box, "Solid", "1"},
-    {SurfaceStyle::SolidWithEdges, Lucide::Grid3x3, "Solid with edges", "2"},
-    {SurfaceStyle::Wireframe, Lucide::Globe, "Wireframe", "3"},
+    {SurfaceStyle::Solid, Lucide::Box, "Solid", "S"},
+    {SurfaceStyle::SolidWithEdges, Lucide::Grid3x3, "Solid with edges", nullptr},
+    {SurfaceStyle::Wireframe, Lucide::Globe, "Wireframe", "W"},
     {SurfaceStyle::XRay, Lucide::ScanEye, "X-ray", "X"},
     {SurfaceStyle::Glass, Lucide::Gem, "Glass", "G"},
 };
@@ -96,7 +96,6 @@ StylePanel::StylePanel(QWidget* parent) : QWidget(parent) {
     auto* button = new QToolButton(this);
     button->setObjectName("stylePanelTile");
     button->setText(QString::fromUtf8(tile.name));
-    button->setToolTip(QStringLiteral("%1 (%2)").arg(button->text(), QString::fromUtf8(tile.key)));
     button->setIcon(lucideIcon(tile.icon, kTileIconSize));
     button->setIconSize(QSize(kTileIconSize, kTileIconSize));
     button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
@@ -104,18 +103,24 @@ StylePanel::StylePanel(QWidget* parent) : QWidget(parent) {
     button->setCheckable(true);
     // Keeps focus on the viewport, so Space keeps cycling fields after a click.
     button->setFocusPolicy(Qt::NoFocus);
-    auto* key = new QLabel(QString::fromUtf8(tile.key), button);
-    key->setObjectName("stylePanelKey");
-    key->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    key->ensurePolished();
-    key->adjustSize();
-    key->move(width - key->width() - 6, 6);
-    // Repolished so the style sheet's [onChecked="true"] rule follows the tile.
-    connect(button, &QToolButton::toggled, key, [key](bool checked) {
-      key->setProperty("onChecked", checked);
-      key->style()->unpolish(key);
-      key->style()->polish(key);
-    });
+    if (tile.key == nullptr) {
+      button->setToolTip(button->text());
+    } else {
+      button->setToolTip(
+          QStringLiteral("%1 (%2)").arg(button->text(), QString::fromUtf8(tile.key)));
+      auto* key = new QLabel(QString::fromUtf8(tile.key), button);
+      key->setObjectName("stylePanelKey");
+      key->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+      key->ensurePolished();
+      key->adjustSize();
+      key->move(width - key->width() - 6, 6);
+      // Repolished so the style sheet's [onChecked="true"] rule follows the tile.
+      connect(button, &QToolButton::toggled, key, [key](bool checked) {
+        key->setProperty("onChecked", checked);
+        key->style()->unpolish(key);
+        key->style()->polish(key);
+      });
+    }
     row->addWidget(button);
     tiles_->addButton(button, static_cast<int>(tile.style));
     ++slot;
