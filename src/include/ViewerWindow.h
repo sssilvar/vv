@@ -110,7 +110,7 @@ private:
   void applyLabelColoring();
   void undoStroke();
   bool saveAnnotations(); // false when canceled or not written
-  void syncDigitKeys();   // labels while annotating, else styles while the Style panel is open
+  void syncAnnotateKeys();
 
   void applyScalarAtIndex(int index);
   void applyNoScalar();
@@ -186,9 +186,8 @@ private:
   std::vector<ProbeCard*> probeCards_;
   Notice* notice_ = nullptr;
   QTimer* probeTimer_ = nullptr;
-  QPointF probePos_;                // in vtkWidget_, where the last probe was asked for
-  std::optional<ProbeHit> pin_;     // where a click pinned the probe, while Probe is on
-  std::vector<QAction*> styleKeys_; // 1, 2 and 3, live while the Style panel is open
+  QPointF probePos_;            // in vtkWidget_, where the last probe was asked for
+  std::optional<ProbeHit> pin_; // where a click pinned the probe, while Probe is on
   SurfaceStyle styleBeforeSeeThrough_ = SurfaceStyle::Solid; // what X and G return to
   QAction* vectorsAction_ = nullptr;
   std::vector<ColorBarWidget*> facetColorBars_;

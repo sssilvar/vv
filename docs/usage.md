@@ -159,12 +159,11 @@ Letter keys below do not require Shift. Shortcuts apply to the viewer; focused e
 | Shift+Space                       | Next field, or next exploded page, including during playback.                                                     |
 | Ctrl+Space; Option+Space on macOS | Previous field or exploded page.                                                                                  |
 | Left / Right                      | Previous / next frame in a time series.                                                                           |
-| L / C / S                         | Toggle Layers / Color / Style.                                                                                    |
 | P / B                             | Toggle Probe / Annotate.                                                                                          |
 | V                                 | Next vector array, then off.                                                                                      |
 | R                                 | Reset the camera.                                                                                                 |
 | X / G                             | Toggle X-ray / Glass.                                                                                             |
-| 1 / 2 / 3                         | Solid / Solid with edges / Wireframe while Style is open and annotation is off.                                   |
+| S / W                             | Solid / Wireframe.                                                                                                |
 | 1 to 9                            | Select a label during annotation.                                                                                 |
 | Hold A / E                        | Paint / erase during annotation.                                                                                  |
 | + or = / - or _                   | Increase / decrease brush rings during annotation.                                                                |
