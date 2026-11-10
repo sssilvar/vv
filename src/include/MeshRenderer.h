@@ -23,6 +23,7 @@ class vtkCallbackCommand;
 class vtkCellPicker;
 class vtkStaticCellLocator;
 class vtkFeatureEdges;
+class vtkImageSlice;
 class vtkPolyDataNormals;
 
 struct RendererContext {
@@ -78,6 +79,10 @@ public:
              const std::vector<MeshGroup>& groups,
              const std::vector<std::array<double, 3>>& colorsHex);
   void start();
+  // A volume's slice planes, drawn with the meshes in the single view; bounds widen
+  // what the camera frames. Call after setup; does not render.
+  void addImagePlanes(const std::vector<vtkSmartPointer<vtkImageSlice>>& planes,
+                      const std::array<double, 6>& bounds);
 
   // When set, all categorical scalars use this shared LUT instead of per-scalar detection.
   // Pass an empty ScalarAnalysis to clear.

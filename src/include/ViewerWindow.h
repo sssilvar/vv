@@ -31,6 +31,8 @@ class PlaybackBar;
 class PanelLabel;
 class ProbeCard;
 class ScalarPager;
+class SliceView;
+class VolumeScene;
 class ToolRail;
 struct PaletteItem;
 struct SearchItem;
@@ -64,6 +66,7 @@ class ViewerWindow : public QMainWindow {
   Q_OBJECT
 public:
   ViewerWindow(MeshLoadResult loadResult, const ViewerOptions& options, QWidget* parent = nullptr);
+  ~ViewerWindow() override;
 
 protected:
   // Asks to save, discard or keep unsaved labels.
@@ -78,6 +81,8 @@ private:
 
   void setupWindowTitle();
   void buildViewport(vtkGenericOpenGLRenderWindow* renderWindow);
+  QWidget* buildSliceViews(QWidget* parent); // the column beside the 3-D view
+  void refreshSliceViews();                  // and the 3-D view's planes
   void setupFacetMode();
   void setupNormalMode();
   void fillLayersPanel();
@@ -188,6 +193,10 @@ private:
   QAction* vectorsAction_ = nullptr;
   std::vector<ColorBarWidget*> facetColorBars_;
   std::vector<PanelLabel*> panelLabels_;
+
+  // Volumes, outside exploded view: the slice views beside the 3-D view.
+  std::unique_ptr<VolumeScene> volumeScene_;
+  std::vector<SliceView*> sliceViews_;
 
   std::vector<ScalarField> scalarFields_;
   std::vector<QString> fieldDetails_; // each field's kind, "Points · continuous"

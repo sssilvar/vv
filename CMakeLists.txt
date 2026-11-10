@@ -71,7 +71,10 @@ find_package(VTK QUIET COMPONENTS
   IOHDF
   FiltersCore
   FiltersExtraction
+  FiltersGeneral
+  ImagingCore
   RenderingCore
+  RenderingImage
   RenderingOpenGL2
   InteractionStyle
   GUISupportQt
@@ -150,6 +153,7 @@ add_library(vv_mesh STATIC
   src/LSDynaMeshParser.cpp
   src/MeshLoading.cpp
   src/MeshParser.cpp
+  src/NiftiMeshParser.cpp
   src/STLMeshParser.cpp
   src/TemporalSource.cpp
   src/VTKHDFMeshParser.cpp
@@ -163,6 +167,8 @@ add_library(vv_mesh STATIC
   src/include/LSDynaMeshParser.h
   src/include/MeshLoading.h
   src/include/MeshParser.h
+  src/include/NiftiMeshParser.h
+  src/include/Volume.h
   src/include/STLMeshParser.h
   src/include/TemporalSource.h
   src/include/VTKHDFMeshParser.h
@@ -223,12 +229,16 @@ target_link_libraries(vv_ui PUBLIC Qt${QT_VERSION_MAJOR}::Widgets PRIVATE vv_opt
 add_library(vv_viewer STATIC
   src/MeshRenderer.cpp
   src/ScalarVizUtils.cpp
+  src/SliceView.cpp
   src/ViewerWindow.cpp
+  src/VolumeScene.cpp
   src/include/FacetPages.h
   src/include/MeshRenderer.h
   src/include/ProbeTrace.h
   src/include/ScalarVizUtils.h
+  src/include/SliceView.h
   src/include/ViewerWindow.h
+  src/include/VolumeScene.h
 )
 set_target_properties(vv_viewer PROPERTIES AUTOMOC ON)
 target_link_libraries(vv_viewer PRIVATE vv_options PUBLIC vv_mesh vv_ui)
@@ -265,10 +275,13 @@ target_link_libraries(vv_mesh PUBLIC
   VTK::IOPLY
   VTK::FiltersCore
   VTK::FiltersExtraction
+  VTK::FiltersGeneral
 )
 target_link_libraries(vv_viewer PUBLIC
   VTK::CommonColor
+  VTK::ImagingCore
   VTK::RenderingCore
+  VTK::RenderingImage
   VTK::RenderingOpenGL2
   VTK::InteractionStyle
   VTK::GUISupportQt

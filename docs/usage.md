@@ -18,6 +18,7 @@ Run `vv <meshfile> [<meshfile2> ...]`. At least one file is required. Shell glob
 | FreeSurfer surface        | Requires `.pial`, `.surf` or `.white`; reads binary triangular surfaces.                                                                    |
 | LS-DYNA keyword mesh      | Recognized by `*KEYWORD` in the header; reads tetrahedral mesh parts and follows `*INCLUDE` files.                                          |
 | STL (`.stl`)              | Requires the extension, case-insensitively; reads ASCII and binary surfaces.                                                                |
+| NIfTI (`.nii`, `.nii.gz`) | Requires the extension, case-insensitively; reads single-component 3D volumes, placed by their sform or qform. An integer image with no scaling and at most 256 distinct nonzero values is a label map: each label becomes a named surface. Other volumes, such as CT, have no surfaces. Both open the [slice views](#volumes-and-slice-views). |
 
 Use `-` once to read standard input, for example:
 
@@ -30,6 +31,7 @@ Stdin is copied to a temporary file before loading. Only content-recognized form
 | Option                   | Effect                                                                                                                |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | `-e`, `--explode`        | Show a panel per scalar; with several files, a row per file and a column per scalar.                                  |
+| `-o`, `--overlay`        | Show all files together in one view instead of side by side; parts of multipart files are prefixed with their file name. Implied by NIfTI inputs. |
 | `-C`, `--common-cat-lut` | Share the union of categories across categorical fields.                                                              |
 | `-a`, `--annotate`       | Start in annotation mode; requires one file, outside exploded view and temporal playback.                             |
 | `-r`, `--range min,max`  | Set the initial color range for every continuous field; bounds must be finite and `min < max`, e.g. `--range -80,40`. |
@@ -125,6 +127,22 @@ Open Annotate to paint a per-cell integer `label` array, or start with `vv -a me
 
 Annotation requires a single file outside exploded view and is unavailable for a time series, whose frames replace mesh arrays. For a multipart file, only its first part receives labels. During annotation, digits select labels, Color is unavailable and field cycling keeps labels visible. Probe reads labels while Rotate is selected. The bottom strip shows annotation keys.
 
+## Volumes and slice views
+
+Opening a NIfTI file adds axial, coronal and sagittal slice views beside the 3-D view, which then shows every file together, as with `--overlay`, plus the three grayscale planes. Exploded view (`-e`) does not show slice views.
+
+The first intensity volume is shown in grayscale; further intensity volumes are ignored. Label maps are drawn over it in their surfaces' colors, resampled onto its voxel grid when theirs differs. Without an intensity volume, the first label map's grid is used on black. Views follow the radiological convention for RAS world coordinates, with patient left on screen right, so a file whose header mislabels its orientation shows flipped.
+
+| Input in a slice view              | Action                                                  |
+| ---------------------------------- | ------------------------------------------------------- |
+| Left click or drag                 | Move the crosshair; the other views follow.             |
+| Wheel, Up / Down                   | Previous or next slice; Page Up / Page Down step by 10. |
+| Ctrl+wheel; Command+wheel on macOS | Zoom.                                                   |
+| Middle drag                        | Pan.                                                    |
+| Right drag                         | Window (horizontal) and level (vertical).               |
+
+**M** switches labels between outlines and translucent filled masks. Hiding a label in Layers also hides it in the slice views, and **R** resets their zoom and pan with the 3-D camera.
+
 ## Time series
 
 Outside exploded view, temporal VTKHDF and XDMF inputs add a playback bar with frame stepping, play/pause, a seekable timeline, speed from 1× to 12× and Loop. Without Loop, playback stops at the final frame. Field navigation remains available through the pager; Space changes meaning when the playback bar is present, as shown below.
@@ -154,4 +172,5 @@ Letter keys below do not require Shift. Shortcuts apply to the viewer; focused e
 | Ctrl+K; Command+K on macOS        | Toggle the command palette.                                                                                       |
 | Up / Down, Return                 | Navigate and select in a field list or command palette.                                                           |
 | Escape                            | Dismiss search; otherwise close the open panel, release the probe pin, then leave annotation, one step per press. |
+| M                                 | Label outlines or filled masks in the slice views.                                                                |
 | Q                                 | Close vv, with an unsaved-label prompt when needed.                                                               |

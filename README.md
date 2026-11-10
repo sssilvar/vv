@@ -2,7 +2,7 @@
 
 A Qt/VTK mesh viewer for inspecting scalar and vector fields, comparing meshes, playing time series and painting cell labels.
 
-Opens VTK, STL, XDMF, mesh JSON, EnSite DIF, CARTO, FreeSurfer and LS-DYNA files. See [supported inputs](docs/usage.md#inputs-and-command-line) for format limits.
+Opens VTK, STL, XDMF, mesh JSON, EnSite DIF, CARTO, FreeSurfer, LS-DYNA and NIfTI files. See [supported inputs](docs/usage.md#inputs-and-command-line) for format limits.
 
 ## Install
 
@@ -47,6 +47,8 @@ Download the portable `.exe` and pass it a mesh file from a terminal. It extract
 vv mesh.vtk                   # Inspect one mesh
 vv before.vtk after.vtk       # Compare files with a shared camera
 vv -e before.vtk after.vtp    # Compare fields in aligned columns
+vv -o atrium.vtk cath.vtk     # Overlay files in one view
+vv ct.nii.gz seg.nii.gz       # Slice views of a volume and its labels
 vv --help                    # Command-line options
 ```
 

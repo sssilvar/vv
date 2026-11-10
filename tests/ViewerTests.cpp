@@ -2,9 +2,11 @@
 #include "ColorPanel.h"
 #include "LayersPanel.h"
 #include "ProbeCard.h"
+#include "SliceView.h"
 #include "TemporalSource.h"
 #include "TestMeshes.h"
 #include "ViewerWindow.h"
+#include "VolumeScene.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -32,8 +34,11 @@
 #include <vtkCellData.h>
 #include <vtkFloatArray.h>
 #include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkImageData.h>
 #include <vtkIntArray.h>
 #include <vtkLookupTable.h>
+#include <vtkMatrix4x4.h>
+#include <vtkNew.h>
 #include <vtkObjectFactory.h>
 #include <vtkPointData.h>
 #include <vtkPoints.h>
@@ -101,6 +106,19 @@ class ViewerTests : public QObject {
     return result;
   }
 
+  // A zero-filled voxel grid in voxel coordinates.
+  static LoadedVolume volume(VolumeKind kind,
+                             int scalarType,
+                             const std::array<int, 3>& dims,
+                             std::vector<double> labels) {
+    auto image = vtkSmartPointer<vtkImageData>::New();
+    image->SetDimensions(dims.data());
+    image->AllocateScalars(scalarType, 1);
+    image->GetPointData()->GetScalars()->Fill(0.0);
+    return {
+        {kind, image, vtkSmartPointer<vtkMatrix4x4>::New(), std::move(labels)}, "volume.nii", 0};
+  }
+
   static void paint(ViewerWindow& view) {
     vtkRenderer* renderer = view.renderer_.getRenderer();
     renderer->SetWorldPoint(0.33, 0.27, 0.0, 1.0);
@@ -115,6 +133,82 @@ class ViewerTests : public QObject {
 private slots:
   void initTestCase() {
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+  }
+
+  // A label map on a grid shifted one voxel in x lands on the intensity grid by world
+  // position; outlines keep only voxels whose in-plane neighbours differ.
+  void volumeSceneResamplesLabelsOntoReference() {
+    const LoadedVolume intensity = volume(VolumeKind::Intensity, VTK_FLOAT, {6, 6, 6}, {});
+    const LoadedVolume labels = volume(VolumeKind::Labels, VTK_UNSIGNED_CHAR, {6, 6, 6}, {7.0});
+    labels.volume.toWorld->SetElement(0, 3, 1.0);
+    for (int z = 0; z < 6; ++z) {
+      for (int y = 1; y < 5; ++y) {
+        for (int x = 0; x < 4; ++x) {
+          labels.volume.image->SetScalarComponentFromDouble(x, y, z, 0, 7.0);
+        }
+      }
+    }
+
+    VolumeScene scene({intensity, labels}, {{1.0, 0.0, 0.0}});
+    QVERIFY(scene.intensity() == intensity.volume.image.GetPointer());
+    QVERIFY(scene.hasLabels());
+
+    vtkNew<vtkImageData> slice;
+    const auto at = [&slice](int x, int y) {
+      return static_cast<int>(slice->GetScalarComponentAsDouble(x, y, 2, 0));
+    };
+    scene.setOutline(false);
+    scene.labelSlice(2, 2, slice);
+    QCOMPARE(at(0, 2), 0);
+    QCOMPARE(at(1, 2), 1);
+    QCOMPARE(at(3, 2), 1);
+    QCOMPARE(at(4, 2), 1);
+    QCOMPARE(at(5, 2), 0);
+    QCOMPARE(at(2, 0), 0);
+    scene.setOutline(true);
+    scene.labelSlice(2, 2, slice);
+    QCOMPARE(at(1, 2), 1);
+    QCOMPARE(at(2, 2), 0);
+    QCOMPARE(at(2, 1), 1);
+
+    QVERIFY(scene.setCursor({-5, 99, 2}));
+    QCOMPARE(scene.cursor(), (std::array<int, 3>{0, 5, 2}));
+    QVERIFY(!scene.setCursor({0, 5, 2}));
+    QCOMPARE(scene.worldToVoxel({2.4, -3.0, 9.0}), (std::array<int, 3>{2, 0, 5}));
+  }
+
+  // At about two pixels a voxel, a click still picks the voxel under the pointer.
+  void sliceViewClickPicksVoxelUnderPointer() {
+    VolumeScene scene({volume(VolumeKind::Intensity, VTK_FLOAT, {4, 200, 4}, {})}, {});
+    SliceView view(scene, SliceOrientation::Axial, nullptr);
+    view.renderWindow()->SetSize(view.width(), view.height());
+    vtkRenderer* renderer = view.renderWindow()->GetRenderers()->GetFirstRenderer();
+
+    for (int y = 0; y < 200; ++y) {
+      renderer->SetWorldPoint(2.0, y, scene.cursor()[2], 1.0);
+      renderer->WorldToDisplay();
+      const double* display = renderer->GetDisplayPoint();
+      QTest::mouseClick(&view,
+                        Qt::LeftButton,
+                        Qt::NoModifier,
+                        QPoint(static_cast<int>(std::lround(display[0])),
+                               view.height() - 1 - static_cast<int>(std::lround(display[1]))));
+      QCOMPARE(scene.cursor(), (std::array<int, 3>{2, y, 2}));
+    }
+  }
+
+  // A focused slice view keeps the viewer's own keys.
+  void sliceViewKeepsViewerKeys() {
+    vtkNew<CountingWindow> window;
+    MeshLoadResult load = testMeshes(1);
+    load.volumes.push_back(volume(VolumeKind::Intensity, VTK_FLOAT, {4, 4, 4}, {}));
+    auto view = viewer(window, std::move(load), {});
+    QCOMPARE(view->sliceViews_.size(), size_t{3});
+    const int before = view->activeScalarIdx_;
+
+    QTest::keyClick(view->sliceViews_.front(), Qt::Key_Space);
+
+    QVERIFY(view->activeScalarIdx_ != before);
   }
 
   void windowTitle_data() {
