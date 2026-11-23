@@ -27,6 +27,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVTKOpenGLNativeWidget.h>
+#include <QVariant>
 #include <QtTest>
 #include <algorithm>
 #include <cmath>
