@@ -45,14 +45,14 @@ Download the portable `.exe` and pass it a mesh file from a terminal. It extract
 
 ```sh
 vv mesh.vtk                   # Inspect one mesh
-vv before.vtk after.vtk       # Compare files with a shared camera
-vv -e before.vtk after.vtp    # Compare fields in aligned columns
+vv before.vtk after.vtk       # Compare files side by side, each on its own field
+vv -s before.vtk after.vtp    # Split each file into a tile per field
 vv -o atrium.vtk cath.vtk     # Overlay files in one view
 vv ct.nii.gz seg.nii.gz       # Slice views of a volume and its labels
 vv --help                    # Command-line options
 ```
 
-Press **Space** to cycle fields, or to play/pause a time series. **Shift+Space** selects the next field during playback. The tool rail provides colors, display styles, probing, annotation and snapshots.
+Press **Space** to cycle fields, or to play/pause a time series. **Shift+Space** selects the next field during playback. Right-click a mesh, or press **T**, to switch its pane between one field and a tile per field. The tool rail provides colors, display styles, probing, annotation and snapshots.
 
 ## Documentation
 

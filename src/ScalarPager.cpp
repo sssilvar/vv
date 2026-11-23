@@ -7,14 +7,17 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QSize>
+#include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace {
 constexpr int kListIconSize = 14;
 constexpr int kListIconGap = 2;
 constexpr int kBadgeGap = 6;
 constexpr int kStepIconSize = 20;
+constexpr int kSplitIconSize = 16;
 constexpr int kMargin = 6;
 
 enum class Direction { Previous, Next };
@@ -48,7 +51,7 @@ SpaceAction spaceAction(Qt::KeyboardModifiers modifiers, bool timeSeries) {
   return SpaceAction::NextField;
 }
 
-ScalarPager::ScalarPager(PagerPlacement placement, QWidget* parent)
+ScalarPager::ScalarPager(PagerPlacement placement, SpaceAction space, QWidget* parent)
     : QWidget(parent), placement_(placement) {
   const Metrics metrics = metricsFor(placement);
   const bool capsule = placement == PagerPlacement::Capsule;
@@ -60,24 +63,27 @@ ScalarPager::ScalarPager(PagerPlacement placement, QWidget* parent)
   setCursor(Qt::ArrowCursor);
   const QString surface =
       capsule ? QStringLiteral("QWidget#scalarPager { background: %1; border: 1px solid %2;"
-                               "  border-radius: %3px; }")
+                               "  border-radius: %3px; }"
+                               "QWidget#scalarPager[active=\"true\"] { border-color: %4; }")
                     .arg(overlay::css(overlay::kSurface),
                          overlay::css(overlay::solidBorder(overlay::kSurfaceBorder)),
-                         QString::number(metrics.buttonSize / 2 + kMargin))
+                         QString::number(metrics.buttonSize / 2 + kMargin),
+                         overlay::css(overlay::kAccent))
               : QString();
-  setStyleSheet(surface + QStringLiteral("QToolButton { background: transparent; border: none;"
-                                         "  border-radius: 12px; }"
-                                         "QToolButton#scalarPagerStep { border-radius: %1px; }"
-                                         "QToolButton:hover { background: %2; }"
-                                         "QToolButton:pressed { background: %3; }"
-                                         "QLabel#scalarPagerTitle { color: %4; font-size: 13px;"
-                                         "  font-weight: 600; }"
-                                         "QLabel#scalarPagerDetail { color: %5; font-size: 11px; }")
-                              .arg(QString::number(metrics.buttonSize / 2),
-                                   overlay::css(overlay::kHover),
-                                   overlay::css(overlay::kSelected),
-                                   overlay::css(overlay::kText),
-                                   overlay::css(overlay::kTextSecondary)));
+  setStyleSheet(surface +
+                QStringLiteral("QToolButton { background: transparent; border: none;"
+                               "  border-radius: 12px; }"
+                               "QToolButton#scalarPagerStep { border-radius: %1px; }"
+                               "QToolButton:hover { background: %2; }"
+                               "QToolButton:pressed, QToolButton:checked { background: %3; }"
+                               "QLabel#scalarPagerTitle { color: %4; font-size: 13px;"
+                               "  font-weight: 600; }"
+                               "QLabel#scalarPagerDetail { color: %5; font-size: 11px; }")
+                    .arg(QString::number(metrics.buttonSize / 2),
+                         overlay::css(overlay::kHover),
+                         overlay::css(overlay::kSelected),
+                         overlay::css(overlay::kText),
+                         overlay::css(overlay::kTextSecondary)));
 
   auto* row = new QHBoxLayout(this);
   row->setContentsMargins(capsule ? kMargin : 0, kMargin, capsule ? kMargin : 0, kMargin);
@@ -102,7 +108,8 @@ ScalarPager::ScalarPager(PagerPlacement placement, QWidget* parent)
   name_->setAccessibleName(QStringLiteral("Fields"));
   name_->setFocusPolicy(Qt::NoFocus);
   name_->setFixedHeight(capsule ? metrics.buttonSize : 44);
-  auto* text = new QWidget(name_);
+  text_ = new QWidget(name_);
+  QWidget* text = text_;
   text->setFixedWidth(metrics.nameWidth);
   text->setAttribute(Qt::WA_TransparentForMouseEvents, true);
   title_ = new QLabel(text);
@@ -147,14 +154,40 @@ ScalarPager::ScalarPager(PagerPlacement placement, QWidget* parent)
         .toString(QKeySequence::NativeText);
   };
   previousKeys_ = spaceWith(kStepBackModifier);
-  nextKeys_ = capsule ? QStringLiteral("Space") : spaceWith(Qt::ShiftModifier);
+  nextKeys_ =
+      space == SpaceAction::NextField ? QStringLiteral("Space") : spaceWith(Qt::ShiftModifier);
   previous_ = makeButton(Direction::Previous);
   next_ = makeButton(Direction::Next);
+  split_ = new QToolButton(this);
+  split_->setObjectName("scalarPagerStep");
+  split_->setAccessibleName(QStringLiteral("Split view"));
+  split_->setToolTip(QStringLiteral("Split view: a tile per field (T)"));
+  split_->setIcon(lucideIcon(Lucide::LayoutGrid, kSplitIconSize));
+  split_->setIconSize(QSize(kSplitIconSize, kSplitIconSize));
+  split_->setCheckable(true);
+  split_->setFocusPolicy(Qt::NoFocus);
+  split_->setFixedSize(metrics.buttonSize, metrics.buttonSize);
+  connect(split_, &QToolButton::clicked, this, [this](bool split) { emit splitRequested(split); });
   row->addWidget(previous_);
   row->addWidget(name_);
   row->addWidget(next_);
+  row->addWidget(split_);
   setStepNames(QStringLiteral("Previous field"), QStringLiteral("Next field"));
   fitName();
+}
+
+void ScalarPager::setSplit(bool split) {
+  split_->setChecked(split);
+}
+
+void ScalarPager::setActive(bool active) {
+  if (property("active").toBool() == active) {
+    return;
+  }
+  setProperty("active", active);
+  // A style sheet reads a dynamic property only when the widget is polished.
+  style()->unpolish(this);
+  style()->polish(this);
 }
 
 void ScalarPager::setStepNames(const QString& previous, const QString& next) {
@@ -168,6 +201,7 @@ void ScalarPager::fitName() {
   // A tool button sizes to its own text and icon, not to the labels inside it.
   name_->layout()->invalidate();
   name_->setFixedWidth(name_->layout()->minimumSize().width());
+  layout()->invalidate();
 }
 
 void ScalarPager::setPage(const QString& title, const QString& detail, int position, int count) {
@@ -176,19 +210,40 @@ void ScalarPager::setPage(const QString& title, const QString& detail, int posit
   title_->ensurePolished();
   detail_->ensurePolished();
   position_->ensurePolished();
-  const int nameWidth = metricsFor(placement_).nameWidth;
-  const int titleWidth = nameWidth - kListIconSize - kListIconGap;
-  const QString shown = title_->fontMetrics().elidedText(title, Qt::ElideMiddle, titleWidth);
-  title_->setText(shown);
+  pageTitle_ = title;
+  pageDetail_ = detail;
   // As wide as the last position, so paging never resizes the pager.
   position_->setText(QStringLiteral("%1 / %1").arg(count));
   position_->setMinimumWidth(position_->sizeHint().width());
   position_->setText(QStringLiteral("%1 / %2").arg(position).arg(count));
+  fitWidth(widthLimit_);
+}
+
+QSize ScalarPager::fitWidth(int width) {
+  widthLimit_ = width;
+  int nameWidth = metricsFor(placement_).nameWidth;
+  if (placement_ == PagerPlacement::Capsule) {
+    position_->show();
+    text_->setFixedWidth(0);
+    fitName();
+    int available = width - sizeHint().width();
+    if (available < 80) {
+      position_->hide();
+      fitName();
+      available = width - sizeHint().width();
+    }
+    nameWidth = std::clamp(available, kListIconSize, nameWidth);
+    text_->setFixedWidth(nameWidth);
+  }
+  const int titleWidth = std::max(0, nameWidth - kListIconSize - kListIconGap);
+  const QString shown = title_->fontMetrics().elidedText(pageTitle_, Qt::ElideMiddle, titleWidth);
+  title_->setText(shown);
   const int detailWidth = placement_ == PagerPlacement::Capsule
                               ? nameWidth
                               : nameWidth - position_->minimumWidth() - kBadgeGap;
-  detail_->setText(detail_->fontMetrics().elidedText(detail, Qt::ElideRight, detailWidth));
+  detail_->setText(detail_->fontMetrics().elidedText(pageDetail_, Qt::ElideRight, detailWidth));
   fitName();
   const QString hint = QStringLiteral("Show every field");
-  name_->setToolTip(shown == title ? hint : title + QLatin1Char('\n') + hint);
+  name_->setToolTip(shown == pageTitle_ ? hint : pageTitle_ + QLatin1Char('\n') + hint);
+  return sizeHint();
 }

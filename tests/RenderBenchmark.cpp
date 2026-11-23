@@ -123,8 +123,15 @@ int main(int argc, char** argv) {
     }
     renderer.setup(meshes,
                    groups,
-                   std::vector<std::array<double, 3>>(static_cast<size_t>(files), {0.0, 0.5, 1.0}));
-    renderer.setActiveScalar("voltage", FieldAssociation::Point);
+                   std::vector<std::array<double, 3>>(static_cast<size_t>(files), {0.0, 0.5, 1.0}),
+                   PaneMode::Single);
+    // Linked, every file's pane follows the first to voltage.
+    renderer.setFieldsLinked(true);
+    const std::vector<size_t>& fields = renderer.panes().front().fields;
+    const auto shown = std::find(fields.begin(),
+                                 fields.end(),
+                                 renderer.findField({"voltage", FieldAssociation::Point}).value());
+    renderer.showField(0, static_cast<int>(std::distance(fields.begin(), shown)));
     auto* style = vtkInteractorStyle::SafeDownCast(interactor->GetInteractorStyle());
     for (const SurfaceStyle look : {SurfaceStyle::Solid, SurfaceStyle::XRay, SurfaceStyle::Glass}) {
       const char* name = look == SurfaceStyle::Glass  ? "glass"

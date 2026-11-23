@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <numeric>
 #include <vtkActor.h>
 #include <vtkBoundingBox.h>
 #include <vtkCallbackCommand.h>
@@ -43,8 +44,6 @@
 #include <vtkStaticCellLocator.h>
 #include <vtkVersionMacros.h>
 
-const char* kVVWindowTitle = "VV mesh viewer";
-
 namespace {
 
 std::vector<vtkDataSet*> rawMeshPointers(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
@@ -56,21 +55,25 @@ std::vector<vtkDataSet*> rawMeshPointers(const std::vector<vtkSmartPointer<vtkDa
   return result;
 }
 
-// Row-major cell (index) of a cols x rows grid, as a VTK viewport (y grows up).
-void gridViewport(size_t index, size_t cols, size_t rows, double out[4]) {
+// Row-major cell (index) of a cols x rows grid filling area, as a VTK viewport (y grows up).
+void gridViewport(const double area[4], size_t index, size_t cols, size_t rows, double out[4]) {
   const size_t row = index / cols;
   const double r = static_cast<double>(row);
   const double c = static_cast<double>(index % cols);
   const double nc = static_cast<double>(cols);
   const double nr = static_cast<double>(rows);
-  out[0] = c / nc;
-  out[1] = 1.0 - (r + 1.0) / nr;
-  out[2] = (c + 1.0) / nc;
-  out[3] = 1.0 - r / nr;
+  const double width = area[2] - area[0];
+  const double height = area[3] - area[1];
+  out[0] = area[0] + width * (c / nc);
+  out[1] = area[1] + height * (1.0 - (r + 1.0) / nr);
+  out[2] = area[0] + width * ((c + 1.0) / nc);
+  out[3] = area[1] + height * (1.0 - r / nr);
 }
 
-vtkSmartPointer<vtkActor>
-makeGlyphActor(vtkDataSet* mesh, const std::string& name, FieldAssociation association) {
+// A short line per cell (or per point) of mesh along its 3-component array; nullptr when
+// the mesh lacks one.
+vtkSmartPointer<vtkGlyph3D>
+makeGlyphs(vtkDataSet* mesh, const std::string& name, FieldAssociation association) {
   auto* arr = arrayForAssociation(mesh, name, association);
   auto* pointSet = vtkPointSet::SafeDownCast(mesh);
   if (!arr || arr->GetNumberOfComponents() != 3 || !pointSet) {
@@ -107,15 +110,18 @@ makeGlyphActor(vtkDataSet* mesh, const std::string& name, FieldAssociation assoc
   line->SetPoint1(-0.5 * length, 0.0, 0.0);
   line->SetPoint2(0.5 * length, 0.0, 0.0);
 
-  vtkNew<vtkGlyph3D> glyph;
+  auto glyph = vtkSmartPointer<vtkGlyph3D>::New();
   glyph->SetInputData(seed);
   glyph->SetSourceConnection(line->GetOutputPort());
   glyph->OrientOn();
   glyph->SetVectorModeToUseVector();
   glyph->SetScaleModeToDataScalingOff();
+  return glyph;
+}
 
+vtkSmartPointer<vtkActor> makeGlyphActor(vtkGlyph3D* glyphs) {
   vtkNew<vtkPolyDataMapper> mapper;
-  mapper->SetInputConnection(glyph->GetOutputPort());
+  mapper->SetInputConnection(glyphs->GetOutputPort());
   mapper->ScalarVisibilityOff();
   // Glyphs are coplanar with the surface they describe; without a depth offset the
   // surface wins the depth test and hides all but a few pixels of each segment.
@@ -174,66 +180,67 @@ vtkStandardNewMacro(CameraStyle);
 } // namespace
 
 MeshRenderer::~MeshRenderer() {
-  for (const auto& panel : panelRenderers_) {
-    panel->RemoveObserver(clipCb_);
+  for (const Tile& tile : tiles_) {
+    tile.renderer->RemoveObserver(clipCb_);
   }
 }
-MeshRenderer::MeshRenderer() {}
+MeshRenderer::MeshRenderer() = default;
 
 void MeshRenderer::setRenderContext(vtkRenderWindow* externalWindow,
                                     vtkRenderWindowInteractor* externalInteractor) {
   context.window = externalWindow;
   interactor = externalInteractor;
-  embeddedMode = (externalWindow != nullptr && externalInteractor != nullptr);
 }
 
 void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
                          const std::vector<MeshGroup>& groups,
-                         const std::vector<std::array<double, 3>>& colorsHex) {
+                         const std::vector<std::array<double, 3>>& colorsHex,
+                         PaneMode mode) {
   sceneMeshes = meshes;
-
   if (!context.window) {
     context.window = vtkSmartPointer<vtkRenderWindow>::New();
   }
-  if (!embeddedMode) {
-    int screenWidth = 1200, screenHeight = 1024;
-    context.window->SetSize(screenWidth, screenHeight);
-    context.window->SetPosition(100, 100);
+  context.window->SetDesiredUpdateRate(120.0);
+
+  fields_.clear();
+  for (ScalarField& field : collectFields(rawMeshPointers(meshes), 1)) {
+    SceneField scene;
+    scene.field = std::move(field);
+    analyze(scene);
+    fields_.push_back(std::move(scene));
   }
-  const size_t panelCount = std::max<size_t>(1, groups.size());
-  facetColumns_ = 0;
-  pageSize_ = 0;
-  page_ = 0;
-  buildPanels(panelCount, 0);
-  meshPanel_.assign(meshes.size(), 0);
-  for (size_t g = 0; g < groups.size(); ++g) {
-    for (size_t meshIndex : groups[g].partIndices) {
-      if (meshIndex < meshPanel_.size()) {
-        meshPanel_[meshIndex] = g;
+
+  panes_.clear();
+  for (size_t index = 0; index < std::max<size_t>(1, groups.size()); ++index) {
+    Pane pane;
+    if (groups.empty()) {
+      pane.meshes.resize(meshes.size());
+      std::iota(pane.meshes.begin(), pane.meshes.end(), size_t{0});
+    } else {
+      std::copy_if(groups[index].partIndices.begin(),
+                   groups[index].partIndices.end(),
+                   std::back_inserter(pane.meshes),
+                   [&meshes](size_t mesh) { return mesh < meshes.size(); });
+    }
+    for (size_t field = 0; field < fields_.size(); ++field) {
+      const ScalarField& candidate = fields_[field].field;
+      if (std::any_of(pane.meshes.begin(), pane.meshes.end(), [&](size_t mesh) {
+            return arrayForAssociation(meshes[mesh], candidate.name, candidate.association) !=
+                   nullptr;
+          })) {
+        pane.fields.push_back(field);
       }
     }
+    if (!pane.fields.empty()) {
+      pane.mode = mode;
+      pane.first = 0;
+    }
+    pane.tileCount = std::clamp<size_t>(pane.fields.size(), 1, kMaxFacetPage);
+    panes_.push_back(std::move(pane));
   }
-
-  mappers.clear();
-  context.actors.clear();
-  actorSlots_.clear();
-  for (size_t i = 0; i < meshes.size(); ++i) {
-    vtkNew<vtkDataSetMapper> mapper;
-    mapper->SetInputData(meshes[i]);
-    mapper->ScalarVisibilityOff();
-    vtkNew<vtkActor> actor;
-    actor->SetMapper(mapper);
-    actor->GetProperty()->SetColor(colorsHex[i][0], colorsHex[i][1], colorsHex[i][2]);
-    panelRenderers_[meshPanel_[i]]->AddActor(actor);
-    mappers.push_back(mapper);
-    context.actors.push_back(actor);
-    actorSlots_.push_back({i, meshPanel_[i]});
-  }
-  context.colorsHex = colorsHex;
-  finishPanels(meshes);
-
-  context.window->SetWindowName(kVVWindowTitle);
-  context.window->SetDesiredUpdateRate(120.0);
+  labels_.reset();
+  buildTiles(colorsHex);
+  frameScene();
 
   if (!interactor) {
     interactor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
@@ -245,142 +252,190 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
   interactor->SetDesiredUpdateRate(120.0);
   interactor->SetStillUpdateRate(45.0);
   interactor->SetInteractorStyle(vtkSmartPointer<CameraStyle>::New());
-  buildGlassStages(meshes);
+  buildGlassStages();
   applySurfaceLook();
-
-  // Scalar selection is driven by the owning viewer (point and cell fields
-  // alike); start with geometry-only shading.
-  clearActiveScalar();
 }
 
-void MeshRenderer::buildPanels(size_t count, size_t cols) {
-  std::vector<vtkRenderer*> existing;
-  auto* renderers = context.window->GetRenderers();
-  vtkCollectionSimpleIterator cookie;
-  renderers->InitTraversal(cookie);
-  for (vtkRenderer* ren = renderers->GetNextRenderer(cookie); ren;
-       ren = renderers->GetNextRenderer(cookie)) {
-    existing.push_back(ren);
+void MeshRenderer::analyze(SceneField& scene) const {
+  const std::vector<vtkDataSet*> meshes = rawMeshPointers(sceneMeshes);
+  const ScalarField& field = scene.field;
+  ScalarAnalysis analysis = analyzeScalar(meshes, field.name, field.association);
+  if (analysis.categorical && sharedCatAnalysis.categorical) {
+    const bool hasNaN = analysis.hasNaN;
+    analysis = sharedCatAnalysis;
+    analysis.hasNaN = hasNaN;
   }
-  for (vtkRenderer* ren : existing) {
-    context.window->RemoveRenderer(ren);
+  // Analyzed before: the colors chosen for it stay.
+  if (scene.lut) {
+    analysis.coloring = scene.analysis.coloring;
+    analysis.colormap = scene.analysis.colormap;
+  }
+  scene.analysis = std::move(analysis);
+  if (!computeScalarGlobalRange(meshes, field.name, field.association, scene.globalRange)) {
+    scene.globalRange[0] = 0.0;
+    scene.globalRange[1] = 1.0;
+  }
+  std::copy_n(scene.globalRange, 2, scene.clipRange);
+  scene.lut = buildLookupTable(field.name, scene.analysis, scene.clipRange);
+}
+
+void MeshRenderer::buildTiles(const std::vector<std::array<double, 3>>& colorsHex) {
+  for (const Tile& tile : tiles_) {
+    tile.renderer->RemoveObserver(clipCb_);
+  }
+  vtkRendererCollection* renderers = context.window->GetRenderers();
+  while (vtkRenderer* stale = renderers->GetFirstRenderer()) {
+    context.window->RemoveRenderer(stale);
   }
   glyphActors_.clear();
-  blanks_.clear();
   pinMarkers_.clear();
   markerHit_.reset();
   probeLocators_.clear();
+  tiles_.clear();
+  mappers.clear();
+  context.actors.clear();
+  actorSlots_.clear();
 
-  adaptiveGrid_ = cols == 0;
-  facetPanels.clear();
-  vtkNew<vtkCamera> camera;
-  for (const auto& panel : panelRenderers_) {
-    panel->RemoveObserver(clipCb_);
+  background_ = vtkSmartPointer<vtkRenderer>::New();
+  vtkNew<vtkCamera> idle; // vtkRenderer::Render reads it before drawing anything
+  background_->SetActiveCamera(idle);
+  background_->InteractiveOff();
+  context.window->AddRenderer(background_);
+
+  camera_ = vtkSmartPointer<vtkCamera>::New();
+  for (size_t index = 0; index < panes_.size(); ++index) {
+    Pane& pane = panes_[index];
+    pane.firstTile = tiles_.size();
+    for (size_t count = 0; count < pane.tileCount; ++count) {
+      Tile tile;
+      tile.pane = index;
+      tile.firstActor = context.actors.size();
+      tile.renderer = vtkSmartPointer<vtkRenderer>::New();
+      tile.renderer->SetActiveCamera(camera_);
+      context.window->AddRenderer(tile.renderer);
+      for (size_t mesh : pane.meshes) {
+        vtkNew<vtkDataSetMapper> mapper;
+        mapper->SetInputData(sceneMeshes[mesh]);
+        mapper->ScalarVisibilityOff();
+        const auto color = mesh < colorsHex.size() ? colorsHex[mesh]
+                                                   : generateDistinctColor(static_cast<int>(mesh));
+        vtkNew<vtkActor> actor;
+        actor->SetMapper(mapper);
+        actor->GetProperty()->SetColor(color[0], color[1], color[2]);
+        tile.renderer->AddActor(actor);
+        mappers.emplace_back(mapper);
+        context.actors.emplace_back(actor);
+        actorSlots_.push_back({mesh, tiles_.size()});
+      }
+      tiles_.push_back(std::move(tile));
+    }
   }
-  panelRenderers_.clear();
-  for (size_t i = 0; i < count; ++i) {
-    auto ren = vtkSmartPointer<vtkRenderer>::New();
-    ren->SetActiveCamera(camera);
-    context.window->AddRenderer(ren);
-    panelRenderers_.push_back(ren);
-  }
-  renderer = panelRenderers_.front();
-  layoutPanels();
+  layout();
 }
 
-void MeshRenderer::layoutPanels() {
-  const size_t count = panelRenderers_.size();
-  if (count == 0) {
+void MeshRenderer::layout() {
+  if (tiles_.empty()) {
     return;
   }
   const int* size = context.window->GetSize();
-  const int width = std::max(1, size[0]);
-  const int height = std::max(1, size[1]);
-  const int inset = getFacetPageCount() > 1 ? std::clamp(bottomInset_, 0, height - 1) : 0;
-  // A row holds a file's panels, one per facet column; a page shows the same columns
-  // of every row, each panel in its cell of the page's grid.
-  const size_t perRow = facetColumns_ > 0 ? facetColumns_ : count;
-  const size_t pageColumns = pageSize_ > 0 ? std::min(pageSize_, perRow) : perRow;
-  const size_t cells = count / perRow * pageColumns;
-  const size_t cols = adaptiveGrid_ ? adaptiveGridCols(cells, width, height - inset) : pageColumns;
-  const size_t rows = 1 + (cells - 1) / cols;
-  const double bottom = static_cast<double>(inset) / height;
-  const auto cellViewport = [&](size_t cell, double viewport[4]) {
-    gridViewport(cell, cols, rows, viewport);
-    viewport[1] = bottom + viewport[1] * (1.0 - bottom);
-    viewport[3] = bottom + viewport[3] * (1.0 - bottom);
-  };
+  const double width = std::max(1, size[0]);
+  const double height = std::max(1, size[1]);
+  const double ratio = metrics_.pixelRatio > 0.0 ? metrics_.pixelRatio : 1.0;
+  const double inset = std::clamp(metrics_.bottomInset * ratio, 0.0, height - 1.0);
+  const double view[4] = {0.0, inset / height, 1.0, 1.0};
+  const size_t cols =
+      adaptiveGridCols(panes_.size(), static_cast<int>(width), static_cast<int>(height - inset));
+  const size_t rows = 1 + (panes_.size() - 1) / cols;
 
-  std::vector<bool> filled(cols * rows, false);
-  for (size_t i = 0; i < count; ++i) {
-    const size_t column = i % perRow;
-    const size_t cell = i / perRow * pageColumns + column % pageColumns;
-    const bool shown = column / pageColumns == page_;
-    double viewport[4];
-    cellViewport(cell, viewport);
-    vtkRenderer* panel = panelRenderers_[i];
-    panel->SetViewport(viewport);
-    panel->SetDraw(shown ? 1 : 0);
-    panel->SetInteractive(shown ? 1 : 0);
-    filled[cell] = filled[cell] || shown;
-    if (i < facetPanels.size()) {
-      std::copy_n(viewport, 4, facetPanels[i].viewport);
+  for (size_t index = 0; index < panes_.size(); ++index) {
+    Pane& pane = panes_[index];
+    gridViewport(view, index, cols, rows, pane.viewport);
+    double area[4];
+    std::copy_n(pane.viewport, 4, area);
+    size_t gridCols = 1;
+    size_t gridRows = 1;
+    size_t shown = 1;
+    pane.pageSize = 1;
+    if (pane.mode == PaneMode::Split) {
+      const double paneWidth = (area[2] - area[0]) * width;
+      const double paneHeight = (area[3] - area[1]) * height;
+      const double strip = std::min(metrics_.pagerStrip * ratio, 0.5 * paneHeight);
+      area[1] += strip / height;
+      const int tilesWidth = static_cast<int>(paneWidth);
+      const int tilesHeight = static_cast<int>(paneHeight - strip);
+      pane.pageSize = std::max<size_t>(1,
+                                       facetPageSize(pane.fields.size(),
+                                                     static_cast<int>(tilesWidth / ratio),
+                                                     static_cast<int>(tilesHeight / ratio)));
+      // The page holding the field shown first before the pages changed size.
+      pane.first = static_cast<int>(static_cast<size_t>(std::max(pane.first, 0)) / pane.pageSize *
+                                    pane.pageSize);
+      // Every page uses the grid of a full one, so a field's tile stays put while paging.
+      gridCols = adaptiveGridCols(pane.pageSize, tilesWidth, tilesHeight);
+      gridRows = 1 + (pane.pageSize - 1) / gridCols;
+      shown = pane.shownCount();
+    }
+    for (size_t count = 0; count < pane.tileCount; ++count) {
+      Tile& tile = tiles_[pane.firstTile + count];
+      tile.shown = count < shown;
+      tile.field.reset();
+      if (tile.shown) {
+        gridViewport(area, count, gridCols, gridRows, tile.viewport);
+        tile.renderer->SetViewport(tile.viewport);
+        if (pane.first >= 0) {
+          tile.field = pane.fields[static_cast<size_t>(pane.first) + count];
+        }
+        colorTile(pane.firstTile + count);
+      }
+      tile.renderer->SetDraw(tile.shown ? 1 : 0);
+      tile.renderer->SetInteractive(tile.shown ? 1 : 0);
     }
   }
-
-  // Each empty cell of the facet grid is cleared by a renderer that draws nothing.
-  size_t blank = 0;
-  for (size_t cell = 0; facetColumns_ > 0 && cell < filled.size(); ++cell) {
-    if (filled[cell]) {
-      continue;
-    }
-    if (blank == blanks_.size()) {
-      auto ren = vtkSmartPointer<vtkRenderer>::New();
-      vtkNew<vtkCamera> camera; // vtkRenderer::Render reads it before drawing anything
-      ren->SetActiveCamera(camera);
-      ren->InteractiveOff();
-      context.window->AddRenderer(ren);
-      blanks_.push_back(ren);
-    }
-    double viewport[4];
-    cellViewport(cell, viewport);
-    blanks_[blank++]->SetViewport(viewport);
-  }
-  for (size_t extra = blank; extra < blanks_.size(); ++extra) {
-    context.window->RemoveRenderer(blanks_[extra]);
-  }
-  blanks_.resize(blank);
-}
-
-void MeshRenderer::setFacetPages(size_t pageSize, size_t page, int bottomInset) {
-  if (facetColumns_ == 0) {
-    return;
-  }
-  pageSize_ = pageSize >= facetColumns_ ? 0 : pageSize;
-  page_ = std::min(page, getFacetPageCount() - 1);
-  bottomInset_ = std::max(0, bottomInset);
-  layoutPanels();
   updatePinMarkers();
 }
 
-void MeshRenderer::showFacetPage(size_t page) {
-  setFacetPages(pageSize_, page, bottomInset_);
+void MeshRenderer::colorTile(size_t index) {
+  const Tile& tile = tiles_[index];
+  const size_t end = tile.firstActor + panes_[tile.pane].meshes.size();
+  for (size_t actor = tile.firstActor; actor < end; ++actor) {
+    colorActor(actor);
+  }
+}
+
+void MeshRenderer::colorActor(size_t actor) {
+  const ActorSlot& slot = actorSlots_[actor];
+  const Tile& tile = tiles_[slot.tile];
+  vtkDataSet* mesh = sceneMeshes[slot.mesh];
+  if (labels_ && actor == 0) {
+    mapScalar(mesh, mappers[actor], labels_->field, true, labels_->lut, labels_->range);
+  } else if (tile.field) {
+    const SceneField& scene = fields_[*tile.field];
+    mapScalar(
+        mesh, mappers[actor], scene.field, scene.analysis.categorical, scene.lut, scene.clipRange);
+  } else {
+    mappers[actor]->ScalarVisibilityOff();
+  }
+}
+
+bool MeshRenderer::recolor(size_t field) {
+  for (size_t index = 0; index < tiles_.size(); ++index) {
+    if (tiles_[index].shown && tiles_[index].field == field) {
+      colorTile(index);
+    }
+  }
+  render();
+  return true;
+}
+
+void MeshRenderer::render() {
   if (context.window) {
     context.window->Render();
   }
 }
 
-size_t MeshRenderer::getFacetPageSize() const {
-  return pageSize_ > 0 ? pageSize_ : facetColumns_;
-}
-
-size_t MeshRenderer::getFacetPageCount() const {
-  return pageSize_ > 0 ? (facetColumns_ + pageSize_ - 1) / pageSize_ : 1;
-}
-
-void MeshRenderer::finishPanels(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
+void MeshRenderer::frameScene() {
   vtkBoundingBox bbox;
-  for (const auto& mesh : meshes) {
+  for (const auto& mesh : sceneMeshes) {
     double bounds[6];
     mesh->GetBounds(bounds);
     bbox.AddBounds(bounds);
@@ -388,39 +443,41 @@ void MeshRenderer::finishPanels(const std::vector<vtkSmartPointer<vtkDataSet>>& 
   if (bbox.IsValid()) {
     bbox.GetBounds(sceneBounds_);
   }
-  renderer->ResetCamera(sceneBounds_);
-  fittedCameraMTime_ = renderer->GetActiveCamera()->GetMTime();
+  getRenderer()->ResetCamera(sceneBounds_);
+  fittedCameraMTime_ = camera_->GetMTime();
 
-  // The interactor style resets clipping from the panel under the cursor only;
-  // re-deriving it from every mesh before each panel draws keeps the shared
-  // camera from clipping geometry that only another panel shows.
+  // The interactor style resets clipping from the tile under the cursor only;
+  // re-deriving it from every mesh before each tile draws keeps the shared
+  // camera from clipping geometry that only another tile shows.
   if (!clipCb_) {
     clipCb_ = vtkSmartPointer<vtkCallbackCommand>::New();
     clipCb_->SetCallback([](vtkObject* caller, unsigned long, void* client, void*) {
       auto* self = static_cast<MeshRenderer*>(client);
-      auto* panel = static_cast<vtkRenderer*>(caller);
-      panel->ResetCameraClippingRange(self->sceneBounds_);
+      auto* tile = static_cast<vtkRenderer*>(caller);
+      tile->ResetCameraClippingRange(self->sceneBounds_);
       auto* style = vtkInteractorStyle::SafeDownCast(self->interactor->GetInteractorStyle());
       // Bound Glass's repeated translucent passes while dragging. StopState clears
       // the interaction state before rendering, so the release frame is full quality.
       const bool movingGlass = self->surfaceLook_.style == SurfaceStyle::Glass && style &&
                                style->GetState() != VTKIS_NONE;
-      panel->SetMaximumNumberOfPeels(movingGlass ? 2 : 4);
+      tile->SetMaximumNumberOfPeels(movingGlass ? 2 : 4);
     });
   }
   clipCb_->SetClientData(this);
-  for (const auto& ren : panelRenderers_) {
-    ren->AddObserver(vtkCommand::StartEvent, clipCb_);
+  for (const Tile& tile : tiles_) {
+    tile.renderer->AddObserver(vtkCommand::StartEvent, clipCb_);
   }
 }
 
 void MeshRenderer::addImagePlanes(const std::vector<vtkSmartPointer<vtkImageSlice>>& planes,
                                   const std::array<double, 6>& bounds) {
-  if (!renderer || planes.empty()) {
+  if (tiles_.empty() || planes.empty()) {
     return;
   }
-  for (const auto& plane : planes) {
-    renderer->AddViewProp(plane);
+  for (const Tile& tile : tiles_) {
+    for (const auto& plane : planes) {
+      tile.renderer->AddViewProp(plane);
+    }
   }
   vtkBoundingBox bbox(bounds.data());
   // Without meshes, sceneBounds_ holds only its placeholder unit box.
@@ -428,206 +485,139 @@ void MeshRenderer::addImagePlanes(const std::vector<vtkSmartPointer<vtkImageSlic
     bbox.AddBounds(sceneBounds_);
   }
   bbox.GetBounds(sceneBounds_);
-  renderer->ResetCamera(sceneBounds_);
-  fittedCameraMTime_ = renderer->GetActiveCamera()->GetMTime();
+  getRenderer()->ResetCamera(sceneBounds_);
+  fittedCameraMTime_ = camera_->GetMTime();
 }
 
-void MeshRenderer::start() {
-  context.window->Render();
-  if (!embeddedMode) {
-    interactor->Start();
-  }
+std::optional<size_t> MeshRenderer::findField(const ScalarField& field) const {
+  const auto found = std::find_if(fields_.begin(), fields_.end(), [&field](const SceneField& s) {
+    return s.field.name == field.name && s.field.association == field.association;
+  });
+  return found == fields_.end()
+             ? std::nullopt
+             : std::optional<size_t>(static_cast<size_t>(std::distance(fields_.begin(), found)));
 }
 
-void MeshRenderer::setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
-                                  const std::vector<MeshGroup>& groups,
-                                  const std::vector<std::array<double, 3>>& colorsHex) {
-  sceneMeshes = meshes;
-
-  if (meshes.empty() || groups.empty())
+void MeshRenderer::setPaneMode(size_t pane, PaneMode mode) {
+  if (pane >= panes_.size() || panes_[pane].fields.empty() || panes_[pane].mode == mode) {
     return;
-
-  // Columns: every named point and cell array across all meshes, in first-seen
-  // order, so a scalar shared by several files lines up in one column.
-  struct Column {
-    std::string name;
-    FieldAssociation association;
-  };
-  std::vector<Column> columns;
-  auto addColumns = [&columns](vtkFieldData* data, FieldAssociation association) {
-    for (int i = 0; data && i < data->GetNumberOfArrays(); ++i) {
-      vtkAbstractArray* a = data->GetAbstractArray(i);
-      if (!a || !a->GetName() || !vtkDataArray::SafeDownCast(a)) {
-        continue;
-      }
-      const std::string name = a->GetName();
-      const bool seen = std::any_of(columns.begin(), columns.end(), [&](const Column& c) {
-        return c.name == name && c.association == association;
-      });
-      if (!seen) {
-        columns.push_back({name, association});
-      }
-    }
-  };
-  for (const auto& mesh : meshes) {
-    addColumns(mesh->GetPointData(), FieldAssociation::Point);
-    addColumns(mesh->GetCellData(), FieldAssociation::Cell);
   }
-  const bool geometryOnly = columns.empty();
-  const size_t columnCount = geometryOnly ? 1 : columns.size();
+  panes_[pane].mode = mode;
+  layout();
+  render();
+}
 
+void MeshRenderer::showField(size_t pane, int position) {
+  if (pane >= panes_.size()) {
+    return;
+  }
+  Pane& source = panes_[pane];
+  source.first = std::clamp(position,
+                            source.mode == PaneMode::Single ? -1 : 0,
+                            static_cast<int>(source.fields.size()) - 1);
+  for (Pane& other : panes_) {
+    if (!linked_ || &other == &source) {
+      continue;
+    }
+    if (source.first < 0) {
+      other.first = other.mode == PaneMode::Single ? -1 : other.first;
+      continue;
+    }
+    const auto same = std::find(
+        other.fields.begin(), other.fields.end(), source.fields[static_cast<size_t>(source.first)]);
+    if (same != other.fields.end()) {
+      other.first = static_cast<int>(std::distance(other.fields.begin(), same));
+    }
+  }
+  layout();
+  render();
+}
+
+void MeshRenderer::stepPane(size_t pane, int step) {
+  if (pane >= panes_.size()) {
+    return;
+  }
+  const Pane& target = panes_[pane];
+  const int pages = static_cast<int>(target.pageCount());
+  const int page = ((static_cast<int>(target.page()) + step) % pages + pages) % pages;
+  showField(pane,
+            target.mode == PaneMode::Single ? page - 1 : page * static_cast<int>(target.pageSize));
+}
+
+void MeshRenderer::setLayoutMetrics(const LayoutMetrics& metrics) {
+  metrics_ = metrics;
+  layout();
+}
+
+std::optional<size_t> MeshRenderer::paneAt(double x, double y) const {
   if (!context.window) {
-    context.window = vtkSmartPointer<vtkRenderWindow>::New();
+    return std::nullopt;
   }
-  context.window->SetWindowName((std::string(kVVWindowTitle) + " - Exploded (facet) view").c_str());
-  context.window->SetDesiredUpdateRate(120.0);
-  if (!embeddedMode) {
-    const int* sw = context.window->GetScreenSize();
-    const int screenW = (sw ? sw[0] : 1400);
-    const int screenH = (sw ? sw[1] : 1200);
-    context.window->SetSize(std::min(screenW, 1400), std::min(screenH, 1200));
-    context.window->SetPosition(80, 60);
-  }
-
-  const bool matrix = groups.size() > 1;
-  const size_t panelCount = groups.size() * columnCount;
-  facetColumns_ = columnCount;
-  pageSize_ = 0;
-  page_ = 0;
-  buildPanels(panelCount, matrix ? columnCount : 0);
-
-  mappers.clear();
-  context.actors.clear();
-  actorSlots_.clear();
-  context.colorsHex = colorsHex;
-  const std::vector<vtkDataSet*> allPtrs = rawMeshPointers(meshes);
-
-  std::vector<FacetPanelState> columnStates(columnCount);
-  for (size_t col = 0; !geometryOnly && col < columnCount; ++col) {
-    const Column& field = columns[col];
-    auto& state = columnStates[col];
-    state.title = field.name;
-    state.association = field.association;
-    state.column = col;
-    if (computeScalarGlobalRange(allPtrs, field.name, field.association, state.globalRange)) {
-      state.analysis = analyzeScalar(allPtrs, field.name, field.association);
-      if (state.analysis.categorical && sharedCatAnalysis.categorical) {
-        const bool hasNaN = state.analysis.hasNaN;
-        state.analysis = sharedCatAnalysis;
-        state.analysis.hasNaN = hasNaN;
-      }
-      std::copy_n(state.globalRange, 2, state.clipRange);
+  const int* size = context.window->GetSize();
+  const double fx = x / std::max(1, size[0]);
+  const double fy = y / std::max(1, size[1]);
+  for (size_t index = 0; index < panes_.size(); ++index) {
+    const double* viewport = panes_[index].viewport;
+    if (fx >= viewport[0] && fx < viewport[2] && fy >= viewport[1] && fy < viewport[3]) {
+      return index;
     }
   }
-  for (size_t g = 0; g < groups.size(); ++g) {
-    for (size_t col = 0; col < columnCount; ++col) {
-      const size_t panelIndex = g * columnCount + col;
-      vtkRenderer* ren = panelRenderers_[panelIndex];
-      FacetPanelState panel = columnStates[col];
-      ren->GetViewport(panel.viewport);
-
-      for (size_t meshIndex : groups[g].partIndices) {
-        if (meshIndex >= meshes.size()) {
-          continue;
-        }
-        vtkNew<vtkDataSetMapper> mapper;
-        mapper->SetInputData(meshes[meshIndex]);
-        if (!geometryOnly && setMapperScalar(meshes[meshIndex],
-                                             mapper,
-                                             columns[col].name,
-                                             columns[col].association,
-                                             panel.clipRange,
-                                             panel.analysis)) {
-          if (!panel.lut) {
-            panel.lut = vtkLookupTable::SafeDownCast(mapper->GetLookupTable());
-          }
-          mapper->SetLookupTable(panel.lut);
-          panel.scalarMappers.emplace_back(mapper);
-          panel.hasScalar = true;
-        } else {
-          mapper->ScalarVisibilityOff();
-        }
-
-        const auto color = meshIndex < colorsHex.size()
-                               ? colorsHex[meshIndex]
-                               : generateDistinctColor(static_cast<int>(meshIndex));
-        vtkNew<vtkActor> actor;
-        actor->SetMapper(mapper);
-        actor->GetProperty()->SetColor(color[0], color[1], color[2]);
-        ren->AddActor(actor);
-        mappers.emplace_back(mapper);
-        context.actors.emplace_back(actor);
-        actorSlots_.push_back({meshIndex, panelIndex});
-      }
-      facetPanels.push_back(std::move(panel));
-    }
-  }
-  finishPanels(meshes);
-
-  if (!interactor) {
-    interactor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
-  }
-  if (interactor->GetRenderWindow() != context.window) {
-    interactor->SetRenderWindow(context.window);
-  }
-  interactor->SetRecognizeGestures(false);
-  interactor->SetDesiredUpdateRate(120.0);
-  interactor->SetStillUpdateRate(45.0);
-  auto style = vtkSmartPointer<CameraStyle>::New();
-  style->SetMotionFactor(10.0);
-  interactor->SetInteractorStyle(style);
-  buildGlassStages(meshes);
-  applySurfaceLook();
+  return std::nullopt;
 }
 
 void MeshRenderer::refitCameraIfUntouched() {
-  layoutPanels();
-  if (!renderer || renderer->GetActiveCamera()->GetMTime() != fittedCameraMTime_) {
+  layout();
+  if (tiles_.empty() || camera_->GetMTime() != fittedCameraMTime_) {
     return;
   }
-  renderer->ResetCamera(sceneBounds_);
-  fittedCameraMTime_ = renderer->GetActiveCamera()->GetMTime();
+  getRenderer()->ResetCamera(sceneBounds_);
+  fittedCameraMTime_ = camera_->GetMTime();
 }
 
 void MeshRenderer::resetCamera() {
-  if (!renderer) {
+  if (tiles_.empty()) {
     return;
   }
   // VTK's default camera, which vv opens with before framing the scene.
-  vtkCamera* camera = renderer->GetActiveCamera();
-  camera->SetPosition(0.0, 0.0, 1.0);
-  camera->SetFocalPoint(0.0, 0.0, 0.0);
-  camera->SetViewUp(0.0, 1.0, 0.0);
-  renderer->ResetCamera(sceneBounds_);
-  fittedCameraMTime_ = camera->GetMTime();
-  if (context.window) {
-    context.window->Render();
+  camera_->SetPosition(0.0, 0.0, 1.0);
+  camera_->SetFocalPoint(0.0, 0.0, 0.0);
+  camera_->SetViewUp(0.0, 1.0, 0.0);
+  getRenderer()->ResetCamera(sceneBounds_);
+  fittedCameraMTime_ = camera_->GetMTime();
+  render();
+}
+
+void MeshRenderer::dolly(double factor) {
+  if (tiles_.empty()) {
+    return;
   }
+  camera_->Dolly(factor);
+  render();
 }
 
 std::optional<ProbeHit> MeshRenderer::probe(double x, double y) {
-  const auto ren =
-      std::find_if(panelRenderers_.begin(), panelRenderers_.end(), [x, y](const auto& panel) {
-        return panel->GetDraw() && panel->IsInViewport(static_cast<int>(x), static_cast<int>(y));
-      });
-  if (ren == panelRenderers_.end()) {
+  const auto under = std::find_if(tiles_.begin(), tiles_.end(), [x, y](const Tile& candidate) {
+    return candidate.shown &&
+           candidate.renderer->IsInViewport(static_cast<int>(x), static_cast<int>(y));
+  });
+  if (under == tiles_.end()) {
     return std::nullopt;
   }
-  const auto panel = static_cast<size_t>(std::distance(panelRenderers_.begin(), ren));
+  const auto tile = static_cast<size_t>(std::distance(tiles_.begin(), under));
   if (!probePicker_) {
     probePicker_ = vtkSmartPointer<vtkCellPicker>::New();
     probePicker_->SetTolerance(0.0005);
     probePicker_->PickFromListOn();
   }
-  // This panel's meshes only: the camera is shared, so another panel's mesh lies on
+  // This tile's meshes only: the camera is shared, so another tile's mesh lies on
   // the same ray, and glyphs drawn over a mesh are not its data.
   probePicker_->InitializePickList();
-  for (size_t i = 0; i < actorSlots_.size() && i < context.actors.size(); ++i) {
-    if (actorSlots_[i].panel == panel) {
+  for (size_t i = 0; i < actorSlots_.size(); ++i) {
+    if (actorSlots_[i].tile == tile) {
       probePicker_->AddPickList(context.actors[i]);
     }
   }
-  if (probePicker_->Pick(x, y, 0.0, *ren) == 0 || probePicker_->GetCellId() < 0) {
+  if (probePicker_->Pick(x, y, 0.0, under->renderer) == 0 || probePicker_->GetCellId() < 0) {
     return std::nullopt;
   }
   vtkActor* actor = probePicker_->GetActor();
@@ -641,7 +631,7 @@ std::optional<ProbeHit> MeshRenderer::probe(double x, double y) {
 
   const auto actorIndex = static_cast<size_t>(std::distance(context.actors.begin(), picked));
   ProbeHit hit;
-  hit.panel = panel;
+  hit.tile = tile;
   hit.mesh = actorSlots_[actorIndex].mesh;
   hit.cell = probePicker_->GetCellId();
   probePicker_->GetPickPosition(hit.position.data());
@@ -655,24 +645,35 @@ std::optional<ProbeHit> MeshRenderer::probe(double x, double y) {
 }
 
 std::optional<ProbeHit> MeshRenderer::probeAgain(const ProbeHit& hit) const {
-  const auto slot = std::find_if(actorSlots_.begin(), actorSlots_.end(), [&hit](const auto& s) {
-    return s.mesh == hit.mesh && s.panel == hit.panel;
-  });
-  if (slot == actorSlots_.end() || hit.mesh >= sceneMeshes.size() ||
-      hit.panel >= panelRenderers_.size()) {
+  if (hit.mesh >= sceneMeshes.size()) {
     return std::nullopt;
   }
-  const size_t actor = static_cast<size_t>(std::distance(actorSlots_.begin(), slot));
-  if (actor >= context.actors.size() || !context.actors[actor]->GetVisibility()) {
+  // The hit's own tile, or the first shown one drawing its mesh once a mode change or a
+  // shorter page hid that tile.
+  std::optional<size_t> actor;
+  for (size_t i = 0; i < actorSlots_.size(); ++i) {
+    const ActorSlot& slot = actorSlots_[i];
+    if (slot.mesh != hit.mesh || !tiles_[slot.tile].shown || !context.actors[i]->GetVisibility()) {
+      continue;
+    }
+    if (slot.tile == hit.tile) {
+      actor = i;
+      break;
+    }
+    if (!actor) {
+      actor = i;
+    }
+  }
+  if (!actor) {
     return std::nullopt;
   }
   ProbeHit again;
-  again.panel = hit.panel;
+  again.tile = actorSlots_[*actor].tile;
   again.mesh = hit.mesh;
   again.cell = hit.cell;
   again.at = hit.at;
   again.position = hit.position;
-  readProbedField(again, actor, sceneMeshes[hit.mesh]);
+  readProbedField(again, *actor, sceneMeshes[hit.mesh]);
   return again;
 }
 
@@ -681,21 +682,21 @@ std::vector<ProbeHit> MeshRenderer::matchingProbes(const ProbeHit& hit) {
   if (!probeAgain(hit)) {
     return matches;
   }
-  // A file can appear in many field columns. Locate its cell only once per update.
+  // A file can appear in many tiles. Locate its cell only once per update.
   std::map<size_t, std::optional<ProbeHit>> locations;
   locations.emplace(hit.mesh, hit);
   probeLocators_.resize(sceneMeshes.size());
-  std::vector<bool> matchedPanels(panelRenderers_.size(), false);
-  std::vector<bool> sourcePanels(panelRenderers_.size(), false);
+  std::vector<bool> matchedTiles(tiles_.size(), false);
+  std::vector<bool> sourceTiles(tiles_.size(), false);
   for (size_t actor = 0; actor < actorSlots_.size(); ++actor) {
     if (actorSlots_[actor].mesh == hit.mesh && context.actors[actor]->GetVisibility()) {
-      sourcePanels[actorSlots_[actor].panel] = true;
+      sourceTiles[actorSlots_[actor].tile] = true;
     }
   }
   for (size_t actor = 0; actor < actorSlots_.size(); ++actor) {
     const auto& slot = actorSlots_[actor];
-    if (!context.actors[actor]->GetVisibility() || !panelRenderers_[slot.panel]->GetDraw() ||
-        matchedPanels[slot.panel] || (sourcePanels[slot.panel] && slot.mesh != hit.mesh)) {
+    if (!context.actors[actor]->GetVisibility() || !tiles_[slot.tile].shown ||
+        matchedTiles[slot.tile] || (sourceTiles[slot.tile] && slot.mesh != hit.mesh)) {
       continue;
     }
     const auto location = locations.try_emplace(slot.mesh, std::nullopt);
@@ -737,26 +738,29 @@ std::vector<ProbeHit> MeshRenderer::matchingProbes(const ProbeHit& hit) {
     }
     if (location.first->second) {
       ProbeHit match = *location.first->second;
-      match.panel = slot.panel;
+      match.tile = slot.tile;
       match.field.clear();
       match.category.reset();
       readProbedField(match, actor, sceneMeshes[slot.mesh]);
       matches.push_back(std::move(match));
-      matchedPanels[slot.panel] = true;
+      matchedTiles[slot.tile] = true;
     }
   }
   return matches;
 }
 
 void MeshRenderer::readProbedField(ProbeHit& hit, size_t actorIndex, vtkDataSet* data) const {
-  const size_t panel = actorSlots_[actorIndex].panel;
-  const FacetPanelState* facet = panel < facetPanels.size() ? &facetPanels[panel] : nullptr;
-  const std::string& field = facet ? facet->title : activeScalarName;
-  const FieldAssociation association = facet ? facet->association : activeScalarAssociation;
-  const ScalarAnalysis& analysis = facet ? facet->analysis : activeScalarAnalysis;
-  if (field.empty()) {
+  const Tile& tile = tiles_[actorSlots_[actorIndex].tile];
+  const bool labeled = labels_ && actorIndex == 0;
+  if (!labeled && !tile.field) {
     return;
   }
+  ScalarAnalysis labelAnalysis;
+  labelAnalysis.categorical = true;
+  const std::string& field = labeled ? labels_->field.name : fields_[*tile.field].field.name;
+  const FieldAssociation association =
+      labeled ? labels_->field.association : fields_[*tile.field].field.association;
+  const ScalarAnalysis& analysis = labeled ? labelAnalysis : fields_[*tile.field].analysis;
   const std::optional<double> value = fieldValueAt(data, {field, association}, analysis, hit.at);
   if (!value) {
     return;
@@ -778,14 +782,12 @@ void MeshRenderer::readProbedField(ProbeHit& hit, size_t actorIndex, vtkDataSet*
 
 void MeshRenderer::setPinMarker(const std::optional<ProbeHit>& hit) {
   for (const auto& marker : pinMarkers_) {
-    panelRenderers_[marker.panel]->RemoveActor(marker.marker);
+    tiles_[actorSlots_[marker.actor].tile].renderer->RemoveActor(marker.marker);
   }
   pinMarkers_.clear();
   markerHit_ = hit;
   updatePinMarkers();
-  if (context.window) {
-    context.window->Render();
-  }
+  render();
 }
 
 void MeshRenderer::updatePinMarkers() {
@@ -797,7 +799,7 @@ void MeshRenderer::updatePinMarkers() {
   }
   for (const auto& match : matchingProbes(*markerHit_)) {
     const auto slot = std::find_if(actorSlots_.begin(), actorSlots_.end(), [&match](const auto& s) {
-      return s.mesh == match.mesh && s.panel == match.panel;
+      return s.mesh == match.mesh && s.tile == match.tile;
     });
     const size_t actor = static_cast<size_t>(std::distance(actorSlots_.begin(), slot));
     const auto existing = std::find_if(pinMarkers_.begin(),
@@ -826,22 +828,21 @@ void MeshRenderer::updatePinMarkers() {
     // VTK's Qt widget sets DPI to 72 times the device pixel ratio.
     const double dpi = context.window ? context.window->GetDPI() : 72.0;
     property->SetPointSize(static_cast<float>(kPinMarkerSize * dpi / 72.0));
-    panelRenderers_[match.panel]->AddActor(marker);
-    pinMarkers_.push_back({actor, match.panel, std::move(marker)});
+    tiles_[match.tile].renderer->AddActor(marker);
+    pinMarkers_.push_back({actor, std::move(marker)});
   }
 }
 
 std::optional<std::array<double, 2>> MeshRenderer::displayPosition(const ProbeHit& hit) const {
-  if (hit.panel >= panelRenderers_.size() || !panelRenderers_[hit.panel]->GetDraw()) {
+  if (hit.tile >= tiles_.size() || !tiles_[hit.tile].shown) {
     return std::nullopt;
   }
-  vtkRenderer* ren = panelRenderers_[hit.panel];
-  vtkCamera* camera = ren->GetActiveCamera();
-  if (camera && !camera->GetParallelProjection()) {
+  vtkRenderer* ren = tiles_[hit.tile].renderer;
+  if (!camera_->GetParallelProjection()) {
     double eye[3];
     double forward[3];
-    camera->GetPosition(eye);
-    camera->GetDirectionOfProjection(forward);
+    camera_->GetPosition(eye);
+    camera_->GetDirectionOfProjection(forward);
     double ahead = 0.0;
     for (int axis = 0; axis < 3; ++axis) {
       ahead += (hit.position[static_cast<size_t>(axis)] - eye[axis]) * forward[axis];
@@ -857,125 +858,114 @@ std::optional<std::array<double, 2>> MeshRenderer::displayPosition(const ProbeHi
   return std::array<double, 2>{display[0], display[1]};
 }
 
-void MeshRenderer::startFacetGrid() {
-  if (!context.window || !interactor)
-    return;
-  context.window->Render();
-  if (!embeddedMode) {
-    interactor->Start();
-  }
-}
-
-bool MeshRenderer::setActiveScalar(const std::string& scalarName, FieldAssociation association) {
-  if (scalarName.empty()) {
-    clearActiveScalar();
-    return true;
-  }
-
-  std::vector<vtkDataSet*> meshPtrs = rawMeshPointers(sceneMeshes);
-
-  double range[2] = {0.0, 1.0};
-  if (!computeScalarGlobalRange(meshPtrs, scalarName, association, range)) {
+bool MeshRenderer::setClipRange(size_t field, double minValue, double maxValue) {
+  if (field >= fields_.size() || fields_[field].analysis.categorical || !std::isfinite(minValue) ||
+      !std::isfinite(maxValue)) {
     return false;
   }
-
-  activeScalarName = scalarName;
-  activeScalarAssociation = association;
-  activeScalarAnalysis = analyzeField(scalarName, association);
-  activeScalarGlobalRange[0] = range[0];
-  activeScalarGlobalRange[1] = range[1];
-  clipRange[0] = range[0];
-  clipRange[1] = range[1];
-
-  bool found = false;
-  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
-    if (setMapperScalar(sceneMeshes[index],
-                        mappers[index],
-                        activeScalarName,
-                        activeScalarAssociation,
-                        clipRange,
-                        activeScalarAnalysis)) {
-      found = true;
-    }
-  }
-
-  if (!found) {
-    clearActiveScalar();
+  SceneField& scene = fields_[field];
+  minValue = std::max(minValue, scene.globalRange[0]);
+  maxValue = std::min(maxValue, scene.globalRange[1]);
+  if (minValue > maxValue) {
     return false;
   }
-
-  if (context.window) {
-    context.window->Render();
-  }
-  return true;
+  scene.clipRange[0] = minValue;
+  scene.clipRange[1] = maxValue;
+  scene.lut->SetRange(scene.clipRange);
+  return recolor(field);
 }
 
-ScalarAnalysis MeshRenderer::analyzeField(const std::string& scalarName,
-                                          FieldAssociation association) const {
-  ScalarAnalysis analysis = analyzeScalar(rawMeshPointers(sceneMeshes), scalarName, association);
-  if (analysis.categorical && sharedCatAnalysis.categorical) {
-    const bool hasNaN = analysis.hasNaN;
-    analysis = sharedCatAnalysis;
-    analysis.hasNaN = hasNaN;
+bool MeshRenderer::setFieldRange(size_t field, double minValue, double maxValue) {
+  if (field >= fields_.size() || !std::isfinite(minValue) || !std::isfinite(maxValue) ||
+      minValue > maxValue) {
+    return false;
   }
-  if (const auto saved = categoryColorings_.find({scalarName, association});
-      saved != categoryColorings_.end())
-    analysis.coloring = saved->second;
-  if (const auto saved = colormaps_.find({scalarName, association}); saved != colormaps_.end())
-    analysis.colormap = saved->second;
-  return analysis;
+  SceneField& scene = fields_[field];
+  scene.globalRange[0] = scene.clipRange[0] = minValue;
+  scene.globalRange[1] = scene.clipRange[1] = maxValue;
+  scene.lut->SetRange(scene.clipRange);
+  return recolor(field);
 }
 
-void MeshRenderer::colorByFixedCategorical(const std::string& scalarName,
-                                           FieldAssociation association,
-                                           vtkLookupTable* lut,
-                                           const double range[2]) {
-  if (sceneMeshes.empty() || mappers.empty() || !sceneMeshes.front() || !lut) {
+// string_view copies only its pointer and length. cppcheck 2.7:
+// https://github.com/cppcheck-opensource/cppcheck/pull/3817
+
+// cppcheck-suppress passedByValue symbolName=id
+bool MeshRenderer::setColormap(size_t field, std::string_view id, bool reversed) {
+  const Colormap* map = findColormap(id);
+  if (!map || field >= fields_.size() || fields_[field].analysis.categorical) {
+    return false;
+  }
+  fields_[field].analysis.colormap.map = map;
+  fields_[field].analysis.colormap.reversed = reversed;
+  return retable(field);
+}
+
+bool MeshRenderer::setOutOfRange(size_t field, OutOfRange outside) {
+  if (field >= fields_.size() || fields_[field].analysis.categorical) {
+    return false;
+  }
+  fields_[field].analysis.colormap.outside = outside;
+  return retable(field);
+}
+
+// string_view copies only its pointer and length. cppcheck 2.7:
+// https://github.com/cppcheck-opensource/cppcheck/pull/3817
+
+// cppcheck-suppress passedByValue symbolName=id
+bool MeshRenderer::setCategoryPalette(size_t field, std::string_view id) {
+  return field < fields_.size() && fields_[field].analysis.categorical &&
+         pickPalette(fields_[field].analysis.coloring, id) && retable(field);
+}
+
+bool MeshRenderer::setCategoryColor(size_t field,
+                                    double value,
+                                    const std::optional<std::array<double, 3>>& rgb) {
+  if (field >= fields_.size() || !fields_[field].analysis.categorical) {
+    return false;
+  }
+  recolorCategory(fields_[field].analysis.coloring, value, rgb);
+  return retable(field);
+}
+
+bool MeshRenderer::retable(size_t field) {
+  SceneField& scene = fields_[field];
+  scene.lut = buildLookupTable(scene.field.name, scene.analysis, scene.clipRange);
+  return recolor(field);
+}
+
+std::vector<size_t> MeshRenderer::fieldHistogram(size_t field, size_t bins) const {
+  if (field >= fields_.size()) {
+    return std::vector<size_t>(bins, 0);
+  }
+  const SceneField& scene = fields_[field];
+  return computeScalarHistogram(rawMeshPointers(sceneMeshes),
+                                scene.field.name,
+                                scene.field.association,
+                                scene.globalRange,
+                                bins);
+}
+
+void MeshRenderer::reanalyzeField(size_t field) {
+  if (field < fields_.size()) {
+    analyze(fields_[field]);
+    recolor(field);
+  }
+}
+
+void MeshRenderer::setLabelColoring(const std::string& arrayName,
+                                    vtkLookupTable* lut,
+                                    const double range[2]) {
+  if (tiles_.empty()) {
     return;
   }
-  activeScalarName = scalarName;
-  activeScalarAssociation = association;
-  // The caller's table holds the colors, so nothing may recolor it from an analysis. Not
-  // `= {}`: GCC 16 takes the maps of that temporary for maybe uninitialized.
-  activeScalarAnalysis = ScalarAnalysis();
-  activeScalarAnalysis.categorical = true;
-  vtkDataSet* mesh = sceneMeshes.front();
-  vtkDataSetMapper* mapper = mappers.front();
-  if (association == FieldAssociation::Cell) {
-    mesh->GetCellData()->SetActiveScalars(scalarName.c_str());
-    mapper->SetScalarModeToUseCellFieldData();
+  if (lut) {
+    labels_ = LabelColoring{{arrayName, FieldAssociation::Cell}, lut, {range[0], range[1]}};
   } else {
-    mesh->GetPointData()->SetActiveScalars(scalarName.c_str());
-    mapper->SetScalarModeToUsePointFieldData();
+    labels_.reset();
   }
-  mapper->SelectColorArray(scalarName.c_str());
-  mapper->SetColorModeToMapScalars();
-  mapper->ScalarVisibilityOn();
-  mapper->SetLookupTable(lut);
-  mapper->SetScalarRange(range[0], range[1]);
-  if (context.window) {
-    context.window->Render();
-  }
-}
-
-void MeshRenderer::clearActiveScalar() {
-  activeScalarName.clear();
-  activeScalarAnalysis = ScalarAnalysis(); // not `= {}`, see colorByFixedCategorical
-  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
-    mappers[index]->ScalarVisibilityOff();
-    if (!sceneMeshes[index]) {
-      continue;
-    }
-    if (sceneMeshes[index]->GetPointData()) {
-      sceneMeshes[index]->GetPointData()->SetActiveScalars(nullptr);
-    }
-    if (sceneMeshes[index]->GetCellData()) {
-      sceneMeshes[index]->GetCellData()->SetActiveScalars(nullptr);
-    }
-  }
-  if (context.window) {
-    context.window->Render();
-  }
+  colorTile(0);
+  render();
 }
 
 void MeshRenderer::refreshAfterDataChange(size_t index) {
@@ -984,169 +974,18 @@ void MeshRenderer::refreshAfterDataChange(size_t index) {
   }
   // Scalar ranges and LUTs stay fixed during playback. Leave static comparison
   // meshes untouched so their mappers and spatial indices remain reusable.
-  vtkDataSet* mesh = sceneMeshes[index];
-  if (!activeScalarName.empty() &&
-      arrayForAssociation(mesh, activeScalarName, activeScalarAssociation)) {
-    if (activeScalarAssociation == FieldAssociation::Cell) {
-      mesh->GetCellData()->SetActiveScalars(activeScalarName.c_str());
-    } else {
-      mesh->GetPointData()->SetActiveScalars(activeScalarName.c_str());
+  for (size_t actor = 0; actor < actorSlots_.size(); ++actor) {
+    const ActorSlot& slot = actorSlots_[actor];
+    if (slot.mesh == index && tiles_[slot.tile].shown) {
+      colorActor(actor);
     }
   }
-  mesh->Modified();
-  if (context.window) {
-    context.window->Render();
-  }
-}
-
-void MeshRenderer::setActiveScalarRange(double minValue, double maxValue) {
-  if (activeScalarName.empty() || minValue > maxValue) {
-    return;
-  }
-  activeScalarGlobalRange[0] = minValue;
-  activeScalarGlobalRange[1] = maxValue;
-  clipRange[0] = minValue;
-  clipRange[1] = maxValue;
-  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
-    setMapperScalar(sceneMeshes[index],
-                    mappers[index],
-                    activeScalarName,
-                    activeScalarAssociation,
-                    clipRange,
-                    activeScalarAnalysis);
-  }
-  if (context.window) {
-    context.window->Render();
-  }
-}
-
-bool MeshRenderer::getActiveScalarGlobalRange(double outRange[2]) const {
-  if (activeScalarName.empty()) {
-    return false;
-  }
-  outRange[0] = activeScalarGlobalRange[0];
-  outRange[1] = activeScalarGlobalRange[1];
-  return true;
-}
-
-const ScalarAnalysis& MeshRenderer::getActiveScalarAnalysis() const {
-  return activeScalarAnalysis;
+  sceneMeshes[index]->Modified();
+  render();
 }
 
 void MeshRenderer::setSharedCatAnalysis(const ScalarAnalysis& shared) {
   sharedCatAnalysis = shared;
-}
-
-vtkLookupTable* MeshRenderer::getActiveLUT() const {
-  // setMapperScalar leaves the table of a mesh without the field as it was, which
-  // may belong to the field shown before.
-  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
-    if (arrayForAssociation(sceneMeshes[index], activeScalarName, activeScalarAssociation)) {
-      return vtkLookupTable::SafeDownCast(mappers[index]->GetLookupTable());
-    }
-  }
-  return nullptr;
-}
-
-void MeshRenderer::getClipRange(double outRange[2]) const {
-  outRange[0] = clipRange[0];
-  outRange[1] = clipRange[1];
-}
-
-bool MeshRenderer::setClipRange(double minValue, double maxValue) {
-  if (activeScalarName.empty()) {
-    return false;
-  }
-
-  if (minValue > maxValue) {
-    return false;
-  }
-
-  minValue = std::max(minValue, activeScalarGlobalRange[0]);
-  maxValue = std::min(maxValue, activeScalarGlobalRange[1]);
-  if (minValue > maxValue) {
-    return false;
-  }
-
-  clipRange[0] = minValue;
-  clipRange[1] = maxValue;
-
-  bool found = false;
-  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
-    if (setMapperScalar(sceneMeshes[index],
-                        mappers[index],
-                        activeScalarName,
-                        activeScalarAssociation,
-                        clipRange,
-                        activeScalarAnalysis)) {
-      found = true;
-    }
-  }
-
-  if (context.window) {
-    context.window->Render();
-  }
-  return found;
-}
-
-// string_view copies only its pointer and length. cppcheck 2.7:
-// https://github.com/cppcheck-opensource/cppcheck/pull/3817
-
-// cppcheck-suppress passedByValue symbolName=id
-bool MeshRenderer::setCategoryPalette(std::string_view id) {
-  if (activeScalarName.empty() || !activeScalarAnalysis.categorical ||
-      !pickPalette(activeScalarAnalysis.coloring, id)) {
-    return false;
-  }
-  return applyFieldColors();
-}
-
-bool MeshRenderer::setCategoryColor(double value, const std::optional<std::array<double, 3>>& rgb) {
-  if (activeScalarName.empty() || !activeScalarAnalysis.categorical) {
-    return false;
-  }
-  recolorCategory(activeScalarAnalysis.coloring, value, rgb);
-  return applyFieldColors();
-}
-
-// string_view copies only its pointer and length. cppcheck 2.7:
-// https://github.com/cppcheck-opensource/cppcheck/pull/3817
-
-// cppcheck-suppress passedByValue symbolName=id
-bool MeshRenderer::setColormap(std::string_view id, bool reversed) {
-  const Colormap* map = findColormap(id);
-  if (!map || activeScalarName.empty() || activeScalarAnalysis.categorical) {
-    return false;
-  }
-  activeScalarAnalysis.colormap.map = map;
-  activeScalarAnalysis.colormap.reversed = reversed;
-  return applyFieldColors();
-}
-
-bool MeshRenderer::setOutOfRange(OutOfRange outside) {
-  if (activeScalarName.empty() || activeScalarAnalysis.categorical) {
-    return false;
-  }
-  activeScalarAnalysis.colormap.outside = outside;
-  return applyFieldColors();
-}
-
-bool MeshRenderer::applyFieldColors() {
-  const std::pair<std::string, FieldAssociation> field{activeScalarName, activeScalarAssociation};
-  colormaps_[field] = activeScalarAnalysis.colormap;
-  categoryColorings_[field] = activeScalarAnalysis.coloring;
-  for (size_t index = 0; index < sceneMeshes.size() && index < mappers.size(); ++index) {
-    setMapperScalar(sceneMeshes[index],
-                    mappers[index],
-                    activeScalarName,
-                    activeScalarAssociation,
-                    clipRange,
-                    activeScalarAnalysis);
-  }
-  if (context.window) {
-    context.window->Render();
-  }
-  return true;
 }
 
 void MeshRenderer::setSurfaceLook(const SurfaceLook& look) {
@@ -1154,17 +993,15 @@ void MeshRenderer::setSurfaceLook(const SurfaceLook& look) {
   surfaceLook_.xrayOpacity = std::clamp(look.xrayOpacity, 0.05, 1.0);
   surfaceLook_.glassDensity = std::clamp(look.glassDensity, 0.05, 1.0);
   applySurfaceLook();
-  if (context.window) {
-    context.window->Render();
-  }
+  render();
 }
 
-void MeshRenderer::buildGlassStages(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
-  glassStages_.assign(meshes.size(), {});
-  for (size_t i = 0; i < meshes.size(); ++i) {
+void MeshRenderer::buildGlassStages() {
+  glassStages_.assign(sceneMeshes.size(), {});
+  for (size_t i = 0; i < sceneMeshes.size(); ++i) {
     GlassStages& stages = glassStages_[i];
-    stages.mesh = meshes[i];
-    auto* poly = vtkPolyData::SafeDownCast(meshes[i]);
+    stages.mesh = sceneMeshes[i];
+    auto* poly = vtkPolyData::SafeDownCast(sceneMeshes[i]);
     if (!poly) {
       continue;
     }
@@ -1206,7 +1043,7 @@ void MeshRenderer::buildGlassStages(const std::vector<vtkSmartPointer<vtkDataSet
     property->SetColor(1.0, 1.0, 1.0);
     property->SetOpacity(0.9);
     property->LightingOff();
-    panelRenderers_[slot.panel]->AddActor(outline);
+    tiles_[slot.tile].renderer->AddActor(outline);
     outlines_.push_back(outline);
   }
 }
@@ -1274,20 +1111,9 @@ void MeshRenderer::applySurfaceLook() {
   if (glass) {
     vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
   }
-  for (const auto& ren : panelRenderers_) {
-    ren->SetUseDepthPeeling(peel ? 1 : 0);
+  for (const Tile& tile : tiles_) {
+    tile.renderer->SetUseDepthPeeling(peel ? 1 : 0);
   }
-}
-
-std::vector<size_t> MeshRenderer::getActiveScalarHistogram(size_t bins) const {
-  if (activeScalarName.empty()) {
-    return std::vector<size_t>(bins, 0);
-  }
-  return computeScalarHistogram(rawMeshPointers(sceneMeshes),
-                                activeScalarName,
-                                activeScalarAssociation,
-                                activeScalarGlobalRange,
-                                bins);
 }
 
 bool MeshRenderer::setVectorGlyphs(const std::string& name, FieldAssociation association) {
@@ -1295,18 +1121,17 @@ bool MeshRenderer::setVectorGlyphs(const std::string& name, FieldAssociation ass
     ren->RemoveActor(actor);
   }
   glyphActors_.clear();
-  if (!name.empty()) {
-    for (size_t i = 0; i < sceneMeshes.size() && i < meshPanel_.size(); ++i) {
-      if (auto actor = makeGlyphActor(sceneMeshes[i], name, association)) {
-        vtkRenderer* ren = panelRenderers_[meshPanel_[i]];
-        ren->AddActor(actor);
-        glyphActors_.emplace_back(ren, actor);
+  for (size_t mesh = 0; !name.empty() && mesh < sceneMeshes.size(); ++mesh) {
+    const vtkSmartPointer<vtkGlyph3D> glyphs = makeGlyphs(sceneMeshes[mesh], name, association);
+    for (size_t actor = 0; glyphs && actor < actorSlots_.size(); ++actor) {
+      if (actorSlots_[actor].mesh == mesh) {
+        vtkRenderer* ren = tiles_[actorSlots_[actor].tile].renderer;
+        glyphActors_.emplace_back(ren, makeGlyphActor(glyphs));
+        ren->AddActor(glyphActors_.back().second);
       }
     }
   }
-  if (context.window) {
-    context.window->Render();
-  }
+  render();
   return !glyphActors_.empty();
 }
 
@@ -1316,197 +1141,23 @@ bool MeshRenderer::setPartVisible(size_t partIndex, bool visible) {
 
 bool MeshRenderer::setPartsVisible(const std::vector<PartVisibilityChange>& changes) {
   if (changes.empty() || std::any_of(changes.begin(), changes.end(), [this](const auto& change) {
-        return change.part >= context.actors.size() || !context.actors[change.part];
+        return change.part >= sceneMeshes.size();
       })) {
     return false;
   }
   for (const auto& change : changes) {
-    context.actors[change.part]->SetVisibility(change.visible ? 1 : 0);
-    if (change.part < outlines_.size() && outlines_[change.part]) {
-      outlines_[change.part]->SetVisibility(
-          change.visible && surfaceLook_.style == SurfaceStyle::Glass ? 1 : 0);
+    for (size_t actor = 0; actor < actorSlots_.size(); ++actor) {
+      if (actorSlots_[actor].mesh != change.part) {
+        continue;
+      }
+      context.actors[actor]->SetVisibility(change.visible ? 1 : 0);
+      if (outlines_[actor]) {
+        outlines_[actor]->SetVisibility(
+            change.visible && surfaceLook_.style == SurfaceStyle::Glass ? 1 : 0);
+      }
     }
   }
   updatePinMarkers();
-  if (context.window) {
-    context.window->Render();
-  }
-  return true;
-}
-
-bool MeshRenderer::getPanelViewport(size_t index, double viewport[4]) const {
-  if (index >= panelRenderers_.size() || !panelRenderers_[index]->GetDraw()) {
-    return false;
-  }
-  panelRenderers_[index]->GetViewport(viewport);
-  return true;
-}
-
-size_t MeshRenderer::getFacetPanelCount() const {
-  return facetPanels.size();
-}
-
-bool MeshRenderer::getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo) const {
-  if (panelIndex >= facetPanels.size()) {
-    return false;
-  }
-  const FacetPanelState& panel = facetPanels[panelIndex];
-  outInfo.title = panel.title;
-  outInfo.association = panel.association;
-  outInfo.hasScalar = panel.hasScalar;
-  outInfo.shown = panelRenderers_[panelIndex]->GetDraw() != 0;
-  outInfo.column = panel.column;
-  outInfo.analysis = panel.analysis;
-  outInfo.globalRange[0] = panel.globalRange[0];
-  outInfo.globalRange[1] = panel.globalRange[1];
-  outInfo.clipRange[0] = panel.clipRange[0];
-  outInfo.clipRange[1] = panel.clipRange[1];
-  outInfo.viewport[0] = panel.viewport[0];
-  outInfo.viewport[1] = panel.viewport[1];
-  outInfo.viewport[2] = panel.viewport[2];
-  outInfo.viewport[3] = panel.viewport[3];
-  return true;
-}
-
-vtkLookupTable* MeshRenderer::getFacetPanelLUT(size_t panelIndex) const {
-  if (panelIndex >= facetPanels.size())
-    return nullptr;
-  return facetPanels[panelIndex].lut;
-}
-
-bool MeshRenderer::setFacetPanelGlobalRange(size_t panelIndex, double minValue, double maxValue) {
-  if (panelIndex >= facetPanels.size() || minValue >= maxValue) {
-    return false;
-  }
-  FacetPanelState& panel = facetPanels[panelIndex];
-  panel.globalRange[0] = minValue;
-  panel.globalRange[1] = maxValue;
-  panel.clipRange[0] = minValue;
-  panel.clipRange[1] = maxValue;
-  return setFacetPanelClipRange(panelIndex, minValue, maxValue);
-}
-
-bool MeshRenderer::setFacetPanelClipRange(size_t panelIndex, double minValue, double maxValue) {
-  if (!clipFacetPanel(panelIndex, minValue, maxValue)) {
-    return false;
-  }
-  if (context.window) {
-    context.window->Render();
-  }
-  return true;
-}
-
-bool MeshRenderer::setFacetClipRange(size_t panelIndex, double minValue, double maxValue) {
-  if (panelIndex >= facetPanels.size() || !facetPanels[panelIndex].hasScalar ||
-      facetPanels[panelIndex].analysis.categorical || !std::isfinite(minValue) ||
-      !std::isfinite(maxValue) || minValue > maxValue) {
-    return false;
-  }
-  const size_t column = facetPanels[panelIndex].column;
-  for (const auto& panel : facetPanels) {
-    if (panel.column == column && panel.hasScalar &&
-        (minValue > panel.globalRange[1] || maxValue < panel.globalRange[0])) {
-      return false;
-    }
-  }
-  for (size_t i = 0; i < facetPanels.size(); ++i) {
-    if (facetPanels[i].column == column && facetPanels[i].hasScalar) {
-      clipFacetPanel(i, minValue, maxValue);
-    }
-  }
-  if (context.window) {
-    context.window->Render();
-  }
-  return true;
-}
-
-bool MeshRenderer::clipFacetPanel(size_t panelIndex, double minValue, double maxValue) {
-  if (panelIndex >= facetPanels.size()) {
-    return false;
-  }
-
-  FacetPanelState& panel = facetPanels[panelIndex];
-  if (!panel.hasScalar) {
-    return false;
-  }
-
-  if (!std::isfinite(minValue) || !std::isfinite(maxValue) || minValue > maxValue) {
-    return false;
-  }
-
-  minValue = std::max(minValue, panel.globalRange[0]);
-  maxValue = std::min(maxValue, panel.globalRange[1]);
-  if (minValue > maxValue) {
-    return false;
-  }
-
-  panel.clipRange[0] = minValue;
-  panel.clipRange[1] = maxValue;
-
-  if (panel.lut) {
-    panel.lut->SetRange(panel.clipRange);
-  }
-  for (const auto& mapper : panel.scalarMappers) {
-    mapper->SetScalarRange(panel.clipRange);
-  }
-  return true;
-}
-
-// string_view copies only its pointer and length. cppcheck 2.7:
-// https://github.com/cppcheck-opensource/cppcheck/pull/3817
-
-// cppcheck-suppress passedByValue symbolName=id
-bool MeshRenderer::setFacetColormap(size_t panelIndex, std::string_view id, bool reversed) {
-  const Colormap* map = findColormap(id);
-  if (!map || panelIndex >= facetPanels.size() || !facetPanels[panelIndex].hasScalar ||
-      facetPanels[panelIndex].analysis.categorical) {
-    return false;
-  }
-  facetPanels[panelIndex].analysis.colormap.map = map;
-  facetPanels[panelIndex].analysis.colormap.reversed = reversed;
-  return redrawFacetColumn(panelIndex);
-}
-
-// string_view copies only its pointer and length. cppcheck 2.7:
-// https://github.com/cppcheck-opensource/cppcheck/pull/3817
-
-// cppcheck-suppress passedByValue symbolName=id
-bool MeshRenderer::setFacetCategoryPalette(size_t panelIndex, std::string_view id) {
-  return panelIndex < facetPanels.size() && facetPanels[panelIndex].lut &&
-         facetPanels[panelIndex].analysis.categorical &&
-         pickPalette(facetPanels[panelIndex].analysis.coloring, id) &&
-         redrawFacetColumn(panelIndex);
-}
-
-bool MeshRenderer::setFacetCategoryColor(size_t panelIndex,
-                                         double value,
-                                         const std::optional<std::array<double, 3>>& rgb) {
-  if (panelIndex >= facetPanels.size() || !facetPanels[panelIndex].lut ||
-      !facetPanels[panelIndex].analysis.categorical) {
-    return false;
-  }
-  recolorCategory(facetPanels[panelIndex].analysis.coloring, value, rgb);
-  return redrawFacetColumn(panelIndex);
-}
-
-bool MeshRenderer::redrawFacetColumn(size_t panelIndex) {
-  const auto& source = facetPanels[panelIndex];
-  for (auto& panel : facetPanels) {
-    if (panel.column != source.column) {
-      continue;
-    }
-    panel.analysis.colormap = source.analysis.colormap;
-    panel.analysis.coloring = source.analysis.coloring;
-    if (!panel.hasScalar) {
-      continue;
-    }
-    panel.lut = buildLookupTable(panel.title, panel.analysis, panel.clipRange);
-    for (const auto& mapper : panel.scalarMappers) {
-      mapper->SetLookupTable(panel.lut);
-    }
-  }
-  if (context.window) {
-    context.window->Render();
-  }
+  render();
   return true;
 }

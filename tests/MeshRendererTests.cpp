@@ -34,32 +34,51 @@
 #include <vtkShaderProperty.h>
 
 namespace {
+// Shows field in the first pane and returns its index among the scene's fields.
+size_t show(MeshRenderer& renderer, const ScalarField& field) {
+  const size_t index = renderer.findField(field).value();
+  const std::vector<size_t>& fields = renderer.panes().front().fields;
+  renderer.showField(
+      0, static_cast<int>(std::find(fields.begin(), fields.end(), index) - fields.begin()));
+  return index;
+}
+
+vtkLookupTable* lutOf(const MeshRenderer& renderer, size_t field) {
+  return renderer.fields()[field].lut;
+}
+
+std::vector<size_t> shownTiles(const MeshRenderer& renderer) {
+  std::vector<size_t> shown;
+  for (size_t tile = 0; tile < renderer.tiles().size(); ++tile) {
+    if (renderer.tiles()[tile].shown) {
+      shown.push_back(tile);
+    }
+  }
+  return shown;
+}
+
+// The tiles shown fill the cells of a cols x rows grid over the window in order.
 bool checkGrid(MeshRenderer& renderer, size_t count, size_t cols, size_t rows) {
-  // The panels, then in the facet grid an empty renderer clearing each empty cell.
+  // A renderer that clears the window, then every pane's pool of tiles.
   auto* renderers = renderer.context.window->GetRenderers();
-  const size_t blanks = renderer.getFacetPanelCount() > 0 ? cols * rows - count : 0;
-  if (static_cast<size_t>(renderers->GetNumberOfItems()) != count + blanks) {
-    std::cerr << "Expected " << count << " panels and " << blanks << " empty cells\n";
+  const std::vector<size_t> shown = shownTiles(renderer);
+  if (static_cast<size_t>(renderers->GetNumberOfItems()) != 1 + renderer.tiles().size() ||
+      shown.size() != count) {
+    std::cerr << "Expected " << count << " tiles shown\n";
     return false;
   }
-  renderers->InitTraversal();
   for (size_t i = 0; i < count; ++i) {
-    vtkRenderer* panel = renderers->GetNextItem();
-    if (!panel) {
-      return false;
-    }
-    const double* viewport = panel->GetViewport();
+    const Tile& tile = renderer.tiles()[shown[i]];
+    const double* viewport = tile.renderer->GetViewport();
     const size_t row = i / cols;
     const double expected[4] = {static_cast<double>(i % cols) / static_cast<double>(cols),
                                 1.0 - static_cast<double>(row + 1) / static_cast<double>(rows),
                                 static_cast<double>(i % cols + 1) / static_cast<double>(cols),
                                 1.0 - static_cast<double>(row) / static_cast<double>(rows)};
-    FacetPanelInfo info;
-    const bool facet = renderer.getFacetPanelInfo(i, info);
     for (size_t j = 0; j < 4; ++j) {
-      if (std::abs(viewport[j] - expected[j]) > 1e-12 ||
-          (facet && info.viewport[j] != viewport[j])) {
-        std::cerr << "Unexpected viewport for panel " << i << " in " << cols << 'x' << rows << '\n';
+      if (std::abs(viewport[j] - expected[j]) > 1e-12 || tile.viewport[j] != viewport[j] ||
+          !tile.renderer->GetDraw()) {
+        std::cerr << "Unexpected viewport for tile " << i << " in " << cols << 'x' << rows << '\n';
         return false;
       }
     }
@@ -118,67 +137,70 @@ bool checkColormaps(MeshRenderer& renderer) {
     }
     mesh->GetPointData()->AddArray(field);
   }
-  renderer.setup({mesh}, {{"ramp", {0}}}, {{0.0, 0.5, 1.0}});
+  renderer.setup({mesh}, {{"ramp", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Single);
 
   const Colormap& rainbow = defaultColormap(ColormapGroup::Sequential);
   const Colormap& viridis = *findColormap("viridis");
-  renderer.setActiveScalar("phase", FieldAssociation::Point);
-  if (renderer.getActiveScalarAnalysis().colormap.map->id != "hue wheel") {
+  const size_t phase = show(renderer, {"phase", FieldAssociation::Point});
+  if (renderer.fields()[phase].analysis.colormap.map->id != "hue wheel") {
     std::cerr << "A phase field does not start on the hue wheel\n";
     return false;
   }
-  renderer.setActiveScalar("lat", FieldAssociation::Point);
-  if (!sameColor(renderer.getActiveLUT(), 255, rainbow.stops.back()) ||
-      !renderer.setColormap("viridis", true) ||
-      !sameColor(renderer.getActiveLUT(), 0, viridis.stops.back()) ||
-      !sameColor(renderer.getActiveLUT(), 255, viridis.stops.front())) {
+  const size_t lat = show(renderer, {"lat", FieldAssociation::Point});
+  vtkMapper* mapper = renderer.context.actors.front()->GetMapper();
+  if (!sameColor(lutOf(renderer, lat), 255, rainbow.stops.back()) ||
+      !renderer.setColormap(lat, "viridis", true) ||
+      !sameColor(lutOf(renderer, lat), 0, viridis.stops.back()) ||
+      !sameColor(lutOf(renderer, lat), 255, viridis.stops.front()) ||
+      mapper->GetLookupTable() != lutOf(renderer, lat)) {
     std::cerr << "Choosing a colormap did not recolor the field\n";
     return false;
   }
-  renderer.setActiveScalar("other", FieldAssociation::Point);
-  if (!sameColor(renderer.getActiveLUT(), 255, rainbow.stops.back())) {
+  const size_t other = show(renderer, {"other", FieldAssociation::Point});
+  if (!sameColor(lutOf(renderer, other), 255, rainbow.stops.back()) ||
+      mapper->GetLookupTable() != lutOf(renderer, other)) {
     std::cerr << "A colormap chosen for one field colors another\n";
     return false;
   }
-  renderer.setActiveScalar("lat", FieldAssociation::Point);
-  if (!sameColor(renderer.getActiveLUT(), 0, viridis.stops.back()) ||
-      !renderer.getActiveScalarAnalysis().colormap.reversed) {
+  show(renderer, {"lat", FieldAssociation::Point});
+  if (mapper->GetLookupTable() != lutOf(renderer, lat) ||
+      !renderer.fields()[lat].analysis.colormap.reversed) {
     std::cerr << "A field lost its colormap after cycling away and back\n";
     return false;
   }
 
   // The clip window is 0..31, so -1 and 32 fall outside it.
-  const auto grayAt = [&renderer](double value) {
+  const auto grayAt = [&renderer](size_t field, double value) {
     double rgb[3];
-    renderer.getActiveLUT()->GetColor(value, rgb);
+    lutOf(renderer, field)->GetColor(value, rgb);
     return nearColor(rgb, kOutOfRangeGray);
   };
-  if (!renderer.setOutOfRange(OutOfRange::Gray) || !grayAt(-1.0) || !grayAt(32.0)) {
-    std::cerr << "Gray did not color values outside the clip window\n";
+  if (!renderer.setOutOfRange(lat, OutOfRange::Gray) || !grayAt(lat, -1.0) || !grayAt(lat, 32.0) ||
+      grayAt(other, -1.0)) {
+    std::cerr << "Gray did not color values outside one field's clip window only\n";
     return false;
   }
-  renderer.setActiveScalar("other", FieldAssociation::Point);
-  if (grayAt(-1.0)) {
-    std::cerr << "Gray chosen for one field applies to another\n";
+  // The window narrows inside the range and stays with the field.
+  if (!renderer.setClipRange(lat, 5.0, 99.0) || renderer.setClipRange(lat, 40.0, 50.0) ||
+      renderer.setClipRange(renderer.fields().size(), 0.0, 1.0)) {
+    std::cerr << "A clip window was not clamped to the field's range\n";
     return false;
   }
-  renderer.setActiveScalar("lat", FieldAssociation::Point);
-  if (!grayAt(32.0) || !renderer.getActiveScalarAnalysis().colormap.reversed) {
-    std::cerr << "A field lost its out-of-range color after cycling away and back\n";
+  show(renderer, {"other", FieldAssociation::Point});
+  show(renderer, {"lat", FieldAssociation::Point});
+  const double* clip = renderer.fields()[lat].clipRange;
+  if (clip[0] != 5.0 || clip[1] != 31.0 || mapper->GetScalarRange()[0] != 5.0 ||
+      !grayAt(lat, 4.0) || !renderer.fields()[lat].analysis.colormap.reversed) {
+    std::cerr << "A field lost its clip window or colors after cycling away and back\n";
     return false;
   }
   return true;
 }
 
 bool depthPeeling(MeshRenderer& renderer, bool on) {
-  vtkRendererCollection* renderers = renderer.context.window->GetRenderers();
-  renderers->InitTraversal();
-  for (vtkRenderer* panel = renderers->GetNextItem(); panel; panel = renderers->GetNextItem()) {
-    if ((panel->GetUseDepthPeeling() != 0) != on) {
-      return false;
-    }
-  }
-  return true;
+  return std::all_of(renderer.tiles().begin(), renderer.tiles().end(), [on](const Tile& tile) {
+    return (tile.renderer->GetUseDepthPeeling() != 0) == on;
+  });
 }
 
 bool glassShaded(vtkActor* actor) {
@@ -197,13 +219,9 @@ bool checkGlassInteraction(MeshRenderer& renderer, vtkRenderWindowInteractor* in
     return false;
   }
   const auto peelsAre = [&renderer](int expected) {
-    auto* panels = renderer.context.window->GetRenderers();
-    vtkCollectionSimpleIterator cookie;
-    panels->InitTraversal(cookie);
-    for (vtkRenderer* panel = panels->GetNextRenderer(cookie); panel;
-         panel = panels->GetNextRenderer(cookie)) {
-      panel->InvokeEvent(vtkCommand::StartEvent);
-      if (panel->GetMaximumNumberOfPeels() != expected) {
+    for (const Tile& tile : renderer.tiles()) {
+      tile.renderer->InvokeEvent(vtkCommand::StartEvent);
+      if (tile.renderer->GetMaximumNumberOfPeels() != expected) {
         return false;
       }
     }
@@ -265,13 +283,13 @@ bool checkSurfaceLook(MeshRenderer& renderer, vtkRenderWindowInteractor* interac
     return false;
   }
   renderer.setSurfaceLook({SurfaceStyle::XRay, 0.4, 0.5});
-  renderer.setActiveScalar("lat", FieldAssociation::Point);
+  show(renderer, {"lat", FieldAssociation::Point});
   if (!actorsAre(VTK_SURFACE, false, 0.4) || !peeling(true) || anyGlassShaded()) {
     std::cerr << "X-ray is not a plain depth-peeled surface at its opacity after cycling fields\n";
     return false;
   }
   renderer.setSurfaceLook({SurfaceStyle::Glass, 0.4, 0.5});
-  renderer.setActiveScalar("other", FieldAssociation::Point);
+  show(renderer, {"other", FieldAssociation::Point});
   if (!actorsAre(VTK_SURFACE, false, 0.5) || !peeling(true) || !anyGlassShaded()) {
     std::cerr << "Glass is not a depth-peeled glass surface at its density after cycling fields\n";
     return false;
@@ -294,15 +312,15 @@ bool checkSurfaceLook(MeshRenderer& renderer, vtkRenderWindowInteractor* interac
     return false;
   }
 
-  // A scene set up later, here a facet grid, takes the look in force.
+  // A scene set up later, here a split pane, takes the look in force.
   renderer.setSurfaceLook({SurfaceStyle::Glass, 0.4, 0.5});
   vtkSmartPointer<vtkDataSet> mesh = renderer.getPrimaryMesh();
-  renderer.setupFacetGrid({mesh}, {{"ramp", {0}}}, {{0.0, 0.5, 1.0}});
+  renderer.setup({mesh}, {{"ramp", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Split);
   const bool everyActorGlass = std::all_of(renderer.context.actors.begin(),
                                            renderer.context.actors.end(),
                                            [](const auto& actor) { return glassShaded(actor); });
   if (!actorsAre(VTK_SURFACE, false, 0.5) || !peeling(true) || !everyActorGlass) {
-    std::cerr << "The facet grid did not take the surface style\n";
+    std::cerr << "The split pane did not take the surface style\n";
     return false;
   }
   return checkGlassInteraction(renderer, interactor);
@@ -419,20 +437,21 @@ bool readsCell6(const std::optional<ProbeHit>& hit, const char* field, double va
 
 bool checkProbe(MeshRenderer& renderer) {
   const vtkSmartPointer<vtkPolyData> mesh = probeSquare();
-  renderer.context.window->SetSize(400, 400);
-  renderer.setup({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}});
+  renderer.context.window->SetSize(800, 400);
+  renderer.setup({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Single);
 
+  renderer.showField(0, -1);
   std::optional<ProbeHit> hit = probeSquareAt(renderer, renderer.getRenderer());
   if (!hit || hit->cell != 6 || !hit->field.empty()) {
     std::cerr << "Probing the plain mesh did not find cell 6 alone\n";
     return false;
   }
-  renderer.setActiveScalar("lat", FieldAssociation::Point);
+  show(renderer, {"lat", FieldAssociation::Point});
   if (!readsCell6(probeSquareAt(renderer, renderer.getRenderer()), "lat", 36.0)) {
     std::cerr << "Probing a point field did not interpolate it in the picked cell\n";
     return false;
   }
-  renderer.setActiveScalar("region", FieldAssociation::Cell);
+  show(renderer, {"region", FieldAssociation::Cell});
   hit = probeSquareAt(renderer, renderer.getRenderer());
   if (!readsCell6(hit, "region", 9.25) || !hit->category || hit->category->label != "9.25") {
     std::cerr << "Probing a cell field did not give the cell's category\n";
@@ -443,25 +462,34 @@ bool checkProbe(MeshRenderer& renderer) {
     return false;
   }
 
-  // Each file's panel reads its own mesh, though the shared camera lines them all up.
-  renderer.setup(
-      {mesh, mesh}, {{"first", {0}}, {"second", {1}}}, {{0.0, 0.5, 1.0}, {0.0, 0.5, 1.0}});
-  auto* second =
-      vtkRenderer::SafeDownCast(renderer.context.window->GetRenderers()->GetItemAsObject(1));
-  hit = second ? probeSquareAt(renderer, second) : std::nullopt;
-  if (!hit || hit->mesh != 1) {
-    std::cerr << "Probing a file's panel did not find that file's mesh\n";
+  // Each file's pane reads its own mesh and the field it shows, though the shared camera
+  // lines the meshes up.
+  renderer.setup({mesh, mesh},
+                 {{"first", {0}}, {"second", {1}}},
+                 {{0.0, 0.5, 1.0}, {0.0, 0.5, 1.0}},
+                 PaneMode::Single);
+  renderer.showField(1, 1);
+  vtkRenderer* first = renderer.getRenderer();
+  vtkRenderer* second = renderer.tiles()[renderer.panes()[1].firstTile].renderer;
+  hit = probeSquareAt(renderer, second);
+  if (!readsCell6(hit, "region", 9.25) || hit->mesh != 1 ||
+      !readsCell6(probeSquareAt(renderer, first), "lat", 36.0)) {
+    std::cerr << "A pane did not probe its own mesh and field\n";
+    return false;
+  }
+  const std::array<double, 2> inSecond = displayPoint(second, 0.6, 0.3);
+  if (renderer.paneAt(inSecond[0], inSecond[1]) != std::optional<size_t>(1) ||
+      renderer.paneAt(-1.0, -1.0)) {
+    std::cerr << "The pane under a point is wrong\n";
     return false;
   }
 
-  // Each facet panel reads its own column's field.
-  renderer.setupFacetGrid({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}});
-  vtkRendererCollection* panels = renderer.context.window->GetRenderers();
-  vtkRenderer* latPanel = panels->GetFirstRenderer();
-  vtkRenderer* regionPanel = vtkRenderer::SafeDownCast(panels->GetItemAsObject(1));
-  if (!regionPanel || !readsCell6(probeSquareAt(renderer, latPanel), "lat", 36.0) ||
-      !readsCell6(probeSquareAt(renderer, regionPanel), "region", 9.25)) {
-    std::cerr << "A facet panel did not probe its own field\n";
+  // Each tile of a split pane reads its own field.
+  renderer.setup({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Split);
+  if (shownTiles(renderer) != std::vector<size_t>{0, 1} ||
+      !readsCell6(probeSquareAt(renderer, renderer.tiles()[0].renderer), "lat", 36.0) ||
+      !readsCell6(probeSquareAt(renderer, renderer.tiles()[1].renderer), "region", 9.25)) {
+    std::cerr << "A tile did not probe its own field\n";
     return false;
   }
   return true;
@@ -471,10 +499,10 @@ bool sameViewport(const double* a, const double* b) {
   return std::equal(a, a + 4, b, [](double x, double y) { return std::abs(x - y) < 1e-12; });
 }
 
-// A page of the facet grid draws its columns in the same cells as every other page, above
-// the pager's inset; the other columns keep their clip range and are neither drawn nor
-// probed, and the camera stays where it was.
-bool checkFacetPages(MeshRenderer& renderer) {
+// A split pane pages its fields through the same tiles, above the pager's strip; fields
+// keep their colors and clip range off the page, and the camera stays where it was. Each
+// pane keeps its own mode and field unless the panes are linked.
+bool checkSplitPages(MeshRenderer& renderer) {
   const vtkSmartPointer<vtkPolyData> mesh = probeSquare();
   vtkDataArray* lat = mesh->GetPointData()->GetArray("lat");
   for (const char* name : {"f1", "f2", "f3"}) {
@@ -483,115 +511,149 @@ bool checkFacetPages(MeshRenderer& renderer) {
     field->SetName(name);
     mesh->GetPointData()->AddArray(field);
   }
-  renderer.context.window->SetSize(800, 600);
-  // Columns lat, f1, f2, f3, then the cell field region.
-  renderer.setupFacetGrid({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}});
-  renderer.setFacetPages(2, 0, 60);
-  const auto shownPanels = [&renderer]() {
-    std::vector<size_t> shown;
-    FacetPanelInfo info;
-    for (size_t i = 0; renderer.getFacetPanelInfo(i, info); ++i) {
-      if (info.shown) {
-        shown.push_back(i);
+  // Two tiles of at least 280 x 220 fit above the strip, so f1, f2, f3, lat and the cell
+  // field region page as two, two and one.
+  renderer.context.window->SetSize(600, 400);
+  LayoutMetrics metrics;
+  metrics.pagerStrip = 60;
+  renderer.setLayoutMetrics(metrics);
+  renderer.setup({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Split);
+  const Pane& pane = renderer.panes().front();
+  const std::vector<Tile>& tiles = renderer.tiles();
+  const auto names = [&renderer, &tiles]() {
+    std::vector<std::string> shown;
+    for (const size_t tile : shownTiles(renderer)) {
+      if (tiles[tile].field) {
+        shown.push_back(renderer.fields()[*tiles[tile].field].field.name);
       }
     }
     return shown;
   };
-  FacetPanelInfo first;
-  FacetPanelInfo second;
-  renderer.getFacetPanelInfo(0, first);
-  renderer.getFacetPanelInfo(1, second);
-  if (renderer.getFacetPageCount() != 3 || shownPanels() != std::vector<size_t>{0, 1} ||
-      first.viewport[1] < 0.1 - 1e-12 || second.viewport[1] < 0.1 - 1e-12) {
-    std::cerr << "The first page did not show the first two columns above the inset\n";
+  double firstCell[4];
+  double secondCell[4];
+  std::copy_n(tiles[0].viewport, 4, firstCell);
+  std::copy_n(tiles[1].viewport, 4, secondCell);
+  if (pane.pageCount() != 3 || pane.pageSize != 2 || tiles.size() != 5 ||
+      names() != std::vector<std::string>{"f1", "f2"} || firstCell[1] < 0.15 - 1e-12 ||
+      secondCell[1] < 0.15 - 1e-12) {
+    std::cerr << "The first page did not show the first two fields above the strip\n";
     return false;
   }
 
   vtkCamera* camera = renderer.getRenderer()->GetActiveCamera();
   camera->Azimuth(30.0);
   const vtkMTimeType cameraTime = camera->GetMTime();
-  renderer.showFacetPage(1);
-  FacetPanelInfo f2;
-  FacetPanelInfo f3;
-  renderer.getFacetPanelInfo(2, f2);
-  renderer.getFacetPanelInfo(3, f3);
-  if (shownPanels() != std::vector<size_t>{2, 3} || !sameViewport(f2.viewport, first.viewport) ||
-      !sameViewport(f3.viewport, second.viewport) || camera->GetMTime() != cameraTime) {
-    std::cerr << "The second page did not show columns 2 and 3 in the same cells\n";
+  renderer.stepPane(0, 1);
+  if (names() != std::vector<std::string>{"f3", "lat"} ||
+      !sameViewport(tiles[0].viewport, firstCell) || !sameViewport(tiles[1].viewport, secondCell) ||
+      camera->GetMTime() != cameraTime) {
+    std::cerr << "The second page did not show the next two fields in the same cells\n";
     return false;
   }
-  auto* panels = renderer.context.window->GetRenderers();
-  auto* f2Panel = vtkRenderer::SafeDownCast(panels->GetItemAsObject(2));
   camera->Azimuth(-30.0);
-  const std::optional<ProbeHit> hit = f2Panel ? probeSquareAt(renderer, f2Panel) : std::nullopt;
-  if (!hit || hit->field != "f2") {
-    std::cerr << "The probe did not read the column shown in the cell\n";
+  const std::optional<ProbeHit> hit = probeSquareAt(renderer, tiles[0].renderer);
+  if (!hit || hit->field != "f3") {
+    std::cerr << "The probe did not read the field shown in the tile\n";
     return false;
   }
 
-  if (!renderer.setFacetColormap(2, "viridis", true) ||
-      renderer.setFacetColormap(2, "missing", false) ||
-      renderer.setFacetColormap(999, "viridis", false) ||
-      renderer.setFacetColormap(4, "viridis", false)) {
-    std::cerr << "Facet colormap selection accepted invalid input or rejected a continuous field\n";
+  const size_t f3 = renderer.findField({"f3", FieldAssociation::Point}).value();
+  const size_t region = renderer.findField({"region", FieldAssociation::Cell}).value();
+  if (!renderer.setColormap(f3, "viridis", true) || renderer.setColormap(f3, "missing", false) ||
+      renderer.setColormap(999, "viridis", false) ||
+      renderer.setColormap(region, "viridis", false) || !renderer.setClipRange(f3, 20.0, 60.0)) {
+    std::cerr << "Colormap selection accepted invalid input or rejected a continuous field\n";
     return false;
   }
-  renderer.setFacetPanelClipRange(2, 20.0, 60.0);
-  renderer.showFacetPage(0);
-  renderer.showFacetPage(1);
-  renderer.getFacetPanelInfo(2, f2);
-  FacetPanelInfo unchanged;
-  renderer.getFacetPanelInfo(3, unchanged);
-  if (f2.analysis.colormap.map != findColormap("viridis") || !f2.analysis.colormap.reversed ||
-      unchanged.analysis.colormap.map == findColormap("viridis")) {
-    std::cerr << "Facet colormap choice was lost or changed another field\n";
-    return false;
-  }
-  const double* lutRange = renderer.getFacetPanelLUT(2)->GetRange();
-  if (f2.clipRange[0] != 20.0 || f2.clipRange[1] != 60.0 || lutRange[0] != 20.0 ||
-      lutRange[1] != 60.0) {
-    std::cerr << "A column's clip range did not survive a page round trip\n";
+  renderer.stepPane(0, -1);
+  renderer.stepPane(0, 1);
+  const SceneField& colored = renderer.fields()[f3];
+  const double* lutRange = colored.lut->GetRange();
+  if (colored.analysis.colormap.map != findColormap("viridis") ||
+      !colored.analysis.colormap.reversed || colored.clipRange[0] != 20.0 ||
+      colored.clipRange[1] != 60.0 || lutRange[0] != 20.0 || lutRange[1] != 60.0 ||
+      renderer.context.actors[tiles[0].firstActor]->GetMapper()->GetLookupTable() != colored.lut ||
+      renderer.fields()[f3 + 1].analysis.colormap.map == findColormap("viridis")) {
+    std::cerr << "A field's colors or clip range did not survive a page round trip\n";
     return false;
   }
 
-  // The last page's one column, and an empty renderer clearing the cell beside it.
-  renderer.showFacetPage(2);
-  auto* blank = vtkRenderer::SafeDownCast(panels->GetItemAsObject(5));
-  if (shownPanels() != std::vector<size_t>{4} || panels->GetNumberOfItems() != 6 || !blank ||
-      blank->GetViewProps()->GetNumberOfItems() != 0 ||
-      !sameViewport(blank->GetViewport(), second.viewport)) {
-    std::cerr << "The last page did not clear its empty cell\n";
+  // The last page's one field leaves the second tile undrawn; the next step wraps.
+  renderer.stepPane(0, 1);
+  if (names() != std::vector<std::string>{"region"} || tiles[1].renderer->GetDraw() ||
+      tiles[1].renderer->GetInteractive()) {
+    std::cerr << "The last page drew a tile without a field\n";
+    return false;
+  }
+  renderer.stepPane(0, 1);
+  if (names() != std::vector<std::string>{"f1", "f2"}) {
+    std::cerr << "Paging did not wrap\n";
     return false;
   }
 
-  // Several files page their columns together, a row each.
-  renderer.setupFacetGrid(
-      {mesh, mesh}, {{"a", {0}}, {"b", {1}}}, {{0.0, 0.5, 1.0}, {0.0, 0.5, 1.0}});
-  renderer.setFacetPages(2, 1, 0);
-  FacetPanelInfo b2;
-  renderer.getFacetPanelInfo(7, b2);
-  if (shownPanels() != std::vector<size_t>{2, 3, 7, 8} || b2.viewport[0] != 0.0 ||
-      b2.viewport[3] != 0.5) {
-    std::cerr << "Paging several files did not show the page's columns in every row\n";
+  // Single shows the page's first field over the whole pane, and steps through plain
+  // geometry too; Split takes up the page holding the field shown.
+  renderer.showField(0, 3);
+  renderer.setPaneMode(0, PaneMode::Single);
+  if (names() != std::vector<std::string>{"f3"} ||
+      !sameViewport(tiles[0].viewport, pane.viewport) || pane.pageCount() != 6) {
+    std::cerr << "A single pane did not show one field over the whole pane\n";
     return false;
   }
-  if (!renderer.setFacetColormap(2, "magma", true)) {
+  renderer.stepPane(0, -3);
+  if (pane.first != -1 || !names().empty() || shownTiles(renderer) != std::vector<size_t>{0}) {
+    std::cerr << "A single pane did not step back to plain geometry\n";
     return false;
   }
-  renderer.getFacetPanelInfo(7, b2);
-  renderer.getFacetPanelInfo(3, unchanged);
-  if (b2.analysis.colormap.map != findColormap("magma") || !b2.analysis.colormap.reversed ||
-      unchanged.analysis.colormap.map == findColormap("magma")) {
-    std::cerr << "Facet colormap did not follow its column across files\n";
+  renderer.showField(0, 3);
+  renderer.setPaneMode(0, PaneMode::Split);
+  if (names() != std::vector<std::string>{"f3", "lat"}) {
+    std::cerr << "Splitting did not show the page holding the field\n";
     return false;
   }
-  renderer.getFacetPanelInfo(7, b2);
-  double viewport[4];
-  if (!renderer.getPanelViewport(7, viewport) || renderer.getPanelViewport(0, viewport) ||
-      renderer.getPanelViewport(999, viewport) || b2.viewport[0] != 0.0) {
-    std::cerr << "The visible panel lookup is wrong\n";
+
+  // Two files: one split, the other single, each on its own field.
+  renderer.context.window->SetSize(1200, 400);
+  renderer.setup(
+      {mesh, mesh}, {{"a", {0}}, {"b", {1}}}, {{0.0, 0.5, 1.0}, {0.0, 0.5, 1.0}}, PaneMode::Single);
+  renderer.setPaneMode(0, PaneMode::Split);
+  renderer.showField(1, 4);
+  const std::vector<Pane>& panes = renderer.panes();
+  if (panes[0].mode != PaneMode::Split || panes[1].mode != PaneMode::Single ||
+      names() != std::vector<std::string>{"f1", "f2", "region"} || panes[0].viewport[2] != 0.5 ||
+      panes[1].viewport[0] != 0.5) {
+    std::cerr << "Panes did not keep their own mode and field\n";
     return false;
   }
+  // A field's colors are the same in every pane that shows it.
+  renderer.showField(1, 0);
+  const size_t f1 = renderer.findField({"f1", FieldAssociation::Point}).value();
+  if (!renderer.setColormap(f1, "magma", true)) {
+    return false;
+  }
+  for (const size_t tile : {panes[0].firstTile, panes[1].firstTile}) {
+    if (renderer.context.actors[tiles[tile].firstActor]->GetMapper()->GetLookupTable() !=
+        renderer.fields()[f1].lut) {
+      std::cerr << "A colormap did not follow its field across panes\n";
+      return false;
+    }
+  }
+  // Linked, the other pane follows to the page holding the field, or to plain geometry
+  // when it shows one field.
+  renderer.setFieldsLinked(true);
+  renderer.showField(1, 3);
+  if (names() != std::vector<std::string>{"f3", "lat", "lat"}) {
+    std::cerr << "A linked pane did not follow to the field\n";
+    return false;
+  }
+  renderer.showField(1, -1);
+  renderer.stepPane(0, 1);
+  if (names() != std::vector<std::string>{"region", "region"}) {
+    std::cerr << "A linked pane did not follow a page step\n";
+    return false;
+  }
+  renderer.setFieldsLinked(false);
+  renderer.setLayoutMetrics({});
   return true;
 }
 
@@ -600,8 +662,8 @@ bool checkFacetPages(MeshRenderer& renderer) {
 bool checkPin(MeshRenderer& renderer) {
   const vtkSmartPointer<vtkPolyData> mesh = probeSquare();
   renderer.context.window->SetSize(400, 400);
-  renderer.setup({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}});
-  renderer.setActiveScalar("lat", FieldAssociation::Point);
+  renderer.setup({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Single);
+  show(renderer, {"lat", FieldAssociation::Point});
   vtkRenderer* panel = renderer.getRenderer();
   const std::optional<ProbeHit> pin = probeSquareAt(renderer, panel);
   if (!readsCell6(pin, "lat", 36.0) || std::abs(pin->position[0] - 0.6) > 1e-3 ||
@@ -609,7 +671,7 @@ bool checkPin(MeshRenderer& renderer) {
     std::cerr << "A probe hit did not give where it lies\n";
     return false;
   }
-  renderer.setActiveScalar("region", FieldAssociation::Cell);
+  show(renderer, {"region", FieldAssociation::Cell});
   if (!readsCell6(renderer.probeAgain(*pin), "region", 9.25)) {
     std::cerr << "A pinned hit did not read the field shown now\n";
     return false;
@@ -650,7 +712,7 @@ bool checkPin(MeshRenderer& renderer) {
   return true;
 }
 
-// probeSquare's fields over 9 frames, read like the XDMF source: only the active array,
+// probeSquare's fields over 9 frames, read like the XDMF source: only its one active array,
 // into whatever dataset it is given, created there when missing. lat grows by 10 per
 // frame, drift is lat times minus the frame, region grows by 1 per frame and frame 5
 // cannot be read.
@@ -683,14 +745,13 @@ public:
     return true;
   }
 
-  bool sampledScalarRange(const std::string& /*scalarName*/,
-                          double /*out*/[2],
-                          int /*maxSamples*/) override {
+  bool
+  sampledScalarRange(const ScalarField& /*field*/, double /*out*/[2], int /*maxSamples*/) override {
     return false;
   }
 
-  void setActiveArray(const std::string& scalarName) override {
-    active_ = scalarName;
+  void setActiveArrays(const std::vector<std::string>& scalarNames) override {
+    active_ = scalarNames.empty() ? std::string() : scalarNames.front();
   }
 
 private:
@@ -743,7 +804,7 @@ bool checkTrace() {
     std::cerr << "No point to trace in cell 6\n";
     return false;
   }
-  series.setActiveArray("lat");
+  series.setActiveArrays({"lat"});
   ProbeTrace trace;
   trace.reset(9);
   const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -769,14 +830,14 @@ bool checkTrace() {
   }
 
   // Another field at the same point: the window streams it, then traces it afresh.
-  series.setActiveArray("drift");
+  series.setActiveArrays({"drift"});
   trace.reset(9);
   readSome({"drift", FieldAssociation::Point}, trace, std::chrono::hours(1));
   if (!sameTrace(trace, {0.0, -36.0, -72.0, -108.0, -144.0, nan, -216.0, -252.0, -288.0})) {
     std::cerr << "A trace did not follow the field to the same point\n";
     return false;
   }
-  series.setActiveArray("region");
+  series.setActiveArrays({"region"});
   trace.reset(9);
   readSome({"region", FieldAssociation::Cell}, trace, std::chrono::hours(1));
   if (!sameTrace(trace, {9.25, 10.25, 11.25, 12.25, 13.25, nan, 15.25, 16.25, 17.25})) {
@@ -796,8 +857,8 @@ bool checkGlass(MeshRenderer& renderer) {
     mesh->GetPoints()->SetPoint(row * 5 + 4, 1.0, row / 4.0, 0.25);
   }
   renderer.setSurfaceLook({SurfaceStyle::Solid, 0.6, 0.3});
-  renderer.setup({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}});
-  renderer.setActiveScalar("lat", FieldAssociation::Point);
+  renderer.setup({mesh}, {{"square", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Single);
+  show(renderer, {"lat", FieldAssociation::Point});
   vtkRenderer* panel = renderer.getRenderer();
   const auto outline = [&renderer, panel]() -> vtkActor* {
     vtkActorCollection* actors = panel->GetActors();
@@ -889,17 +950,33 @@ vtkSmartPointer<vtkPolyData> categoricalCells(const char* name, int categories) 
   return mesh;
 }
 
-// The legend reads its rows from the active table. The first file lacks the field
-// shown second, so its mapper still holds the first field's shorter table.
-bool checkCategoricalTable(MeshRenderer& renderer) {
+// Each file's pane lists and shows its own fields, each drawn with its own table.
+bool checkPaneFields(MeshRenderer& renderer) {
   renderer.setup({categoricalCells("zones", 3), categoricalCells("regions", 5)},
                  {{"a", {0}}, {"b", {1}}},
-                 {{0.0, 0.5, 1.0}, {0.0, 0.5, 1.0}});
-  renderer.setActiveScalar("zones", FieldAssociation::Cell);
-  renderer.setActiveScalar("regions", FieldAssociation::Cell);
-  vtkLookupTable* lut = renderer.getActiveLUT();
-  if (!lut || lut->GetNumberOfAnnotatedValues() != 5 || lut->GetAnnotatedValueIndex(40.0) != 4) {
-    std::cerr << "The active table is not the field's when the first file lacks it\n";
+                 {{0.0, 0.5, 1.0}, {0.0, 0.5, 1.0}},
+                 PaneMode::Single);
+  const size_t zones = renderer.findField({"zones", FieldAssociation::Cell}).value();
+  const size_t regions = renderer.findField({"regions", FieldAssociation::Cell}).value();
+  const std::vector<Pane>& panes = renderer.panes();
+  const auto tableOf = [&renderer](const Pane& pane) {
+    const Tile& tile = renderer.tiles()[pane.firstTile];
+    return renderer.context.actors[tile.firstActor]->GetMapper()->GetLookupTable();
+  };
+  if (panes[0].fields != std::vector<size_t>{zones} ||
+      panes[1].fields != std::vector<size_t>{regions} ||
+      tableOf(panes[0]) != lutOf(renderer, zones) ||
+      tableOf(panes[1]) != lutOf(renderer, regions) ||
+      lutOf(renderer, zones)->GetNumberOfAnnotatedValues() != 3 ||
+      lutOf(renderer, regions)->GetAnnotatedValueIndex(40.0) != 4) {
+    std::cerr << "The panes do not show their own fields side by side\n";
+    return false;
+  }
+  // Stepping one pane leaves the other's field.
+  renderer.stepPane(0, 1);
+  if (panes[0].first != -1 || panes[1].first != 0 ||
+      renderer.context.actors.front()->GetMapper()->GetScalarVisibility()) {
+    std::cerr << "Stepping a pane changed the other, or kept its field\n";
     return false;
   }
   return true;
@@ -919,7 +996,7 @@ bool checkCategoryNaNs(MeshRenderer& renderer) {
     field->SetComponent(static_cast<vtkIdType>(i), 0, values[i]);
   }
   mesh->GetPointData()->AddArray(field);
-  renderer.setup({mesh}, {{"cells", {0}}}, {{0.0, 0.5, 1.0}});
+  renderer.setup({mesh}, {{"cells", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Single);
   const std::array<double, 3> magenta = {1.0, 0.0, 1.0};
   const CategoryPalette& defaults = categoryPalettes().front();
   for (const int count : {0, 1, 2, 20, 21}) {
@@ -934,17 +1011,17 @@ bool checkCategoryNaNs(MeshRenderer& renderer) {
     }
   }
   for (const auto association : {FieldAssociation::Point, FieldAssociation::Cell}) {
-    renderer.setActiveScalar("nan_zones", association);
-    const auto& analysis = renderer.getActiveScalarAnalysis();
+    const size_t zones = show(renderer, {"nan_zones", association});
+    const ScalarAnalysis& analysis = renderer.fields()[zones].analysis;
     if (!analysis.categorical || !analysis.hasNaN ||
         analysis.uniqueValues != std::set<double>{0.0, 1.0} ||
-        renderer.getActiveLUT()->GetNumberOfAnnotatedValues() != 2) {
+        lutOf(renderer, zones)->GetNumberOfAnnotatedValues() != 2) {
       std::cerr << "NaN entered the finite category values\n";
       return false;
     }
-    if (!renderer.setCategoryColor(nan, magenta) ||
-        !categoryColored(renderer.getActiveLUT(), 0.0, defaults.colors[0]) ||
-        !categoryColored(renderer.getActiveLUT(), 1.0, defaults.colors[1])) {
+    if (!renderer.setCategoryColor(zones, nan, magenta) ||
+        !categoryColored(lutOf(renderer, zones), 0.0, defaults.colors[0]) ||
+        !categoryColored(lutOf(renderer, zones), 1.0, defaults.colors[1])) {
       std::cerr << "Recoloring NaN changed a finite category\n";
       return false;
     }
@@ -954,26 +1031,26 @@ bool checkCategoryNaNs(MeshRenderer& renderer) {
       std::cerr << "The mapper did not draw NaN in its chosen color\n";
       return false;
     }
-    if (!renderer.getActiveScalarAnalysis().coloring.customColors.empty()) {
+    if (!analysis.coloring.customColors.empty()) {
       std::cerr << "NaN entered the custom category map\n";
       return false;
     }
-    renderer.clearActiveScalar();
-    renderer.setActiveScalar("nan_zones", association);
+    renderer.showField(0, -1);
+    show(renderer, {"nan_zones", association});
     double rgb[3];
-    renderer.getActiveLUT()->GetColor(nan, rgb);
+    lutOf(renderer, zones)->GetColor(nan, rgb);
     if (!nearColor(rgb, magenta)) {
       std::cerr << "A field lost its NaN color after cycling\n";
       return false;
     }
-    renderer.setCategoryPalette("okabe-ito");
-    renderer.getActiveLUT()->GetColor(nan, rgb);
+    renderer.setCategoryPalette(zones, "okabe-ito");
+    lutOf(renderer, zones)->GetColor(nan, rgb);
     if (!nearColor(rgb, magenta)) {
       std::cerr << "A palette change overwrote the NaN color\n";
       return false;
     }
-    renderer.setCategoryColor(nan, std::nullopt);
-    renderer.getActiveLUT()->GetColor(nan, rgb);
+    renderer.setCategoryColor(zones, nan, std::nullopt);
+    lutOf(renderer, zones)->GetColor(nan, rgb);
     if (!nearColor(rgb, kCategoryNanColor)) {
       std::cerr << "Reset did not restore the NaN color\n";
       return false;
@@ -999,71 +1076,73 @@ bool checkCategoryPalettes(MeshRenderer& renderer) {
   }
   tissue->SetLookupTable(table);
   mesh->GetCellData()->AddArray(tissue);
-  renderer.setup({mesh}, {{"cells", {0}}}, {{0.0, 0.5, 1.0}});
+  renderer.setup({mesh}, {{"cells", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Single);
   const std::array<double, 3> fileColor = {0.8, 0.1, 0.5};
   const CategoryPalette& defaults = categoryPalettes().front();
   const CategoryPalette& okabeIto = *findCategoryPalette("okabe-ito");
 
-  renderer.setActiveScalar("tissue", FieldAssociation::Cell);
+  const size_t tissueField = show(renderer, {"tissue", FieldAssociation::Cell});
   // What a render does first: vtkMapper colors an array with the array's own table.
   renderer.context.actors.front()->GetMapper()->MapScalars(1.0);
-  if (!categoryColored(renderer.getActiveLUT(), 1.0, fileColor)) {
+  if (!categoryColored(lutOf(renderer, tissueField), 1.0, fileColor)) {
     std::cerr << "Default does not draw the colors of the file's table\n";
     return false;
   }
-  if (!renderer.setCategoryPalette("okabe-ito") ||
-      !categoryColored(renderer.getActiveLUT(), 1.0, okabeIto.colors[1])) {
+  if (!renderer.setCategoryPalette(tissueField, "okabe-ito") ||
+      !categoryColored(lutOf(renderer, tissueField), 1.0, okabeIto.colors[1])) {
     std::cerr << "Picking a palette did not recolor the field\n";
     return false;
   }
-  renderer.setActiveScalar("zones", FieldAssociation::Cell);
-  if (!categoryColored(renderer.getActiveLUT(), 10.0, defaults.colors[1])) {
+  const size_t zones = show(renderer, {"zones", FieldAssociation::Cell});
+  if (!categoryColored(lutOf(renderer, zones), 10.0, defaults.colors[1])) {
     std::cerr << "A palette picked for one field colors another\n";
     return false;
   }
   const std::array<double, 3> red = {1.0, 0.0, 0.0};
-  if (!renderer.setCategoryColor(20.0, red) ||
-      !renderer.getActiveScalarAnalysis().coloring.custom ||
-      !categoryColored(renderer.getActiveLUT(), 20.0, red) ||
-      !categoryColored(renderer.getActiveLUT(), 30.0, defaults.colors[3])) {
+  if (!renderer.setCategoryColor(zones, 20.0, red) ||
+      !renderer.fields()[zones].analysis.coloring.custom ||
+      !categoryColored(lutOf(renderer, zones), 20.0, red) ||
+      !categoryColored(lutOf(renderer, zones), 30.0, defaults.colors[3]) ||
+      renderer.setCategoryPalette(renderer.fields().size(), "okabe-ito")) {
     std::cerr << "A recolor did not make the field's colors custom over its palette\n";
     return false;
   }
-  renderer.setActiveScalar("tissue", FieldAssociation::Cell);
-  if (!categoryColored(renderer.getActiveLUT(), 1.0, okabeIto.colors[1])) {
+  show(renderer, {"tissue", FieldAssociation::Cell});
+  vtkMapper* mapper = renderer.context.actors.front()->GetMapper();
+  if (mapper->GetLookupTable() != lutOf(renderer, tissueField) ||
+      !categoryColored(lutOf(renderer, tissueField), 1.0, okabeIto.colors[1])) {
     std::cerr << "A field lost its palette after cycling away and back\n";
     return false;
   }
-  renderer.setActiveScalar("zones", FieldAssociation::Cell);
-  if (!renderer.getActiveScalarAnalysis().coloring.custom ||
-      !categoryColored(renderer.getActiveLUT(), 20.0, red)) {
+  show(renderer, {"zones", FieldAssociation::Cell});
+  if (mapper->GetLookupTable() != lutOf(renderer, zones) ||
+      !categoryColored(lutOf(renderer, zones), 20.0, red)) {
     std::cerr << "A field lost its custom colors after cycling away and back\n";
     return false;
   }
-  renderer.setActiveScalar("tissue", FieldAssociation::Cell);
-  if (!renderer.setCategoryPalette("default") ||
-      !categoryColored(renderer.getActiveLUT(), 1.0, fileColor)) {
+  if (!renderer.setCategoryPalette(tissueField, "default") ||
+      !categoryColored(lutOf(renderer, tissueField), 1.0, fileColor)) {
     std::cerr << "Default lost the file's colors once the field was drawn\n";
     return false;
   }
 
-  // A facet panel draws the file's colors too, and the palette picked for it.
-  renderer.setupFacetGrid({mesh}, {{"cells", {0}}}, {{0.0, 0.5, 1.0}});
-  for (size_t panel = 0; panel < renderer.getFacetPanelCount(); ++panel) {
-    FacetPanelInfo info;
-    if (!renderer.getFacetPanelInfo(panel, info) || info.title != "tissue") {
-      continue;
-    }
-    if (!categoryColored(renderer.getFacetPanelLUT(panel), 1.0, fileColor) ||
-        !renderer.setFacetCategoryPalette(panel, "okabe-ito") ||
-        !categoryColored(renderer.getFacetPanelLUT(panel), 1.0, okabeIto.colors[1])) {
-      std::cerr << "A facet panel does not draw the file's colors or its palette\n";
-      return false;
-    }
-    return true;
+  // A scene set up again still finds the file's colors, and analyzing a field again
+  // keeps the palette picked for it.
+  renderer.setup({mesh}, {{"cells", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Split);
+  const size_t again = renderer.findField({"tissue", FieldAssociation::Cell}).value();
+  if (!categoryColored(lutOf(renderer, again), 1.0, fileColor) ||
+      !renderer.setCategoryPalette(again, "okabe-ito")) {
+    std::cerr << "A split pane does not draw the file's colors\n";
+    return false;
   }
-  std::cerr << "The facet grid has no tissue panel\n";
-  return false;
+  tissue->SetValue(3, 1);
+  renderer.reanalyzeField(again);
+  if (renderer.fields()[again].analysis.uniqueValues.size() != 3 ||
+      !categoryColored(lutOf(renderer, again), 1.0, okabeIto.colors[1])) {
+    std::cerr << "Analyzing a field again lost its palette\n";
+    return false;
+  }
+  return true;
 }
 
 // The picker reports a hit on a triangle with two coincident vertices, as at a mesh's
@@ -1120,7 +1199,7 @@ int main() {
   const std::vector<std::array<double, 3>> colors{{0.0, 0.5, 1.0}};
   const std::vector<MeshGroup> groups{{"one", {0}}, {"two", {0}}, {"three", {0}}};
   window->SetSize(2000, 1200);
-  renderer.setup(meshes, groups, colors);
+  renderer.setup(meshes, groups, colors, PaneMode::Single);
   if (!checkGrid(renderer, 3, 3, 1)) {
     return 1;
   }
@@ -1148,8 +1227,9 @@ int main() {
     return 1;
   }
 
+  // One file's fields split into a tile each.
   window->SetSize(2000, 1200);
-  renderer.setupFacetGrid(meshes, {groups.front()}, colors);
+  renderer.setup(meshes, {groups.front()}, colors, PaneMode::Split);
   if (!checkGrid(renderer, 3, 3, 1)) {
     return 1;
   }
@@ -1159,21 +1239,25 @@ int main() {
     return 1;
   }
 
-  renderer.setupFacetGrid(meshes, groups, colors);
+  // Three files stacked, each split into its own 2 x 2 grid of three fields.
+  renderer.setup(meshes, groups, colors, PaneMode::Split);
   window->SetSize(600, 1600);
   renderer.refitCameraIfUntouched();
-  if (!checkGrid(renderer, 9, 3, 3)) {
+  const double* corner = renderer.tiles().front().viewport;
+  if (shownTiles(renderer).size() != 9 || corner[0] != 0.0 || corner[2] != 0.5 ||
+      corner[3] != 1.0 || std::abs(corner[1] - 5.0 / 6.0) > 1e-12) {
+    std::cerr << "Split panes did not each lay out their own tiles\n";
     return 1;
   }
-  renderer.setup(meshes, {groups.front()}, colors);
+  renderer.setup(meshes, {groups.front()}, colors, PaneMode::Single);
   if (!checkGrid(renderer, 1, 1, 1)) {
     return 1;
   }
   return checkColormaps(renderer) && checkSurfaceLook(renderer, interactor) && checkHistogram() &&
                  checkNonFiniteValues() && checkProbe(renderer) && checkGlass(renderer) &&
-                 checkCategoricalTable(renderer) && checkCategoryNaNs(renderer) &&
+                 checkPaneFields(renderer) && checkCategoryNaNs(renderer) &&
                  checkCategoryPalettes(renderer) && checkDegeneratePick() && checkPin(renderer) &&
-                 checkTrace() && checkFacetPages(renderer)
+                 checkTrace() && checkSplitPages(renderer)
              ? 0
              : 1;
 }

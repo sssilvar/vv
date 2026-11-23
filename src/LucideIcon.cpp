@@ -362,6 +362,12 @@ QPainterPath lucidePath(Lucide icon) {
     add("M9 3v18");
     add("M15 3v18");
     break;
+  case Lucide::LayoutGrid:
+    for (const QPointF corner :
+         {QPointF(3.0, 3.0), QPointF(14.0, 3.0), QPointF(14.0, 14.0), QPointF(3.0, 14.0)}) {
+      path.addRoundedRect(QRectF(corner, QSizeF(7.0, 7.0)), 1.0, 1.0);
+    }
+    break;
   case Lucide::Globe:
     path.addEllipse(QPointF(12.0, 12.0), 10.0, 10.0);
     add("M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20");

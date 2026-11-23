@@ -2,6 +2,10 @@
 
 ### Added
 
+- Each file opens in a pane of its own with its own field, pager and legend, so one file can show `potential` while the one beside it shows `dispersion`. A pane switches between single view (one field at a time) and split view (a tile per field, paged when they do not fit) from the grid button on its pager, a right click on its mesh or **T**, independently of the other panes.
+- **Link fields across files**, in a pane's right-click menu and the command palette, makes panes follow each other's field; files that carry the same fields start linked.
+- Layers, vector glyphs, slice views and time-series playback work in split view. A time series beside other files plays in its own pane, and frames read the fields that pane shows.
+
 - Open NIfTI volumes (`.nii`, `.nii.gz`) in axial, coronal and sagittal slice views beside the 3-D view: grayscale with window/level, a linked crosshair, zoom and pan, and label maps as outlines or filled masks (**M**) that match their per-label surfaces in 3-D.
 - `-o`, `--overlay` shows all files together in one view instead of side by side.
 - Linux ASan/UBSan regression checks, an advisory Clazy trial and a manual unused-function audit; analyzer runs include configured tests.
@@ -29,6 +33,10 @@
 - Click a mesh with Probe on to pin it: a marker and the card stay at the point, and in a time series the playback bar's timeline traces the shown field there across every frame, filled a few frames at a time while vv stays responsive.
 
 ### Changed
+
+- **Breaking:** `-e`, `--explode` no longer builds a matrix of files by fields: it is an alias of the new `-s`, `--split`, which opens every file's pane in split view over its own fields. Files lacking a field no longer show a `No field` panel.
+- **Breaking:** with several files, Space, the Color panel and the command palette act on the active pane (the last one clicked or paged) instead of every file at once; unlinked panes no longer step together.
+- A field's clip window now stays with the field while another one shows, like its colormap and palette. The playback bar sits under the panes instead of over them.
 
 - Linux sanitizer tests use raster xcb windows and Openbox under Xvfb, avoid unused GLX initialization, and keep full allocation backtraces with an initialization-only Fontconfig exception instead of blanket library suppressions.
 - Viewer regression tests discover new test methods automatically, with CPU benchmarks enabled separately through `VV_RUN_BENCHMARKS=1`.

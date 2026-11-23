@@ -30,7 +30,7 @@ namespace {
 
 struct Args {
   std::vector<std::string> meshfiles;
-  bool explode_view = false;
+  bool split = false;
   bool overlay = false;
   bool common_cat_lut = false;
   bool annotate = false;
@@ -64,9 +64,10 @@ Args parseArgs(int argc, char* argv[]) {
   cxxopts::Options options("vv", "A Qt-based mesh viewer");
   options.positional_help("<meshfile> [<meshfile2> ...]");
   options.add_options()(
-      "e,explode",
-      "One panel per scalar; with several files, a row per file and a column per scalar",
-      cxxopts::value<bool>(args.explode_view))(
+      "s,split",
+      "Open every file split into a tile per scalar instead of one scalar at a time",
+      cxxopts::value<bool>(args.split))(
+      "e,explode", "Same as --split", cxxopts::value<bool>(args.split))(
       "o,overlay",
       "Show all files together in one view instead of side by side",
       cxxopts::value<bool>(args.overlay))(
@@ -178,12 +179,8 @@ int main(int argc, char* argv[]) try {
     std::cerr << loadResult.error << '\n';
     return loadResult.exitCode;
   }
-  const bool volumes = !loadResult.volumes.empty();
-  if (volumes && args.explode_view) {
-    std::cerr << "Warning: slice views are not shown with --explode.\n";
-  }
   // The slice views share one 3-D view, which shows every file.
-  if (args.overlay || (volumes && !args.explode_view)) {
+  if (args.overlay || !loadResult.volumes.empty()) {
     overlayGroups(loadResult.meshes);
   }
 
@@ -201,14 +198,12 @@ int main(int argc, char* argv[]) try {
 
   ViewerOptions viewerOptions;
   viewerOptions.fixedRange = args.range;
-  viewerOptions.explodeView = args.explode_view;
+  viewerOptions.mode = args.split ? PaneMode::Split : PaneMode::Single;
   viewerOptions.commonCatLut = args.common_cat_lut;
   const bool singleFile = args.meshfiles.size() == 1;
   const bool timeSeries = loadResult.temporal && loadResult.temporal->playable();
-  viewerOptions.annotate = args.annotate && !args.explode_view && singleFile && !timeSeries;
-  if (args.annotate && args.explode_view) {
-    std::cerr << "Warning: --annotate is not supported with --explode; ignoring --annotate.\n";
-  } else if (args.annotate && !singleFile) {
+  viewerOptions.annotate = args.annotate && singleFile && !timeSeries;
+  if (args.annotate && !singleFile) {
     std::cerr << "Warning: --annotate needs a single mesh file; ignoring --annotate.\n";
   } else if (args.annotate && timeSeries) {
     std::cerr << "Warning: --annotate is not supported for a time series; ignoring --annotate.\n";

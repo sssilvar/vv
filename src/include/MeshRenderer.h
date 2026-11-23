@@ -3,8 +3,8 @@
 #include "ScalarVizUtils.h"
 #include "SurfaceStyle.h"
 
+#include <algorithm>
 #include <array>
-#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -20,6 +20,7 @@
 #include <vtkSmartPointer.h>
 
 class vtkCallbackCommand;
+class vtkCamera;
 class vtkCellPicker;
 class vtkStaticCellLocator;
 class vtkFeatureEdges;
@@ -28,25 +29,68 @@ class vtkPolyDataNormals;
 
 struct RendererContext {
   vtkSmartPointer<vtkRenderWindow> window;
-  std::vector<vtkSmartPointer<vtkActor>> actors;
-  std::vector<std::array<double, 3>> colorsHex;
+  std::vector<vtkSmartPointer<vtkActor>> actors; // a tile's, one per mesh of its pane
 };
 
 struct PartVisibilityChange {
-  size_t part;
+  size_t part; // index into the meshes given to setup
   bool visible;
 };
 
-struct FacetPanelInfo {
-  std::string title; // scalar name; empty for a geometry-only column
-  FieldAssociation association = FieldAssociation::Point;
-  bool hasScalar = false; // false: the panel's file lacks this column's scalar
-  bool shown = true;      // on the page shown
-  size_t column = 0;      // panels in one column share a scalar and its color range
+// A scalar field of the scene and how every tile showing it draws it. Files that carry
+// a field of the same name and association share it, with its range and colors.
+struct SceneField {
+  ScalarField field;
+  ScalarAnalysis analysis;
   double globalRange[2] = {0.0, 1.0};
   double clipRange[2] = {0.0, 1.0};
+  vtkSmartPointer<vtkLookupTable> lut;
+};
+
+// How a pane shows its file's fields: one at a time, or a page of them side by side.
+enum class PaneMode { Single, Split };
+
+// One viewport of a pane: the pane's meshes colored by one field, or by their part colors.
+struct Tile {
+  vtkSmartPointer<vtkRenderer> renderer;
+  size_t pane = 0;
+  size_t firstActor = 0;       // its actors follow in context.actors, one per pane mesh
+  std::optional<size_t> field; // index into the scene's fields while shown
+  bool shown = false;
   double viewport[4] = {0.0, 0.0, 1.0, 1.0};
-  ScalarAnalysis analysis;
+};
+
+// A file's share of the window. Its tiles are a fixed pool: Single draws the first, Split
+// as many as its page holds, and paging hands them other fields.
+struct Pane {
+  std::vector<size_t> meshes; // indices into the meshes given to setup
+  std::vector<size_t> fields; // the scene fields its meshes carry, in the scene's order
+  PaneMode mode = PaneMode::Single;
+  int first = -1;       // position in fields of the first one shown; -1 is plain geometry
+  size_t pageSize = 1;  // fields a page shows
+  size_t firstTile = 0; // its tiles follow in the renderer's tiles
+  size_t tileCount = 0;
+  double viewport[4] = {0.0, 0.0, 1.0, 1.0};
+
+  // Single pages through plain geometry, then each field; Split through pages of fields.
+  size_t pageCount() const {
+    return mode == PaneMode::Single ? fields.size() + 1 : (fields.size() + pageSize - 1) / pageSize;
+  }
+  size_t page() const {
+    return mode == PaneMode::Single ? static_cast<size_t>(first + 1)
+                                    : static_cast<size_t>(first) / pageSize;
+  }
+  // Fields the page shown holds.
+  size_t shownCount() const {
+    return first < 0 ? 0 : std::min(pageSize, fields.size() - static_cast<size_t>(first));
+  }
+};
+
+// What the window's overlays take from the panes, in logical pixels.
+struct LayoutMetrics {
+  double pixelRatio = 1.0; // window pixels per logical pixel
+  int bottomInset = 0;     // under every pane, for a bar along the window's bottom
+  int pagerStrip = 0;      // under a Split pane's tiles, for its pager
 };
 
 // A categorical field's legend row: its label and color.
@@ -57,8 +101,8 @@ struct ProbeCategory {
 
 // The mesh cell under a point of the window and the probed field's value there.
 struct ProbeHit {
-  size_t panel = 0;
-  size_t mesh = 0; // index into the meshes given to setup or setupFacetGrid
+  size_t tile = 0;
+  size_t mesh = 0; // index into the meshes given to setup
   vtkIdType cell = -1;
   std::string field;                     // empty when no field is probed on this mesh
   double value = 0.0;                    // NaN where the field has no value
@@ -67,70 +111,89 @@ struct ProbeHit {
   std::array<double, 3> position{};      // the hit in world coordinates
 };
 
+// Draws the meshes in panes, one per group (file), laid out in an adaptive grid under a
+// single camera. Each pane shows its own fields in its own mode.
 class MeshRenderer {
 public:
   MeshRenderer();
   ~MeshRenderer();
   void setRenderContext(vtkRenderWindow* externalWindow,
                         vtkRenderWindowInteractor* externalInteractor);
-  // One viewport per group (file), all sharing a single camera; a lone group
-  // fills the window.
+  // A pane per group, or one for every mesh without groups, each in mode showing its
+  // first field. A pane without fields stays Single.
   void setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
              const std::vector<MeshGroup>& groups,
-             const std::vector<std::array<double, 3>>& colorsHex);
-  void start();
-  // A volume's slice planes, drawn with the meshes in the single view; bounds widen
-  // what the camera frames. Call after setup; does not render.
+             const std::vector<std::array<double, 3>>& colorsHex,
+             PaneMode mode);
+  // A volume's slice planes, drawn with the meshes in every tile; bounds widen what the
+  // camera frames. Call after setup; does not render.
   void addImagePlanes(const std::vector<vtkSmartPointer<vtkImageSlice>>& planes,
                       const std::array<double, 6>& bounds);
 
   // When set, all categorical scalars use this shared LUT instead of per-scalar detection.
-  // Pass an empty ScalarAnalysis to clear.
+  // Pass an empty ScalarAnalysis to clear. Takes effect at the next setup.
   void setSharedCatAnalysis(const ScalarAnalysis& shared);
 
-  bool setActiveScalar(const std::string& scalarName, FieldAssociation association);
-  // The analysis setActiveScalar would give the field: its categories, or the shared
-  // ones, with the category colors and colormap picked for it.
-  ScalarAnalysis analyzeField(const std::string& scalarName, FieldAssociation association) const;
-  // Color the primary mesh by a categorical array using an externally-owned LUT,
-  // bypassing per-scalar analysis so the value→color mapping stays fixed while
-  // the array is edited (annotation mode).
-  void colorByFixedCategorical(const std::string& scalarName,
-                               FieldAssociation association,
-                               vtkLookupTable* lut,
-                               const double range[2]);
-  void clearActiveScalar();
-  // Re-apply the current scalar mapping after the specified mesh data changed
-  // (e.g. a new playback frame was shallow-copied in), keeping the color range
-  // fixed, then re-render.
+  const std::vector<SceneField>& fields() const {
+    return fields_;
+  }
+  const std::vector<Pane>& panes() const {
+    return panes_;
+  }
+  const std::vector<Tile>& tiles() const {
+    return tiles_;
+  }
+  std::optional<size_t> findField(const ScalarField& field) const;
+
+  // Every setter below lays out or recolors what changed, then renders.
+  void setPaneMode(size_t pane, PaneMode mode);
+  // The pane's field at position, or plain geometry for -1 in a Single pane; a Split pane
+  // shows the page holding it.
+  void showField(size_t pane, int position);
+  // The pane's page that many pages on, wrapping both ways.
+  void stepPane(size_t pane, int step);
+  // While linked, showing a field in one pane shows it in every pane whose file has it,
+  // and plain geometry in every Single pane; modes stay each pane's own.
+  void setFieldsLinked(bool linked) {
+    linked_ = linked;
+  }
+  bool fieldsLinked() const {
+    return linked_;
+  }
+  // Lays the panes out again without rendering.
+  void setLayoutMetrics(const LayoutMetrics& metrics);
+  // The pane at display point (x, y), in pixels from the window's bottom-left.
+  std::optional<size_t> paneAt(double x, double y) const;
+
+  // The clip window of a continuous field, inside its full range.
+  bool setClipRange(size_t field, double minValue, double maxValue);
+  // A field's full range, which its clip window then spans: a range fixed across a time
+  // series or pinned by the user rather than the loaded values'.
+  bool setFieldRange(size_t field, double minValue, double maxValue);
+  bool setColormap(size_t field, std::string_view id, bool reversed);
+  // How a continuous field draws values outside its clip window.
+  bool setOutOfRange(size_t field, OutOfRange outside);
+  // The palette of this id for a categorical field, or its custom colors again for
+  // kCustomPaletteId.
+  bool setCategoryPalette(size_t field, std::string_view id);
+  // Recolor one category, which makes the field's colors custom; std::nullopt gives it its
+  // palette color back (see recolorCategory). NaN changes the separate missing-value color.
+  bool
+  setCategoryColor(size_t field, double value, const std::optional<std::array<double, 3>>& rgb);
+  // The field's histogram over its full range (see computeScalarHistogram).
+  std::vector<size_t> fieldHistogram(size_t field, size_t bins) const;
+  // Analyze a field again after its values changed, keeping its colormap and palette.
+  void reanalyzeField(size_t field);
+
+  // Color the primary mesh in the first tile by a categorical cell array through an
+  // externally owned LUT, so the value-to-color mapping stays fixed while the array is
+  // edited (annotation mode). A null lut gives the tile its field back.
+  void setLabelColoring(const std::string& arrayName, vtkLookupTable* lut, const double range[2]);
+  // Draw again after the specified mesh's data changed (e.g. a new playback frame),
+  // keeping every color range.
   void refreshAfterDataChange(size_t mesh);
-  // Override the active scalar's color range (used to fix a stable range across a
-  // whole time series instead of the current frame's range).
-  void setActiveScalarRange(double minValue, double maxValue);
-  bool getActiveScalarGlobalRange(double outRange[2]) const;
-  const ScalarAnalysis& getActiveScalarAnalysis() const;
-  // The table of the first mesh that has the active field; nullptr without one.
-  vtkLookupTable* getActiveLUT() const;
-  void getClipRange(double outRange[2]) const;
-  bool setClipRange(double minValue, double maxValue);
-  // Draw the active categorical field with the palette of this id, or its custom colors
-  // again for kCustomPaletteId; the analysis reports it. Kept for that field, so it
-  // survives cycling away and back.
-  bool setCategoryPalette(std::string_view id);
-  // Recolor one category of the active categorical field, which makes its colors custom;
-  // std::nullopt gives it its palette color back (see recolorCategory). Kept like the palette.
-  // NaN changes the separate missing-value color, leaving finite categories alone.
-  bool setCategoryColor(double value, const std::optional<std::array<double, 3>>& rgb);
-  // Draw the active continuous field with the colormap of this id, reversed or
-  // not; the analysis reports it. Like category colors, it is kept for that field.
-  bool setColormap(std::string_view id, bool reversed);
-  // How the active continuous field draws values outside the clip window; kept
-  // for that field with its colormap.
-  bool setOutOfRange(OutOfRange outside);
-  // The active field's histogram over its full range (see computeScalarHistogram).
-  std::vector<size_t> getActiveScalarHistogram(size_t bins) const;
-  // How every mesh is drawn, in the single view and in every facet panel; kept for
-  // meshes set up later.
+
+  // How every mesh is drawn in every tile; kept for meshes set up later.
   void setSurfaceLook(const SurfaceLook& look);
   const SurfaceLook& getSurfaceLook() const {
     return surfaceLook_;
@@ -138,160 +201,111 @@ public:
   bool setPartVisible(size_t partIndex, bool visible);
   // Validate the whole batch before applying it; render once after all actors agree.
   bool setPartsVisible(const std::vector<PartVisibilityChange>& changes);
-  // False for a hidden panel or invalid index. Leaves viewport unchanged in that case.
-  bool getPanelViewport(size_t index, double viewport[4]) const;
-  size_t getFacetPanelCount() const;
-  bool getFacetPanelInfo(size_t panelIndex, FacetPanelInfo& outInfo) const;
-  vtkLookupTable* getFacetPanelLUT(size_t panelIndex) const;
-  bool setFacetPanelClipRange(size_t panelIndex, double minValue, double maxValue);
-  bool setFacetClipRange(size_t panelIndex, double minValue, double maxValue);
-  // Apply to every scalar panel in this field column, retaining clip ranges.
-  bool setFacetColormap(size_t panelIndex, std::string_view id, bool reversed);
-  // Apply palettes and category colors to the selected panel's entire field column.
-  bool setFacetCategoryPalette(size_t panelIndex, std::string_view id);
-  bool setFacetCategoryColor(size_t panelIndex,
-                             double value,
-                             const std::optional<std::array<double, 3>>& rgb);
-  // Widen or narrow a panel's full range (what the colorbar ends show), not just
-  // the clip window inside it — used to pin one range across every panel.
-  bool setFacetPanelGlobalRange(size_t panelIndex, double minValue, double maxValue);
 
   // Draw a short line glyph per cell (or per point) tangent to the surface, one
   // for each tuple of a 3-component array, on every mesh that has it. Empty name
   // removes the glyphs.
   bool setVectorGlyphs(const std::string& name, FieldAssociation association);
 
-  // One panel per (group, scalar): an adaptive grid of scalars for a single group,
-  // otherwise a matrix with a row per group and a column per scalar.
-  void setupFacetGrid(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
-                      const std::vector<MeshGroup>& groups,
-                      const std::vector<std::array<double, 3>>& colorsHex);
-  void startFacetGrid();
-  // Shows the facet grid's scalars pageSize at a time (0 shows them all), page being the
-  // one shown, in the window above bottomInset pixels while there are several pages. The
-  // panels of other pages keep their state and are not drawn. Lays out without rendering.
-  void setFacetPages(size_t pageSize, size_t page, int bottomInset);
-  // Another page of the same size, under the same camera; renders.
-  void showFacetPage(size_t page);
-  size_t getFacetPage() const {
-    return page_;
-  }
-  size_t getFacetPageSize() const;
-  size_t getFacetPageCount() const;
-  size_t getFacetColumnCount() const {
-    return facetColumns_;
-  }
-  // Reflow adaptive panels, then re-frame unless the camera moved
-  // since vv last framed it; the first fit can run before the widget is laid out.
+  // Lay out again, then re-frame unless the camera moved since vv last framed it; the
+  // first fit can run before the widget is laid out.
   void refitCameraIfUntouched();
   // Back to the opening view: looking down -Z with +Y up, every mesh framed.
   void resetCamera();
+  // Move the camera toward (factor > 1) or away from its focal point; renders.
+  void dolly(double factor);
 
   // The mesh cell at display point (x, y), in pixels from the window's bottom-left,
-  // with the active field's value there, or the facet panel's own field with -e.
-  // std::nullopt off every mesh. Picks without rendering.
+  // with the value there of the field its tile shows. std::nullopt off every mesh.
+  // Picks without rendering.
   std::optional<ProbeHit> probe(double x, double y);
   // What probe reads at a hit it gave before, from the meshes as they are now (a later
-  // frame or another field). std::nullopt for a mesh or panel it does not show.
+  // frame or another field). std::nullopt for a mesh or tile it does not show.
   std::optional<ProbeHit> probeAgain(const ProbeHit& hit) const;
-  // Read each visible panel at the same world position, preserving its own field and cell.
+  // Read each shown tile at the same world position, preserving its own field and cell.
   // Equal cell IDs in different files do not establish correspondence.
   std::vector<ProbeHit> matchingProbes(const ProbeHit& hit);
   // Markers at matching hits; std::nullopt removes them. Renders.
   void setPinMarker(const std::optional<ProbeHit>& hit);
   // Where a hit probe gave shows now, in display pixels from the window's bottom-left;
-  // std::nullopt when it lies behind the camera.
+  // std::nullopt when it lies behind the camera or its tile is not shown.
   std::optional<std::array<double, 2>> displayPosition(const ProbeHit& hit) const;
 
   RendererContext context;
 
-  // Annotation mode needs the renderer (for picking) and the primary dataset; it
-  // is only enabled for a single file, so the first panel holds that dataset.
+  // Annotation mode needs the first tile's renderer (for picking) and the primary
+  // dataset; it is only enabled for a single file in a Single pane.
   vtkRenderer* getRenderer() const {
-    return renderer;
+    return tiles_.empty() ? nullptr : tiles_.front().renderer.Get();
   }
   vtkDataSet* getPrimaryMesh() const {
     return sceneMeshes.empty() ? nullptr : sceneMeshes.front();
   }
 
 private:
-  vtkSmartPointer<vtkRenderer> renderer;
-  vtkSmartPointer<vtkRenderWindowInteractor> interactor;
-  std::vector<vtkSmartPointer<vtkDataSet>> sceneMeshes;
-  std::vector<vtkSmartPointer<vtkDataSetMapper>> mappers;
-  std::string activeScalarName;
-  FieldAssociation activeScalarAssociation = FieldAssociation::Point;
-  ScalarAnalysis activeScalarAnalysis;
-  ScalarAnalysis sharedCatAnalysis; // non-empty = override per-scalar detection
-  std::map<std::pair<std::string, FieldAssociation>, CategoryColoring> categoryColorings_;
-  std::map<std::pair<std::string, FieldAssociation>, ColormapChoice> colormaps_;
-  double activeScalarGlobalRange[2] = {0.0, 1.0};
-  double clipRange[2] = {0.0, 1.0};
-  bool applyFieldColors(); // keeps the field's colormap and coloring for it, and redraws
-  bool redrawFacetColumn(size_t panelIndex);
-  bool clipFacetPanel(size_t panelIndex, double minValue, double maxValue);
-  SurfaceLook surfaceLook_;
-  void applySurfaceLook(); // to context.actors and the panel renderers, without rendering
+  struct ActorSlot {
+    size_t mesh = 0; // index into the meshes given to setup
+    size_t tile = 0;
+  };
   // Glass's stages for one mesh, made with the scene; they run only while Glass shows.
   struct GlassStages {
     vtkSmartPointer<vtkDataSet> mesh;
     vtkSmartPointer<vtkPolyDataNormals> normals; // smooth shading; polydata without strips
     vtkSmartPointer<vtkFeatureEdges> borders;    // open borders; polydata only
   };
+  struct PinMarker {
+    size_t actor;
+    vtkSmartPointer<vtkActor> marker;
+  };
+  struct LabelColoring {
+    ScalarField field;
+    vtkSmartPointer<vtkLookupTable> lut;
+    double range[2] = {0.0, 1.0};
+  };
+
+  void analyze(SceneField& field) const; // its categories, range and table
+  void buildTiles(const std::vector<std::array<double, 3>>& colorsHex);
+  void frameScene();
+  // The panes' grid, each pane's page and tiles, and the field every shown tile draws.
+  void layout();
+  void colorTile(size_t tile);
+  void colorActor(size_t actor);
+  bool recolor(size_t field); // after its table or range changed; renders
+  bool retable(size_t field); // after its colormap or category colors changed; renders
+  void render();
+  void applySurfaceLook(); // to every actor and tile, without rendering
+  // After the scene's actors exist and before applySurfaceLook.
+  void buildGlassStages();
+  void applyGlass(size_t actorIndex, bool on);
+  // Fills hit's field, value and category from data, the mesh the actor draws.
+  void readProbedField(ProbeHit& hit, size_t actorIndex, vtkDataSet* data) const;
+  void updatePinMarkers();
+
+  std::vector<vtkSmartPointer<vtkDataSet>> sceneMeshes;
+  std::vector<SceneField> fields_;
+  std::vector<Pane> panes_;
+  std::vector<Tile> tiles_;
+  std::vector<vtkSmartPointer<vtkDataSetMapper>> mappers; // parallel to context.actors
+  std::vector<ActorSlot> actorSlots_;                     // parallel to context.actors
+  // Clears the whole window before the tiles draw, so a cell no tile covers keeps
+  // nothing an earlier layout drew there.
+  vtkSmartPointer<vtkRenderer> background_;
+  vtkSmartPointer<vtkCamera> camera_; // shared by every tile
+  vtkSmartPointer<vtkRenderWindowInteractor> interactor;
+  LayoutMetrics metrics_;
+  bool linked_ = false;
+  ScalarAnalysis sharedCatAnalysis; // non-empty = override per-scalar detection
+  std::optional<LabelColoring> labels_;
+  SurfaceLook surfaceLook_;
   std::vector<GlassStages> glassStages_; // by mesh index
   // Parallel to context.actors; null where the mesh has no borders stage.
   std::vector<vtkSmartPointer<vtkActor>> outlines_;
-  // After the scene's actors exist and before applySurfaceLook.
-  void buildGlassStages(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes);
-  void applyGlass(size_t actorIndex, bool on);
-  // Viewports sharing one camera; clipping follows the bounds of every mesh so
-  // a panel never clips geometry another panel frames.
-  void buildPanels(size_t count, size_t cols);
-  void layoutPanels();
-  void finishPanels(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes);
-
-  std::vector<vtkSmartPointer<vtkRenderer>> panelRenderers_;
-  struct ActorSlot {
-    size_t mesh = 0;  // index into the meshes given to setup or setupFacetGrid
-    size_t panel = 0; // index into panelRenderers_
-  };
-  std::vector<ActorSlot> actorSlots_; // parallel to context.actors
   vtkSmartPointer<vtkCellPicker> probePicker_;
-  // Fills hit's field, value and category from data, the mesh the actor draws.
-  void readProbedField(ProbeHit& hit, size_t actorIndex, vtkDataSet* data) const;
   std::vector<vtkSmartPointer<vtkStaticCellLocator>> probeLocators_;
-  struct PinMarker {
-    size_t actor;
-    size_t panel;
-    vtkSmartPointer<vtkActor> marker;
-  };
-  void updatePinMarkers();
   std::vector<PinMarker> pinMarkers_;
   std::optional<ProbeHit> markerHit_;
-  bool adaptiveGrid_ = true;
-  std::vector<size_t> meshPanel_; // mesh index -> panel (normal mode)
-  size_t facetColumns_ = 0;       // scalars of the facet grid; 0 in the single view
-  size_t pageSize_ = 0;           // facet columns per page; 0 for all
-  size_t page_ = 0;
-  int bottomInset_ = 0; // window pixels below the panels while there are several pages
-  // Empty cells of the page shown, which would keep what an earlier page drew there.
-  std::vector<vtkSmartPointer<vtkRenderer>> blanks_;
   double sceneBounds_[6] = {0.0, 1.0, 0.0, 1.0, 0.0, 1.0};
   vtkSmartPointer<vtkCallbackCommand> clipCb_;
   vtkMTimeType fittedCameraMTime_ = 0;
-  struct FacetPanelState {
-    std::vector<vtkSmartPointer<vtkDataSetMapper>> scalarMappers; // share lut
-    vtkSmartPointer<vtkLookupTable> lut;
-    std::string title; // scalar name, which buildLookupTable keys on
-    FieldAssociation association = FieldAssociation::Point;
-    bool hasScalar = false;
-    size_t column = 0;
-    ScalarAnalysis analysis;
-    double globalRange[2] = {0.0, 1.0};
-    double clipRange[2] = {0.0, 1.0};
-    double viewport[4] = {0.0, 0.0, 1.0, 1.0};
-  };
-  std::vector<FacetPanelState> facetPanels;
   std::vector<std::pair<vtkRenderer*, vtkSmartPointer<vtkActor>>> glyphActors_;
-  bool embeddedMode = false;
 };

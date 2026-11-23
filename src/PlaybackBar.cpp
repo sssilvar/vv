@@ -427,7 +427,7 @@ PlaybackBar::PlaybackBar(std::vector<double> times, QWidget* parent) : QWidget(p
   auto* switcherRow = new QHBoxLayout(switcher_);
   switcherRow->setContentsMargins(0, 0, 0, 0);
   switcherRow->setSpacing(0);
-  pager_ = new ScalarPager(PagerPlacement::PlaybackBar, switcher_);
+  pager_ = new ScalarPager(PagerPlacement::PlaybackBar, SpaceAction::PlayPause, switcher_);
   switcherRow->addWidget(pager_);
   switcherRow->addSpacing(10);
   switcherRow->addWidget(divider(switcher_));
