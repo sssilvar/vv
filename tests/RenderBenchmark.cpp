@@ -132,7 +132,13 @@ int main(int argc, char** argv) {
                                  fields.end(),
                                  renderer.findField({"voltage", FieldAssociation::Point}).value());
     renderer.showField(0, static_cast<int>(std::distance(fields.begin(), shown)));
+    auto* tileRenderer = renderer.getRenderer();
+    auto* camera = tileRenderer ? tileRenderer->GetActiveCamera() : nullptr;
     auto* style = vtkInteractorStyle::SafeDownCast(interactor->GetInteractorStyle());
+    if (!tileRenderer || !camera || !style) {
+      std::cerr << "The benchmark scene needs a renderer, camera and interactor style\n";
+      return 1;
+    }
     for (const SurfaceStyle look : {SurfaceStyle::Solid, SurfaceStyle::XRay, SurfaceStyle::Glass}) {
       const char* name = look == SurfaceStyle::Glass  ? "glass"
                          : look == SurfaceStyle::XRay ? "xray"
@@ -152,7 +158,7 @@ int main(int argc, char** argv) {
         std::vector<double> samples;
         for (int frame = 0; frame < 23; ++frame) {
           if (moving) {
-            renderer.getRenderer()->GetActiveCamera()->Azimuth(0.5);
+            camera->Azimuth(0.5);
           }
           const auto start = std::chrono::steady_clock::now();
           window->Render();
@@ -164,7 +170,7 @@ int main(int argc, char** argv) {
             samples.push_back(ms);
           }
         }
-        const int peelingBudget = renderer.getRenderer()->GetMaximumNumberOfPeels();
+        const int peelingBudget = tileRenderer->GetMaximumNumberOfPeels();
         vtkNew<vtkWindowToImageFilter> capture;
         capture->SetInput(window);
         capture->ReadFrontBufferOff();
@@ -182,17 +188,17 @@ int main(int argc, char** argv) {
         }
         validFrames = validFrames && nonempty;
         std::sort(samples.begin(), samples.end());
-        measurements.append(QJsonObject{
-            {"files", files},
-            {"style", name},
-            {"moving", moving},
-            {"samples", static_cast<int>(samples.size())},
-            {"style_change_ms", styleMs},
-            {"nonempty_frame", nonempty},
-            {"peel_budget", peelingBudget},
-            {"p50_ms", (samples[9] + samples[10]) / 2.0},
-            {"p95_ms", samples[18]},
-            {"depth_peeling", renderer.getRenderer()->GetLastRenderingUsedDepthPeeling() != 0}});
+        measurements.append(
+            QJsonObject{{"files", files},
+                        {"style", name},
+                        {"moving", moving},
+                        {"samples", static_cast<int>(samples.size())},
+                        {"style_change_ms", styleMs},
+                        {"nonempty_frame", nonempty},
+                        {"peel_budget", peelingBudget},
+                        {"p50_ms", (samples[9] + samples[10]) / 2.0},
+                        {"p95_ms", samples[18]},
+                        {"depth_peeling", tileRenderer->GetLastRenderingUsedDepthPeeling() != 0}});
         if (moving) {
           style->StopState();
         }

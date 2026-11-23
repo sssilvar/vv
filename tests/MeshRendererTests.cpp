@@ -540,7 +540,12 @@ bool checkSplitPages(MeshRenderer& renderer) {
     return false;
   }
 
-  vtkCamera* camera = renderer.getRenderer()->GetActiveCamera();
+  auto* firstRenderer = renderer.getRenderer();
+  auto* camera = firstRenderer ? firstRenderer->GetActiveCamera() : nullptr;
+  if (!camera) {
+    std::cerr << "The first tile has no active camera\n";
+    return false;
+  }
   camera->Azimuth(30.0);
   const vtkMTimeType cameraTime = camera->GetMTime();
   renderer.stepPane(0, 1);
@@ -1208,7 +1213,12 @@ int main() {
   if (!checkGrid(renderer, 3, 2, 2)) {
     return 1;
   }
-  auto* camera = renderer.getRenderer()->GetActiveCamera();
+  auto* firstRenderer = renderer.getRenderer();
+  auto* camera = firstRenderer ? firstRenderer->GetActiveCamera() : nullptr;
+  if (!camera) {
+    std::cerr << "The first tile has no active camera\n";
+    return 1;
+  }
   camera->Azimuth(25.0);
   const auto cameraTime = camera->GetMTime();
   window->SetSize(600, 1600);
