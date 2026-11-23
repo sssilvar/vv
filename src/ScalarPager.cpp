@@ -10,6 +10,7 @@
 #include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <algorithm>
 
 namespace {
