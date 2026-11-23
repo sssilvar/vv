@@ -443,7 +443,7 @@ void MeshRenderer::frameScene() {
   if (bbox.IsValid()) {
     bbox.GetBounds(sceneBounds_);
   }
-  getRenderer()->ResetCamera(sceneBounds_);
+  tiles_.front().renderer->ResetCamera(sceneBounds_);
   fittedCameraMTime_ = camera_->GetMTime();
 
   // The interactor style resets clipping from the tile under the cursor only;
@@ -485,7 +485,7 @@ void MeshRenderer::addImagePlanes(const std::vector<vtkSmartPointer<vtkImageSlic
     bbox.AddBounds(sceneBounds_);
   }
   bbox.GetBounds(sceneBounds_);
-  getRenderer()->ResetCamera(sceneBounds_);
+  tiles_.front().renderer->ResetCamera(sceneBounds_);
   fittedCameraMTime_ = camera_->GetMTime();
 }
 
@@ -570,7 +570,7 @@ void MeshRenderer::refitCameraIfUntouched() {
   if (tiles_.empty() || camera_->GetMTime() != fittedCameraMTime_) {
     return;
   }
-  getRenderer()->ResetCamera(sceneBounds_);
+  tiles_.front().renderer->ResetCamera(sceneBounds_);
   fittedCameraMTime_ = camera_->GetMTime();
 }
 
@@ -582,7 +582,7 @@ void MeshRenderer::resetCamera() {
   camera_->SetPosition(0.0, 0.0, 1.0);
   camera_->SetFocalPoint(0.0, 0.0, 0.0);
   camera_->SetViewUp(0.0, 1.0, 0.0);
-  getRenderer()->ResetCamera(sceneBounds_);
+  tiles_.front().renderer->ResetCamera(sceneBounds_);
   fittedCameraMTime_ = camera_->GetMTime();
   render();
 }
