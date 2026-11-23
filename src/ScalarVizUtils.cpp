@@ -29,7 +29,7 @@ struct PickedSubCell : vtkCellPicker {
   using vtkCellPicker::SubCellFromCell;
 };
 
-// Where an array keeps the table its file attached once setMapperScalar takes it off.
+// Where an array keeps the table its file attached once mapScalar takes it off.
 vtkInformationObjectBaseKey* fileTableKey() {
   // VTK's key manager deletes keys at exit.
   static auto* const key =
@@ -455,19 +455,17 @@ vtkSmartPointer<vtkLookupTable> createColormapLookupTable(const ColormapChoice& 
   return lut;
 }
 
-bool setMapperScalar(vtkDataSet* mesh,
-                     vtkDataSetMapper* mapper,
-                     const std::string& scalarName,
-                     FieldAssociation association,
-                     const double range[2],
-                     const ScalarAnalysis& analysis) {
-  if (!mesh || !mapper) {
-    return false;
-  }
-
-  vtkDataArray* arr = arrayForAssociation(mesh, scalarName, association);
-  if (!arr) {
-    mapper->ScalarVisibilityOff();
+bool mapScalar(vtkDataSet* mesh,
+               vtkDataSetMapper* mapper,
+               const ScalarField& field,
+               bool categorical,
+               vtkLookupTable* lut,
+               const double range[2]) {
+  vtkDataArray* arr = mapper ? arrayForAssociation(mesh, field.name, field.association) : nullptr;
+  if (!arr || arr->GetNumberOfComponents() != 1) {
+    if (mapper) {
+      mapper->ScalarVisibilityOff();
+    }
     return false;
   }
   if (vtkLookupTable* attached = arr->GetLookupTable()) {
@@ -475,23 +473,49 @@ bool setMapperScalar(vtkDataSet* mesh,
     arr->SetLookupTable(nullptr);
   }
 
-  const bool cell = (association == FieldAssociation::Cell);
+  // By name, not the mesh's active scalars: tiles draw different fields of one mesh.
+  const bool cell = field.association == FieldAssociation::Cell;
   if (cell) {
-    mesh->GetCellData()->SetActiveScalars(scalarName.c_str());
     mapper->SetScalarModeToUseCellFieldData();
   } else {
-    mesh->GetPointData()->SetActiveScalars(scalarName.c_str());
     mapper->SetScalarModeToUsePointFieldData();
   }
-  mapper->SelectColorArray(scalarName.c_str());
+  mapper->SelectColorArray(field.name.c_str());
   mapper->SetColorModeToMapScalars();
   mapper->ScalarVisibilityOn();
   // Interpolate the scalar across the triangle and map afterwards, so nodal
   // fields get a smooth colormap-correct gradient. Cell fields (and indexed
   // categorical LUTs) must stay flat per cell.
-  mapper->SetInterpolateScalarsBeforeMapping((!cell && !analysis.categorical) ? 1 : 0);
-
-  mapper->SetLookupTable(buildLookupTable(scalarName, analysis, range));
+  mapper->SetInterpolateScalarsBeforeMapping((!cell && !categorical) ? 1 : 0);
+  mapper->SetLookupTable(lut);
   mapper->SetScalarRange(range);
   return true;
+}
+
+std::vector<ScalarField> collectFields(const std::vector<vtkDataSet*>& meshes, int components) {
+  std::set<std::string> pointNames;
+  std::set<std::string> cellNames;
+  const auto collect = [components](vtkDataSetAttributes* data, std::set<std::string>& names) {
+    for (int i = 0; data && i < data->GetNumberOfArrays(); ++i) {
+      vtkDataArray* array = data->GetArray(i);
+      if (array && array->GetName() && array->GetNumberOfComponents() == components) {
+        names.insert(array->GetName());
+      }
+    }
+  };
+  for (vtkDataSet* mesh : meshes) {
+    if (mesh) {
+      collect(mesh->GetPointData(), pointNames);
+      collect(mesh->GetCellData(), cellNames);
+    }
+  }
+  std::vector<ScalarField> fields;
+  fields.reserve(pointNames.size() + cellNames.size());
+  for (const std::string& name : pointNames) {
+    fields.push_back({name, FieldAssociation::Point});
+  }
+  for (const std::string& name : cellNames) {
+    fields.push_back({name, FieldAssociation::Cell});
+  }
+  return fields;
 }

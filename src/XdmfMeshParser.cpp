@@ -1,5 +1,6 @@
 #include "XdmfMeshParser.h"
 
+#include "ScalarField.h"
 #include "TemporalSource.h"
 
 #include <algorithm>
@@ -29,7 +30,7 @@ struct AttributeSeries {
   std::vector<std::string> datasets;
 };
 
-// Cap for the in-memory frame cache of the array being played. 302 steps of a
+// Cap for the in-memory frame cache of the arrays being played. 302 steps of a
 // 23k-node field is ~28 MB, so typical runs cache whole and loop without I/O.
 constexpr size_t kCacheBudgetBytes = size_t{512} * 1024 * 1024;
 
@@ -102,49 +103,35 @@ public:
     timeValues_ = std::move(times);
   }
 
-  void setActiveArray(const std::string& scalarName) override {
-    if (scalarName == active_) {
+  void setActiveArrays(const std::vector<std::string>& scalarNames) override {
+    if (scalarNames == active_) {
       return;
     }
-    active_ = scalarName;
-    cache_.assign(attributes_.count(scalarName) != 0 ? timeValues_.size() : 0, {});
+    active_ = scalarNames;
+    cache_.clear();
+    for (const std::string& name : active_) {
+      if (attributes_.count(name) != 0) {
+        cache_[name].resize(timeValues_.size());
+      }
+    }
     cachedBytes_ = 0;
   }
 
   bool readStepInto(int step, vtkDataSet* target) override {
-    const AttributeSeries* series = seriesFor(active_);
-    if (!series || !target || step < 0 || step >= steps()) {
+    if (!target || step < 0 || step >= steps()) {
       return false;
     }
-    vtkFloatArray* array = ensureArray(target, *series);
-    if (!array) {
-      return false;
+    bool any = false;
+    for (const std::string& name : active_) {
+      any = readArray(name, static_cast<size_t>(step), target) || any;
     }
-    const size_t index = static_cast<size_t>(step);
-    const size_t count = static_cast<size_t>(array->GetNumberOfTuples());
-    float* out = array->GetPointer(0);
-
-    if (index < cache_.size() && !cache_[index].empty()) {
-      std::memcpy(out, cache_[index].data(), count * sizeof(float));
-    } else {
-      if (!file_->read(series->datasets[index], H5T_NATIVE_FLOAT, out, hsize_t(count))) {
-        return false;
-      }
-      const size_t bytes = count * sizeof(float);
-      if (index < cache_.size() && cachedBytes_ + bytes <= kCacheBudgetBytes) {
-        cache_[index].assign(out, out + count);
-        cachedBytes_ += bytes;
-      }
-    }
-    // Only the scalar values changed: touching the array (not the geometry) keeps
-    // the point/cell buffers off the per-frame upload path.
-    array->Modified();
-    return true;
+    return any;
   }
 
-  bool sampledScalarRange(const std::string& scalarName, double out[2], int maxSamples) override {
+  bool sampledScalarRange(const ScalarField& field, double out[2], int maxSamples) override {
+    const std::string& scalarName = field.name;
     const AttributeSeries* series = seriesFor(scalarName);
-    if (!series || steps() <= 0) {
+    if (!series || series->cell != (field.association == FieldAssociation::Cell) || steps() <= 0) {
       return false;
     }
     const size_t count = static_cast<size_t>(series->cell ? numCells_ : numPoints_);
@@ -158,9 +145,9 @@ public:
           sampleCount == 1
               ? 0
               : static_cast<int>((static_cast<long long>(s) * (steps() - 1)) / (sampleCount - 1));
-      const bool cached =
-          static_cast<size_t>(step) < cache_.size() && !cache_[static_cast<size_t>(step)].empty();
-      const float* data = cached ? cache_[static_cast<size_t>(step)].data() : buffer.data();
+      const std::vector<float>* frame = cachedFrame(scalarName, static_cast<size_t>(step));
+      const bool cached = frame && !frame->empty();
+      const float* data = cached ? frame->data() : buffer.data();
       if (!cached && !file_->read(series->datasets[static_cast<size_t>(step)],
                                   H5T_NATIVE_FLOAT,
                                   buffer.data(),
@@ -186,19 +173,54 @@ private:
     return it == attributes_.end() ? nullptr : &it->second;
   }
 
-  vtkFloatArray* ensureArray(vtkDataSet* target, const AttributeSeries& series) const {
+  // The cache slot of an active array's frame; nullptr for an array that is not streamed.
+  std::vector<float>* cachedFrame(const std::string& name, size_t step) {
+    const auto frames = cache_.find(name);
+    return frames == cache_.end() || step >= frames->second.size() ? nullptr
+                                                                   : &frames->second[step];
+  }
+
+  bool readArray(const std::string& name, size_t step, vtkDataSet* target) {
+    const AttributeSeries* series = seriesFor(name);
+    vtkFloatArray* array = series ? ensureArray(target, name, *series) : nullptr;
+    if (!array) {
+      return false;
+    }
+    const size_t count = static_cast<size_t>(array->GetNumberOfTuples());
+    float* out = array->GetPointer(0);
+    std::vector<float>* frame = cachedFrame(name, step);
+    if (frame && !frame->empty()) {
+      std::memcpy(out, frame->data(), count * sizeof(float));
+    } else {
+      if (!file_->read(series->datasets[step], H5T_NATIVE_FLOAT, out, hsize_t(count))) {
+        return false;
+      }
+      const size_t bytes = count * sizeof(float);
+      if (frame && cachedBytes_ + bytes <= kCacheBudgetBytes) {
+        frame->assign(out, out + count);
+        cachedBytes_ += bytes;
+      }
+    }
+    // Only the scalar values changed: touching the array (not the geometry) keeps
+    // the point/cell buffers off the per-frame upload path.
+    array->Modified();
+    return true;
+  }
+
+  vtkFloatArray*
+  ensureArray(vtkDataSet* target, const std::string& name, const AttributeSeries& series) const {
     vtkDataSetAttributes* data = series.cell
                                      ? static_cast<vtkDataSetAttributes*>(target->GetCellData())
                                      : static_cast<vtkDataSetAttributes*>(target->GetPointData());
     if (!data) {
       return nullptr;
     }
-    auto* existing = vtkFloatArray::SafeDownCast(data->GetArray(active_.c_str()));
+    auto* existing = vtkFloatArray::SafeDownCast(data->GetArray(name.c_str()));
     if (existing) {
       return existing;
     }
     vtkNew<vtkFloatArray> array;
-    array->SetName(active_.c_str());
+    array->SetName(name.c_str());
     array->SetNumberOfComponents(1);
     array->SetNumberOfTuples(series.cell ? numCells_ : numPoints_);
     data->AddArray(array);
@@ -207,8 +229,8 @@ private:
 
   std::shared_ptr<H5File> file_;
   std::map<std::string, AttributeSeries> attributes_;
-  std::string active_;
-  std::vector<std::vector<float>> cache_;
+  std::vector<std::string> active_;
+  std::map<std::string, std::vector<std::vector<float>>> cache_; // by array, then step
   size_t cachedBytes_ = 0;
   vtkIdType numPoints_ = 0;
   vtkIdType numCells_ = 0;
@@ -439,13 +461,15 @@ std::vector<vtkSmartPointer<vtkDataSet>> XdmfMeshParser::parse(const std::string
 
   auto source = std::make_shared<XdmfTemporalSource>(file, attributes, times, numPoints, numCells);
   // Materialise every attribute's first frame so the scalar picker lists them all;
-  // playback then streams only whichever one is active.
+  // playback then streams only those on view.
+  std::vector<std::string> names;
   for (const auto& [name, series] : attributes) {
-    source->setActiveArray(name);
-    source->readStepInto(0, mesh);
+    names.push_back(name);
   }
+  source->setActiveArrays(names);
+  source->readStepInto(0, mesh);
   const std::string& first = attributes.begin()->first;
-  source->setActiveArray(first);
+  source->setActiveArrays({first});
   if (attributes.begin()->second.cell) {
     mesh->GetCellData()->SetActiveScalars(first.c_str());
   } else {

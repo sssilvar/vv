@@ -20,6 +20,7 @@ enum class Lucide {
   Palette,
   Box,
   Grid3x3,
+  LayoutGrid,
   Globe,
   ScanEye,
   Gem,

@@ -1,10 +1,14 @@
 #include "ColorBarWidget.h"
 #include "ColorPanel.h"
 #include "LayersPanel.h"
+#include "PanelLabel.h"
+#include "PlaybackBar.h"
 #include "ProbeCard.h"
+#include "ScalarPager.h"
 #include "SliceView.h"
 #include "TemporalSource.h"
 #include "TestMeshes.h"
+#include "ToolRail.h"
 #include "ViewerWindow.h"
 #include "VolumeScene.h"
 
@@ -12,6 +16,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
@@ -37,6 +42,7 @@
 #include <vtkImageData.h>
 #include <vtkIntArray.h>
 #include <vtkLookupTable.h>
+#include <vtkMapper.h>
 #include <vtkMatrix4x4.h>
 #include <vtkNew.h>
 #include <vtkObjectFactory.h>
@@ -46,6 +52,48 @@
 #include <vtkRenderer.h>
 #include <vtkRendererCollection.h>
 #include <vtkXMLPolyDataReader.h>
+
+#if __has_include(<vtkHDFWriter.h>)
+#include <vtkHDFWriter.h>
+#include <vtkInformation.h>
+#include <vtkInformationVector.h>
+#include <vtkPolyDataAlgorithm.h>
+#include <vtkStreamingDemandDrivenPipeline.h>
+
+class TemporalTestMesh : public vtkPolyDataAlgorithm {
+public:
+  static TemporalTestMesh* New();
+
+protected:
+  TemporalTestMesh() {
+    SetNumberOfInputPorts(0);
+  }
+
+  int RequestInformation(vtkInformation*,
+                         vtkInformationVector**,
+                         vtkInformationVector* output) override {
+    const double times[] = {0.0, 1.0};
+    auto* info = output->GetInformationObject(0);
+    info->Set(vtkStreamingDemandDrivenPipeline::TIME_STEPS(), times, 2);
+    info->Set(vtkStreamingDemandDrivenPipeline::TIME_RANGE(), times, 2);
+    return 1;
+  }
+
+  int RequestData(vtkInformation*, vtkInformationVector**, vtkInformationVector* output) override {
+    auto* info = output->GetInformationObject(0);
+    const double time = info->Get(vtkStreamingDemandDrivenPipeline::UPDATE_TIME_STEP());
+    const auto fixture = testMeshes(1);
+    auto* mesh = vtkPolyData::GetData(output);
+    mesh->ShallowCopy(fixture.meshes.meshes.front());
+    auto* values = mesh->GetPointData()->GetArray("voltage");
+    for (vtkIdType i = 0; i < values->GetNumberOfTuples(); ++i) {
+      values->SetTuple1(i, values->GetTuple1(i) + 100.0 * time);
+    }
+    return 1;
+  }
+};
+vtkStandardNewMacro(TemporalTestMesh);
+#endif
 
 // Count submissions independently of GPU speed or the presence of a window server.
 class CountingWindow : public vtkGenericOpenGLRenderWindow {
@@ -73,23 +121,32 @@ public:
     for (vtkIdType i = 0; i < values->GetNumberOfTuples(); ++i) {
       values->SetComponent(i, 0, values->GetComponent(i, 0) + step);
     }
+    for (int i = target->GetPointData()->GetNumberOfArrays(); i-- > 0;) {
+      const char* name = target->GetPointData()->GetArrayName(i);
+      if (std::find(active_.begin(), active_.end(), name) == active_.end()) {
+        target->GetPointData()->RemoveArray(i);
+      }
+    }
     return true;
   }
-  bool sampledScalarRange(const std::string& name, double out[2], int) override {
-    auto* values = source_->GetPointData()->GetArray(name.c_str());
-    if (!values) {
+  bool sampledScalarRange(const ScalarField& field, double out[2], int) override {
+    auto* values = source_->GetPointData()->GetArray(field.name.c_str());
+    if (!values || std::find(active_.begin(), active_.end(), field.name) == active_.end()) {
       return false;
     }
     values->GetRange(out);
-    if (name == "voltage") {
+    if (field.name == "voltage") {
       out[1] += steps() - 1;
     }
     return true;
   }
-  void setActiveArray(const std::string&) override {}
+  void setActiveArrays(const std::vector<std::string>& names) override {
+    active_ = names;
+  }
 
 private:
   vtkSmartPointer<vtkPolyData> source_;
+  std::vector<std::string> active_;
 };
 
 class ViewerTests : public QObject {
@@ -101,9 +158,39 @@ class ViewerTests : public QObject {
         std::unique_ptr<ViewerWindow>(new ViewerWindow(std::move(load), options, window, nullptr));
     result->vtkWidget_->resize(1200, 800);
     window->SetSize(1200, 800);
+    result->onViewportResize();
     result->renderer_.resetCamera();
-    result->layoutOverlays();
     return result;
+  }
+
+  // The legends of the tiles showing the field of this name, in tile order.
+  static std::vector<ColorBarWidget*> legendsOf(const ViewerWindow& view, const std::string& name) {
+    std::vector<ColorBarWidget*> legends;
+    const auto& tiles = view.renderer_.tiles();
+    for (size_t tile = 0; tile < tiles.size(); ++tile) {
+      if (tiles[tile].field && view.renderer_.fields()[*tiles[tile].field].field.name == name) {
+        legends.push_back(view.legends_[tile]);
+      }
+    }
+    return legends;
+  }
+
+  static size_t fieldNamed(const ViewerWindow& view, const std::string& name) {
+    const auto& fields = view.renderer_.fields();
+    const auto found = std::find_if(fields.begin(), fields.end(), [&name](const auto& field) {
+      return field.field.name == name;
+    });
+    return static_cast<size_t>(std::distance(fields.begin(), found));
+  }
+
+  // The widget point showing world point (x, y, 0) in the first tile.
+  static QPointF widgetPointAt(const ViewerWindow& view, double x, double y) {
+    vtkRenderer* renderer = view.renderer_.getRenderer();
+    renderer->SetWorldPoint(x, y, 0.0, 1.0);
+    renderer->WorldToDisplay();
+    const double* display = renderer->GetDisplayPoint();
+    const double scale = view.vtkWidget_->devicePixelRatioF();
+    return {display[0] / scale, view.vtkWidget_->height() - display[1] / scale};
   }
 
   // A zero-filled voxel grid in voxel coordinates.
@@ -120,14 +207,8 @@ class ViewerTests : public QObject {
   }
 
   static void paint(ViewerWindow& view) {
-    vtkRenderer* renderer = view.renderer_.getRenderer();
-    renderer->SetWorldPoint(0.33, 0.27, 0.0, 1.0);
-    renderer->WorldToDisplay();
-    const double* display = renderer->GetDisplayPoint();
-    const double scale = view.vtkWidget_->devicePixelRatioF();
     view.strokeValue_ = 1;
-    view.paintAtWidgetPos(
-        QPointF(display[0] / scale, view.vtkWidget_->height() - display[1] / scale), 1);
+    view.paintAtWidgetPos(widgetPointAt(view, 0.33, 0.27), 1);
   }
 
 private slots:
@@ -204,11 +285,11 @@ private slots:
     load.volumes.push_back(volume(VolumeKind::Intensity, VTK_FLOAT, {4, 4, 4}, {}));
     auto view = viewer(window, std::move(load), {});
     QCOMPARE(view->sliceViews_.size(), size_t{3});
-    const int before = view->activeScalarIdx_;
+    const int before = view->renderer_.panes().front().first;
 
     QTest::keyClick(view->sliceViews_.front(), Qt::Key_Space);
 
-    QVERIFY(view->activeScalarIdx_ != before);
+    QVERIFY(view->renderer_.panes().front().first != before);
   }
 
   void windowTitle_data() {
@@ -338,12 +419,7 @@ private slots:
     auto load = testMeshes(2);
     load.temporal = std::make_shared<TestTemporalSource>(load.meshes.meshes.front());
     auto view = viewer(window, std::move(load), ViewerOptions{});
-    vtkRenderer* renderer = view->renderer_.getRenderer();
-    renderer->SetWorldPoint(0.33, 0.27, 0.0, 1.0);
-    renderer->WorldToDisplay();
-    const double* display = renderer->GetDisplayPoint();
-    const double scale = view->vtkWidget_->devicePixelRatioF();
-    view->pinProbe(QPointF(display[0] / scale, view->vtkWidget_->height() - display[1] / scale));
+    view->pinProbe(widgetPointAt(*view, 0.33, 0.27));
     QVERIFY(view->pin_);
     const auto pin = view->pin_;
     QAbstractButton* eye = nullptr;
@@ -361,7 +437,7 @@ private slots:
     QVERIFY(view->pin_);
     QVERIFY(!view->renderer_.probeAgain(*pin));
     QVERIFY(view->probeCards_.front()->isHidden());
-    view->applyScalarAtIndex(1);
+    view->showField(0, 1);
     view->showFrame(1);
     QCOMPARE(view->currentPlaybackStep_, 1);
     QVERIFY(!view->renderer_.probeAgain(*pin));
@@ -372,21 +448,24 @@ private slots:
     const int beforeSolo = window->renders;
     QTest::mouseClick(eye, Qt::LeftButton, Qt::AltModifier);
     QCOMPARE(window->renders - beforeSolo, 1);
-    QVERIFY(!view->renderer_.context.actors[1]->GetVisibility());
+    const auto& tiles = view->renderer_.tiles();
+    vtkActor* other =
+        view->renderer_.context.actors[tiles[view->renderer_.panes()[1].firstTile].firstActor];
+    QVERIFY(!other->GetVisibility());
     const int beforeAll = window->renders;
     QTest::mouseClick(eye, Qt::LeftButton, Qt::AltModifier);
     QCOMPARE(window->renders - beforeAll, 1);
-    QVERIFY(view->renderer_.context.actors[1]->GetVisibility());
+    QVERIFY(other->GetVisibility());
   }
 
   void matchingProbeViews_data() {
-    QTest::addColumn<bool>("exploded");
+    QTest::addColumn<bool>("split");
     QTest::newRow("files") << false;
     QTest::newRow("fields-and-files") << true;
   }
 
   void matchingProbeViews() {
-    QFETCH(bool, exploded);
+    QFETCH(bool, split);
     auto load = testMeshes(3);
     for (const auto& mesh : load.meshes.meshes) {
       mesh->GetPointData()->RemoveArray("regions");
@@ -417,24 +496,18 @@ private slots:
     shifted->GetPoints()->Modified();
     vtkNew<CountingWindow> window;
     ViewerOptions options;
-    options.explodeView = exploded;
+    options.mode = split ? PaneMode::Split : PaneMode::Single;
     auto view = viewer(window, std::move(load), options);
-    if (exploded) {
-      view->updateFacetPages();
-      view->renderer_.resetCamera();
-    }
-    vtkRenderer* renderer = view->renderer_.getRenderer();
-    renderer->SetWorldPoint(0.331, 0.271, 0.0, 1.0);
-    renderer->WorldToDisplay();
-    const double* display = renderer->GetDisplayPoint();
+    // Every file shows voltage, or a tile for each of its two fields.
+    view->showField(0, 0);
     const double scale = view->vtkWidget_->devicePixelRatioF();
-    const QPointF point(display[0] / scale, view->vtkWidget_->height() - display[1] / scale);
+    const QPointF point = widgetPointAt(*view, 0.331, 0.271);
     const int beforeHover = window->renders;
     view->requestProbe(point);
     view->showProbe();
     QCOMPARE(window->renders, beforeHover);
 
-    const size_t expected = exploded ? 4 : 2;
+    const size_t expected = split ? 4 : 2;
     QCOMPARE(view->probeCards_.size(), expected);
     for (ProbeCard* card : view->probeCards_) {
       QVERIFY(!card->isHidden());
@@ -470,16 +543,15 @@ private slots:
         QVERIFY(std::abs(match.value - source->value - 1010.0) < 0.01);
       }
     }
-    const size_t targetActor = exploded ? 2 : 1;
     const int beforeVisibility = window->renders;
-    QVERIFY(view->renderer_.setPartsVisible({{targetActor, false}}));
+    QVERIFY(view->renderer_.setPartsVisible({{1, false}}));
     QCOMPARE(window->renders - beforeVisibility, 1);
     view->showProbe();
     const auto hidden = view->renderer_.matchingProbes(*view->pin_);
-    QVERIFY(std::none_of(hidden.begin(), hidden.end(), [exploded](const auto& match) {
-      return match.panel == (exploded ? 2 : 1);
-    }));
-    QVERIFY(view->renderer_.setPartsVisible({{targetActor, true}}));
+    QCOMPARE(hidden.size(), expected / 2);
+    QVERIFY(std::none_of(
+        hidden.begin(), hidden.end(), [](const auto& match) { return match.mesh == 1; }));
+    QVERIFY(view->renderer_.setPartsVisible({{1, true}}));
     view->hideProbe();
     for (ProbeCard* card : view->probeCards_) {
       QVERIFY(card->isHidden());
@@ -488,8 +560,8 @@ private slots:
     for (ProbeCard* card : view->probeCards_) {
       QVERIFY(!card->isHidden());
     }
-    // Picking another file's categorical panel keeps that panel as the pin's source.
-    if (exploded) {
+    // Picking another file's categorical tile keeps that tile as the pin's source.
+    if (split) {
       const auto target = std::find_if(matches.begin(), matches.end(), [](const auto& match) {
         return match.mesh == 1 && match.field == "regions";
       });
@@ -511,24 +583,19 @@ private slots:
   }
 
   void unpinInteractions_data() {
-    QTest::addColumn<bool>("exploded");
-    QTest::newRow("single-view") << false;
-    QTest::newRow("exploded") << true;
+    QTest::addColumn<bool>("split");
+    QTest::newRow("single") << false;
+    QTest::newRow("split") << true;
   }
 
   void unpinInteractions() {
-    QFETCH(bool, exploded);
+    QFETCH(bool, split);
     vtkNew<CountingWindow> window;
     ViewerOptions options;
-    options.explodeView = exploded;
+    options.mode = split ? PaneMode::Split : PaneMode::Single;
     auto view = viewer(window, testMeshes(1), options);
     view->probeAction_->setChecked(true);
-    vtkRenderer* renderer = view->renderer_.getRenderer();
-    renderer->SetWorldPoint(0.331, 0.271, 0.0, 1.0);
-    renderer->WorldToDisplay();
-    const double* display = renderer->GetDisplayPoint();
-    const double scale = view->vtkWidget_->devicePixelRatioF();
-    const QPointF point(display[0] / scale, view->vtkWidget_->height() - display[1] / scale);
+    const QPointF point = widgetPointAt(*view, 0.331, 0.271);
     view->pinProbe(point);
     QVERIFY(view->pin_);
     QAction* escape = nullptr;
@@ -574,18 +641,14 @@ private slots:
     auto load = testMeshes(2);
     load.temporal = std::make_shared<TestTemporalSource>(load.meshes.meshes.front());
     auto view = viewer(window, std::move(load), ViewerOptions{});
-    const auto field =
-        std::find_if(view->scalarFields_.begin(),
-                     view->scalarFields_.end(),
-                     [](const auto& candidate) { return candidate.name == "voltage"; });
-    QVERIFY(field != view->scalarFields_.end());
-    view->applyScalarAtIndex(static_cast<int>(std::distance(view->scalarFields_.begin(), field)));
-    auto* renderer = view->renderer_.getRenderer();
-    renderer->SetWorldPoint(0.331, 0.271, 0.0, 1.0);
-    renderer->WorldToDisplay();
-    const double* display = renderer->GetDisplayPoint();
-    const double scale = view->vtkWidget_->devicePixelRatioF();
-    view->pinProbe(QPointF(display[0] / scale, view->vtkWidget_->height() - display[1] / scale));
+    // Files with the same fields are linked: the comparison follows to voltage.
+    QVERIFY(view->renderer_.fieldsLinked());
+    const auto& fields = view->renderer_.panes().front().fields;
+    const auto field = std::find(fields.begin(), fields.end(), fieldNamed(*view, "voltage"));
+    QVERIFY(field != fields.end());
+    view->showField(0, static_cast<int>(std::distance(fields.begin(), field)));
+    QCOMPARE(legendsOf(*view, "voltage").size(), size_t(2));
+    view->pinProbe(widgetPointAt(*view, 0.331, 0.271));
     QVERIFY(view->pin_);
     QCOMPARE(view->renderer_.matchingProbes(*view->pin_).size(), size_t(2));
     const double initial = view->renderer_.probeAgain(*view->pin_)->value;
@@ -601,30 +664,21 @@ private slots:
     QVERIFY(std::abs(matches[1].value - initial) < 0.01);
   }
 
-  void pinnedFacetPresentation() {
+  void pinnedPanePresentation() {
     vtkNew<CountingWindow> window;
-    ViewerOptions options;
-    options.explodeView = true;
-    auto view = viewer(window, testMeshes(2), options);
-    view->renderer_.setFacetPages(1, 0, 0);
-    view->layoutOverlays();
-    auto* renderer = view->renderer_.getRenderer();
-    renderer->SetWorldPoint(0.331, 0.271, 0.0, 1.0);
-    renderer->WorldToDisplay();
-    const double* display = renderer->GetDisplayPoint();
-    const double scale = view->vtkWidget_->devicePixelRatioF();
-    view->pinProbe(QPointF(display[0] / scale, view->vtkWidget_->height() - display[1] / scale));
+    auto view = viewer(window, testMeshes(2), ViewerOptions{});
+    view->pinProbe(widgetPointAt(*view, 0.331, 0.271));
     QVERIFY(view->pin_);
 
     const auto visibleMarkers = [&window]() {
       int count = 0;
       auto* renderers = window->GetRenderers();
       renderers->InitTraversal();
-      while (auto* panel = renderers->GetNextItem()) {
-        if (!panel->GetDraw()) {
+      while (auto* tile = renderers->GetNextItem()) {
+        if (!tile->GetDraw()) {
           continue;
         }
-        auto* actors = panel->GetActors();
+        auto* actors = tile->GetActors();
         actors->InitTraversal();
         while (auto* actor = actors->GetNextActor()) {
           if (!actor->GetPickable() && actor->GetVisibility()) {
@@ -635,12 +689,15 @@ private slots:
       return count;
     };
     QCOMPARE(visibleMarkers(), 2);
-    view->showFacetPage(1);
+    // Both files step from regions to voltage, a continuous field without a swatch.
+    view->stepPane(0, 1);
     QVERIFY(view->pin_);
     QTRY_COMPARE(visibleMarkers(), 2);
     QTRY_VERIFY(!view->probeCards_.front()->isHidden());
     auto* swatch = view->probeCards_.front()->findChild<QLabel*>(QStringLiteral("probeSwatch"));
     QVERIFY(swatch);
+    QTRY_VERIFY(swatch->isHidden());
+    view->stepPane(0, -1);
     QTRY_VERIFY(!swatch->isHidden());
 
     const auto matches = view->renderer_.matchingProbes(*view->pin_);
@@ -649,7 +706,7 @@ private slots:
     const int category = static_cast<int>(matches.front().value);
     const QColor color(Qt::magenta);
     const int before = window->renders;
-    emit view->facetColorBars_[1]->categoryColorChanged(category, color);
+    emit legendsOf(*view, "regions").back()->categoryColorChanged(category, color);
     QCOMPARE(window->renders - before, 1);
     QTRY_VERIFY(swatch->styleSheet().contains(color.name()));
     for (auto* card : view->probeCards_) {
@@ -657,9 +714,208 @@ private slots:
       QVERIFY(other);
       QVERIFY(other->styleSheet().contains(color.name()));
     }
-    view->showFacetPage(0);
+    // The pin follows its mesh into the tiles of a split pane and back.
+    view->setPaneSplit(0, true);
+    QTRY_COMPARE(visibleMarkers(), 3);
+    view->setPaneSplit(0, false);
     QTRY_COMPARE(visibleMarkers(), 2);
-    QTRY_VERIFY(swatch->isHidden());
+  }
+
+  // Two files with different fields: each pane pages its own, in its own mode.
+  void panesShowTheirOwnFields() {
+    vtkNew<CountingWindow> window;
+    auto load = testMeshes(2);
+    load.meshes.meshes[0]->GetPointData()->RemoveArray("regions");
+    vtkNew<vtkFloatArray> dispersion;
+    dispersion->SetName("dispersion");
+    dispersion->DeepCopy(load.meshes.meshes[1]->GetPointData()->GetArray("voltage"));
+    dispersion->SetName("dispersion");
+    load.meshes.meshes[1]->GetPointData()->AddArray(dispersion);
+    auto view = viewer(window, std::move(load), ViewerOptions{});
+    const auto& panes = view->renderer_.panes();
+    const auto title = [&view](size_t pane) {
+      return view->legends_[view->renderer_.panes()[pane].firstTile]->title_;
+    };
+
+    QVERIFY(!view->renderer_.fieldsLinked());
+    QVERIFY(view->linkAction_ && !view->linkAction_->isChecked());
+    QCOMPARE(title(0), QStringLiteral("voltage"));
+    QCOMPARE(title(1), QStringLiteral("dispersion"));
+    QVERIFY(view->paneUi_[0].pager != view->paneUi_[1].pager);
+    for (const auto& ui : view->paneUi_) {
+      QVERIFY(ui.label && ui.pager);
+      QVERIFY(view->vtkWidget_->rect().contains(ui.pager->geometry()));
+    }
+    QVERIFY(view->paneUi_[0].pager->geometry().right() < view->paneUi_[1].pager->geometry().left());
+
+    // Stepping the right pane leaves the left one alone and makes the right one active.
+    view->stepPane(1, 1);
+    QCOMPARE(title(0), QStringLiteral("voltage"));
+    QCOMPARE(title(1), QStringLiteral("regions"));
+    QCOMPARE(view->activePane_, size_t(1));
+    QVERIFY(view->paneUi_[1].pager->property("active").toBool());
+    QVERIFY(!view->paneUi_[0].pager->property("active").toBool());
+    QVERIFY(view->colorAction_->isEnabled());
+    QCOMPARE(view->colorField(), std::optional<size_t>(fieldNamed(*view, "regions")));
+
+    // A right click on the left mesh offers its view; splitting it leaves the right pane single.
+    const QRect left = view->paneUi_[0].label->geometry();
+    QTest::mouseClick(view->vtkWidget_, Qt::RightButton, Qt::NoModifier, left.center());
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    QVERIFY(menu);
+    QVERIFY(menu->actions().contains(view->splitAction_));
+    QVERIFY(menu->actions().contains(view->linkAction_));
+    QCOMPARE(view->activePane_, size_t(0));
+    QVERIFY(!view->splitAction_->isChecked());
+    menu->close();
+    view->splitAction_->trigger();
+    QCOMPARE(panes[0].mode, PaneMode::Split);
+    QCOMPARE(panes[1].mode, PaneMode::Single);
+    QVERIFY(view->splitAction_->isChecked());
+    QVERIFY(!view->colorAction_->isEnabled());
+    QCOMPARE(title(1), QStringLiteral("regions"));
+    // The split pane's tiles end above its pager; the single pane's legend stays in its pane.
+    const QRect pager = view->paneUi_[0].pager->geometry();
+    const QRect legend = view->legends_[panes[0].firstTile]->geometry();
+    QVERIFY(left.contains(pager));
+    QVERIFY(legend.bottom() < pager.top());
+    QVERIFY(view->paneUi_[1].label->geometry().contains(
+        view->legends_[panes[1].firstTile]->geometry()));
+
+    // Back on the right pane, the same key acts on it.
+    view->setActivePane(1);
+    QVERIFY(!view->splitAction_->isChecked());
+    QVERIFY(view->colorAction_->isEnabled());
+    emit view->paneUi_[0].pager->splitRequested(false);
+    QCOMPARE(panes[0].mode, PaneMode::Single);
+    QCOMPARE(view->activePane_, size_t(0));
+
+    // Linked, a field both files have shows in both.
+    view->linkAction_->setChecked(true);
+    const auto& fields = panes[1].fields;
+    const auto voltage = std::find(fields.begin(), fields.end(), fieldNamed(*view, "voltage"));
+    view->showField(1, static_cast<int>(std::distance(fields.begin(), voltage)));
+    QCOMPARE(title(0), QStringLiteral("voltage"));
+    QCOMPARE(title(1), QStringLiteral("voltage"));
+  }
+
+  void narrowPanePagersStayInsideTheirPanes() {
+    vtkNew<CountingWindow> window;
+    auto view = viewer(window, testMeshes(2), ViewerOptions{});
+    view->resize(600, 480);
+    view->show();
+    QTRY_COMPARE(view->vtkWidget_->size(), QSize(600, 480));
+    window->SetSize(600, 480);
+    view->onViewportResize();
+
+    for (const auto& ui : view->paneUi_) {
+      QVERIFY(!ui.pager->isHidden());
+      QVERIFY(ui.label->geometry().contains(ui.pager->geometry()));
+      QVERIFY(!view->rail_->geometry().intersects(ui.pager->geometry()));
+      const auto buttons =
+          ui.pager->findChildren<QToolButton*>(QString(), Qt::FindDirectChildrenOnly);
+      QCOMPARE(buttons.size(), 4);
+      for (const auto* button : buttons) {
+        QTRY_VERIFY(ui.pager->rect().contains(button->geometry()));
+      }
+    }
+    auto* rightPager = view->paneUi_[1].pager;
+    const auto buttons =
+        rightPager->findChildren<QToolButton*>(QString(), Qt::FindDirectChildrenOnly);
+    const auto split = std::find_if(buttons.begin(), buttons.end(), [](const QToolButton* button) {
+      return button->accessibleName() == QStringLiteral("Split view");
+    });
+    QVERIFY(split != buttons.end());
+    QTest::mouseClick(*split, Qt::LeftButton);
+    QCOMPARE(view->renderer_.panes()[1].mode, PaneMode::Split);
+    QCOMPARE(view->renderer_.panes()[0].mode, PaneMode::Single);
+  }
+
+  // A time series beside a static file: the bar spans the window under both panes, each
+  // pane keeps its own pager, and frames bring the arrays the series' tiles show.
+  void playbackBesideStaticPane() {
+    vtkNew<CountingWindow> window;
+    auto load = testMeshes(2);
+    load.meshes.meshes[1]->GetPointData()->RemoveArray("voltage");
+    load.temporal = std::make_shared<TestTemporalSource>(load.meshes.meshes.front());
+    auto view = viewer(window, std::move(load), ViewerOptions{});
+
+    QVERIFY(view->playbackBar_);
+    QVERIFY(view->playbackBar_->pager()->parentWidget()->isHidden());
+    for (const auto& ui : view->paneUi_) {
+      QVERIFY(ui.pager && ui.pager->parentWidget() == view->vtkWidget_);
+      QVERIFY(ui.pager->geometry().bottom() < view->playbackBar_->geometry().top());
+    }
+    QCOMPARE(view->streamed_, std::vector<std::string>{"regions"});
+    view->showField(0, 1);
+    QCOMPARE(view->streamed_, std::vector<std::string>{"voltage"});
+    QVERIFY(view->renderer_.context.actors.front()->GetMapper()->GetScalarVisibility());
+    // The series' range covers its sampled frames; the static file's field keeps its own.
+    QCOMPARE(view->renderer_.fields()[fieldNamed(*view, "voltage")].globalRange[1], 962.0);
+    view->setPaneSplit(0, true);
+    QCOMPARE(view->streamed_, (std::vector<std::string>{"regions", "voltage"}));
+    view->stepPane(1, 1);
+    QCOMPARE(view->streamed_, (std::vector<std::string>{"regions", "voltage"}));
+
+    // A pin on the series traces the field of its tile.
+    view->setPaneSplit(0, false);
+    view->pinProbe(widgetPointAt(*view, 0.331, 0.271));
+    QVERIFY(view->pin_);
+    QCOMPARE(view->traced_, std::optional<size_t>(fieldNamed(*view, "regions")));
+    view->showField(0, 1);
+    QCOMPARE(view->traced_, std::optional<size_t>(fieldNamed(*view, "voltage")));
+    view->showField(0, -1);
+    QVERIFY(!view->traced_);
+  }
+
+  void playbackRangeIncludesStaticData() {
+    vtkNew<CountingWindow> window;
+    auto load = testMeshes(2);
+    auto* values = load.meshes.meshes[1]->GetPointData()->GetArray("voltage");
+    values->SetTuple1(0, -5.0);
+    values->Modified();
+    load.temporal = std::make_shared<TestTemporalSource>(load.meshes.meshes.front());
+    auto view = viewer(window, std::move(load), ViewerOptions{});
+    view->showField(0, 1);
+
+    const auto& field = view->renderer_.fields()[fieldNamed(*view, "voltage")];
+    QCOMPARE(field.globalRange[0], -5.0);
+    QCOMPARE(field.globalRange[1], 962.0);
+  }
+
+  void vtkhdfFieldSwitchAtCurrentStep() {
+#if __has_include(<vtkHDFWriter.h>)
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const auto path = QFile::encodeName(dir.filePath(QStringLiteral("stimulation.vtkhdf")));
+    vtkNew<TemporalTestMesh> data;
+    vtkNew<vtkHDFWriter> writer;
+    writer->SetFileName(path.constData());
+    writer->SetInputConnection(data->GetOutputPort());
+    writer->SetWriteAllTimeSteps(true);
+    QVERIFY(writer->Write());
+    auto load = loadMeshes({path.toStdString()});
+    QVERIFY(load.ok);
+    QVERIFY(load.temporal && load.temporal->playable());
+    vtkNew<CountingWindow> window;
+    auto view = viewer(window, std::move(load), ViewerOptions{});
+    view->showFrame(1);
+
+    for (const int position : {1, 0, 1}) {
+      view->showField(0, position);
+      auto* mapper = view->renderer_.context.actors.front()->GetMapper();
+      QVERIFY(mapper->GetScalarVisibility());
+      const char* name = position == 1 ? "voltage" : "regions";
+      QCOMPARE(QString::fromUtf8(mapper->GetArrayName()), QString::fromLatin1(name));
+      auto* values = view->load_.meshes.meshes.front()->GetPointData()->GetArray(name);
+      QVERIFY(values);
+      QCOMPARE(values->GetTuple1(0), position == 1 ? 100.0 : 0.0);
+    }
+    const auto& field = view->renderer_.fields()[fieldNamed(*view, "voltage")];
+    QCOMPARE(field.globalRange[1], 1060.0);
+#else
+    QSKIP("The installed VTK has no VTKHDF writer.");
+#endif
   }
 
   void colorPanelTypedValuesKeepPrecision() {
@@ -670,6 +926,7 @@ private slots:
     load.meshes.meshes.front()->GetPointData()->RemoveArray("regions");
     auto view = viewer(window, std::move(load), options);
     view->updateColorRange();
+    ColorBarWidget* legend = view->legends_.front();
     auto* min = view->colorPanel_->findChild<QLineEdit*>(QStringLiteral("colorPanelMin"));
     auto* max = view->colorPanel_->findChild<QLineEdit*>(QStringLiteral("colorPanelMax"));
     QVERIFY(min && max);
@@ -683,9 +940,9 @@ private slots:
     enter(max, QStringLiteral("999.87500"));
     view->updateColorRange();
 
-    QCOMPARE(view->colorBar_->clipMin_, 12.25);
-    QCOMPARE(view->colorBar_->valueText(view->colorBar_->clipMin_), QStringLiteral("12.25"));
-    QCOMPARE(view->colorBar_->valueText(view->colorBar_->clipMax_), QStringLiteral("999.875"));
+    QCOMPARE(legend->clipMin_, 12.25);
+    QCOMPARE(legend->valueText(legend->clipMin_), QStringLiteral("12.25"));
+    QCOMPARE(legend->valueText(legend->clipMax_), QStringLiteral("999.875"));
 
     const auto buttons = view->colorPanel_->findChildren<QToolButton*>();
     const auto reset = std::find_if(buttons.cbegin(), buttons.cend(), [](const auto* button) {
@@ -694,42 +951,42 @@ private slots:
     QVERIFY(reset != buttons.cend());
     (*reset)->click();
 
-    QCOMPARE(view->colorBar_->clipMin_, 0.003);
-    QCOMPARE(view->colorBar_->valueText(view->colorBar_->clipMin_), QStringLiteral("0.003"));
-    QCOMPARE(view->colorBar_->valueText(view->colorBar_->clipMax_), QStringLiteral("1000"));
+    QCOMPARE(legend->clipMin_, 0.003);
+    QCOMPARE(legend->valueText(legend->clipMin_), QStringLiteral("0.003"));
+    QCOMPARE(legend->valueText(legend->clipMax_), QStringLiteral("1000"));
 
-    const int initialWidth = view->colorBar_->width();
+    const int initialWidth = legend->width();
     enter(min, QStringLiteral("0.12345678901234567"));
     enter(max, QStringLiteral("876.5432109876543"));
-    QVERIFY(view->colorBar_->width() > initialWidth);
-    QCOMPARE(view->colorBar_->size(), view->colorBar_->sizeHint());
-    QVERIFY(view->vtkWidget_->rect().contains(view->colorBar_->geometry()));
-    for (const QRectF& value : view->colorBar_->clipValueRects()) {
+    QVERIFY(legend->width() > initialWidth);
+    QCOMPARE(legend->size(), legend->sizeHint());
+    QVERIFY(view->vtkWidget_->rect().contains(legend->geometry()));
+    for (const QRectF& value : legend->clipValueRects()) {
       QVERIFY(!value.isEmpty());
-      QVERIFY(QRectF(view->colorBar_->rect()).contains(value));
+      QVERIFY(QRectF(legend->rect()).contains(value));
     }
 
     enter(max, QStringLiteral("99999"));
-    QCOMPARE(view->colorBar_->valueText(view->colorBar_->clipMax_), QStringLiteral("1000"));
-    QCOMPARE(view->colorBar_->width(), initialWidth);
+    QCOMPARE(legend->valueText(legend->clipMax_), QStringLiteral("1000"));
+    QCOMPARE(legend->width(), initialWidth);
   }
 
   void categoricalNaNColors_data() {
-    QTest::addColumn<bool>("explode");
+    QTest::addColumn<bool>("split");
     QTest::addColumn<bool>("cells");
     QTest::addColumn<bool>("common");
-    for (const bool explode : {false, true}) {
+    for (const bool split : {false, true}) {
       for (const bool cells : {false, true}) {
         for (const bool common : {false, true}) {
-          const auto name = QStringLiteral("%1-%2-%3").arg(explode).arg(cells).arg(common);
-          QTest::newRow(qPrintable(name)) << explode << cells << common;
+          const auto name = QStringLiteral("%1-%2-%3").arg(split).arg(cells).arg(common);
+          QTest::newRow(qPrintable(name)) << split << cells << common;
         }
       }
     }
   }
 
   void categoricalNaNColors() {
-    QFETCH(bool, explode);
+    QFETCH(bool, split);
     QFETCH(bool, cells);
     QFETCH(bool, common);
     vtkNew<CountingWindow> window;
@@ -754,26 +1011,18 @@ private slots:
       }
     }
     ViewerOptions options;
-    options.explodeView = explode;
+    options.mode = split ? PaneMode::Split : PaneMode::Single;
     options.commonCatLut = common;
     auto view = viewer(window, std::move(load), options);
-    std::vector<ColorBarWidget*> bars;
-    if (explode) {
-      for (size_t i = 0; i < view->facetColorBars_.size(); ++i) {
-        FacetPanelInfo info;
-        QVERIFY(view->renderer_.getFacetPanelInfo(i, info));
-        if (info.title == "af_sources") {
-          QVERIFY(info.analysis.hasNaN);
-          bars.push_back(view->facetColorBars_[i]);
-        } else {
-          QVERIFY(!info.analysis.hasNaN);
-          QCOMPARE(view->facetColorBars_[i]->catEntries_.size(), size_t(2));
-        }
-      }
-      QCOMPARE(bars.size(), size_t(2));
-    } else {
-      view->applyScalarAtIndex(0);
-      bars.push_back(view->colorBar_);
+    // Both files show af_sources, beside a tile for finite when split.
+    const std::vector<ColorBarWidget*> bars = legendsOf(*view, "af_sources");
+    QCOMPARE(bars.size(), size_t(2));
+    QVERIFY(view->renderer_.fields()[fieldNamed(*view, "af_sources")].analysis.hasNaN);
+    QVERIFY(!view->renderer_.fields()[fieldNamed(*view, "finite")].analysis.hasNaN);
+    const std::vector<ColorBarWidget*> finite = legendsOf(*view, "finite");
+    QCOMPARE(finite.size(), split ? size_t(2) : size_t(0));
+    for (auto* bar : finite) {
+      QCOMPARE(bar->catEntries_.size(), size_t(2));
     }
     for (auto* bar : bars) {
       QVERIFY(bar);
@@ -791,7 +1040,7 @@ private slots:
       QCOMPARE(bar->catEntries_[1], original[1]);
       QCOMPARE(bar->catEntries_[2].second, QColor(Qt::magenta));
     }
-    if (!explode) {
+    if (!split) {
       QAbstractButton* missing = nullptr;
       for (auto* button : view->colorPanel_->findChildren<QAbstractButton*>()) {
         if (button->accessibleName() == QStringLiteral("Color of NaN / No value")) {
@@ -801,17 +1050,17 @@ private slots:
       }
       QVERIFY(missing);
       QCOMPARE(missing->accessibleName(), QStringLiteral("Color of NaN / No value"));
-      view->applyScalarAtIndex(1);
-      QCOMPARE(view->colorBar_->catEntries_.size(), size_t(2));
-      view->applyScalarAtIndex(0);
-      QCOMPARE(view->colorBar_->catEntries_.back().second, QColor(Qt::magenta));
+      view->showField(0, 1);
+      QCOMPARE(bars.front()->catEntries_.size(), size_t(2));
+      view->showField(0, 0);
+      QCOMPARE(bars.front()->catEntries_.back().second, QColor(Qt::magenta));
       before = window->renders;
       emit view->colorPanel_->categoryColorChanged(2, QColor(Qt::cyan));
       QCOMPARE(window->renders - before, 1);
-      QCOMPARE(view->colorBar_->catEntries_.back().second, QColor(Qt::cyan));
+      QCOMPARE(bars.front()->catEntries_.back().second, QColor(Qt::cyan));
     }
     emit bars.front()->paletteChosen(QStringLiteral("okabe-ito"));
-    const auto expected = explode ? QColor(Qt::magenta) : QColor(Qt::cyan);
+    const auto expected = split ? QColor(Qt::magenta) : QColor(Qt::cyan);
     for (auto* bar : bars) {
       QCOMPARE(bar->catEntries_.back().second, expected);
     }
@@ -822,10 +1071,11 @@ private slots:
     }
   }
 
-  void facetColumnUpdates() {
+  // A field's range and colors change in every pane that shows it.
+  void sharedFieldUpdates() {
     vtkNew<CountingWindow> window;
     ViewerOptions options;
-    options.explodeView = true;
+    options.mode = PaneMode::Split;
     auto load = testMeshes(3);
     for (auto& mesh : load.meshes.meshes) {
       auto* values = vtkFloatArray::SafeDownCast(mesh->GetPointData()->GetArray("voltage"));
@@ -834,17 +1084,19 @@ private slots:
       values->Modified();
     }
     auto view = viewer(window, std::move(load), options);
-    ColorBarWidget* bar = view->facetColorBars_.front();
-    QVERIFY(bar);
+    const std::vector<ColorBarWidget*> voltage = legendsOf(*view, "voltage");
+    const std::vector<ColorBarWidget*> regions = legendsOf(*view, "regions");
+    QCOMPARE(voltage.size(), size_t(3));
+    QCOMPARE(regions.size(), size_t(3));
+    ColorBarWidget* bar = voltage.front();
     int before = window->renders;
     emit bar->clipRangeChanged(100.0, 500.0);
     QCOMPARE(window->renders - before, 1);
-    for (size_t i : {size_t(0), size_t(2), size_t(4)}) {
-      FacetPanelInfo info;
-      QVERIFY(view->renderer_.getFacetPanelInfo(i, info));
-      QCOMPARE(info.clipRange[0], 100.0);
-      QCOMPARE(info.clipRange[1], 500.0);
-      QCOMPARE(view->facetColorBars_[i]->clipMin_, 100.0);
+    const SceneField& field = view->renderer_.fields()[fieldNamed(*view, "voltage")];
+    QCOMPARE(field.clipRange[0], 100.0);
+    QCOMPARE(field.clipRange[1], 500.0);
+    for (auto* legend : voltage) {
+      QCOMPARE(legend->clipMin_, 100.0);
     }
     const auto windowFlags = bar->windowFlags();
     // Give the legend its own surface while the VTK parent stays offscreen.
@@ -868,8 +1120,7 @@ private slots:
     QVERIFY(enter(0, QStringLiteral("100.1234567890123")));
     QVERIFY(enter(1, QStringLiteral("500.1234567890123")));
 
-    for (size_t i : {size_t(0), size_t(2), size_t(4)}) {
-      auto* legend = view->facetColorBars_[i];
+    for (auto* legend : voltage) {
       QCOMPARE(legend->valueText(legend->clipMin_), QStringLiteral("100.1234567890123"));
       QCOMPARE(legend->valueText(legend->clipMax_), QStringLiteral("500.1234567890123"));
       QCOMPARE(legend->width(), legend->sizeHint().width());
@@ -880,69 +1131,60 @@ private slots:
     }
     QVERIFY(enter(0, QStringLiteral("0.004")));
     bar->setWindowFlags(windowFlags);
-    view->layoutFacetColorBars();
+    view->layoutPanes();
     before = window->renders;
     emit bar->colormapChosen(QStringLiteral("viridis"), true);
     QCOMPARE(window->renders - before, 1);
-    for (size_t i : {size_t(0), size_t(2), size_t(4)}) {
-      auto* legend = view->facetColorBars_[i];
+    for (auto* legend : voltage) {
       QCOMPARE(legend->clipMin_, static_cast<double>(0.006F));
       QCOMPARE(legend->valueText(legend->clipMin_), QStringLiteral("0.006"));
       QCOMPARE(legend->valueText(legend->clipMax_), QStringLiteral("500.1234567890123"));
     }
     before = window->renders;
-    emit view->facetColorBars_[1]->paletteChosen(QStringLiteral("okabe-ito"));
+    emit regions.front()->paletteChosen(QStringLiteral("okabe-ito"));
     QCOMPARE(window->renders - before, 1);
-    for (size_t i : {size_t(1), size_t(3), size_t(5)}) {
-      FacetPanelInfo info;
-      QVERIFY(view->renderer_.getFacetPanelInfo(i, info));
-      QCOMPARE(info.analysis.coloring.palette, findCategoryPalette("okabe-ito"));
-    }
+    QCOMPARE(view->renderer_.fields()[fieldNamed(*view, "regions")].analysis.coloring.palette,
+             findCategoryPalette("okabe-ito"));
     before = window->renders;
-    emit view->facetColorBars_[1]->categoryColorChanged(19, QColor(Qt::magenta));
+    emit regions.front()->categoryColorChanged(19, QColor(Qt::magenta));
     QCOMPARE(window->renders - before, 1);
-    for (size_t i : {size_t(1), size_t(3), size_t(5)}) {
-      QCOMPARE(view->facetColorBars_[i]->catEntries_[19].second, QColor(Qt::magenta));
+    for (auto* legend : regions) {
+      QCOMPARE(legend->catEntries_[19].second, QColor(Qt::magenta));
     }
     QVERIFY(!view->renderer_.setPartsVisible({{0, false}, {999, false}}));
     QVERIFY(view->renderer_.context.actors.front()->GetVisibility());
   }
 
-  void missingFieldColumns() {
+  // A file without a field has no tile for it, and is not linked to the one that has.
+  void fileWithoutAField() {
     vtkNew<CountingWindow> window;
     auto load = testMeshes(2);
     load.meshes.meshes.front()->GetPointData()->RemoveArray("voltage");
     ViewerOptions options;
-    options.explodeView = true;
+    options.mode = PaneMode::Split;
     auto view = viewer(window, std::move(load), options);
-    size_t selected = 0;
-    for (size_t i = 0; i < view->facetColorBars_.size(); ++i) {
-      FacetPanelInfo info;
-      QVERIFY(view->renderer_.getFacetPanelInfo(i, info));
-      if (info.title == "voltage" && info.hasScalar) {
-        selected = i;
-      }
-    }
-    QVERIFY(view->facetColorBars_[selected]);
+    const size_t voltage = fieldNamed(*view, "voltage");
+    const auto& panes = view->renderer_.panes();
+    QCOMPARE(panes[0].fields.size(), size_t(1));
+    QCOMPARE(panes[1].fields.size(), size_t(2));
+    QVERIFY(!view->renderer_.fieldsLinked());
+    const std::vector<ColorBarWidget*> legends = legendsOf(*view, "voltage");
+    QCOMPARE(legends.size(), size_t(1));
     const int before = window->renders;
-    emit view->facetColorBars_[selected]->colormapChosen(QStringLiteral("hue wheel"), false);
+    emit legends.front()->colormapChosen(QStringLiteral("hue wheel"), false);
     QCOMPARE(window->renders - before, 1);
-    for (size_t i = 0; i < view->facetColorBars_.size(); ++i) {
-      FacetPanelInfo info;
-      QVERIFY(view->renderer_.getFacetPanelInfo(i, info));
-      if (info.title == "voltage") {
-        QCOMPARE(info.analysis.colormap.map, findColormap("hue wheel"));
-        QCOMPARE(view->facetColorBars_[i] != nullptr, info.hasScalar);
-      }
-    }
+    QCOMPARE(view->renderer_.fields()[voltage].analysis.colormap.map, findColormap("hue wheel"));
+    QVERIFY(legends.front()->subtitle_.contains(QStringLiteral("cyclic")));
   }
 
   void overflowCategoryEditing() {
     vtkNew<CountingWindow> window;
     ViewerOptions options;
-    options.explodeView = true;
+    options.mode = PaneMode::Split;
     auto view = viewer(window, testMeshes(2), options);
-    ColorBarWidget* bar = view->facetColorBars_[1];
+    const std::vector<ColorBarWidget*> regions = legendsOf(*view, "regions");
+    QCOMPARE(regions.size(), size_t(2));
+    ColorBarWidget* bar = regions.front();
     bar->resize(bar->fitPanel(QSize(280, 200), 8));
     const auto layout = bar->categoryLayout();
     QVERIFY(layout.hidden > 0);
@@ -982,11 +1224,10 @@ private slots:
     QTest::mouseClick(bar, Qt::LeftButton, Qt::NoModifier, layout.more.center().toPoint());
     QVERIFY(selected);
     QCOMPARE(bar->catEntries_[static_cast<size_t>(entry)].second, QColor(Qt::magenta));
-    QCOMPARE(view->facetColorBars_[3]->catEntries_[static_cast<size_t>(entry)].second,
-             QColor(Qt::magenta));
-    QVERIFY(view->facetColorBars_[0]->catEntries_.empty());
+    QCOMPARE(regions.back()->catEntries_[static_cast<size_t>(entry)].second, QColor(Qt::magenta));
+    QVERIFY(legendsOf(*view, "voltage").front()->catEntries_.empty());
   }
-  void benchmarkFacetSetup_data() {
+  void benchmarkSplitSetup_data() {
     QTest::addColumn<int>("files");
     QTest::addColumn<int>("side");
     QTest::newRow("one-file-16k-points") << 1 << 128;
@@ -995,7 +1236,7 @@ private slots:
     QTest::newRow("four-files-263k-points") << 4 << 512;
   }
 
-  void benchmarkFacetSetup() {
+  void benchmarkSplitSetup() {
     if (qEnvironmentVariableIntValue("VV_RUN_BENCHMARKS") != 1) {
       QTest::qSkip("Set VV_RUN_BENCHMARKS=1 to run performance measurements.", __FILE__, __LINE__);
       return;
@@ -1006,7 +1247,7 @@ private slots:
     window->SetSize(1200, 800);
     const auto load = testMeshes(files, side);
     ViewerOptions options;
-    options.explodeView = true;
+    options.mode = PaneMode::Split;
     QBENCHMARK {
       // Each opened file starts without cached VTK scalar ranges.
       for (const auto& mesh : load.meshes.meshes) {
@@ -1019,19 +1260,26 @@ private slots:
     }
   }
 
-  void benchmarkColumnInteraction() {
+  void benchmarkSharedFieldInteraction() {
     if (qEnvironmentVariableIntValue("VV_RUN_BENCHMARKS") != 1) {
       QTest::qSkip("Set VV_RUN_BENCHMARKS=1 to run performance measurements.", __FILE__, __LINE__);
       return;
     }
     vtkNew<CountingWindow> window;
     ViewerOptions options;
-    options.explodeView = true;
+    options.mode = PaneMode::Split;
     auto view = viewer(window, testMeshes(8), options);
+    const auto& fields = view->renderer_.panes().front().fields;
+    const auto voltage = std::find(fields.begin(), fields.end(), fieldNamed(*view, "voltage"));
+    QVERIFY(voltage != fields.end());
+    view->showField(0, static_cast<int>(std::distance(fields.begin(), voltage)));
+    const auto legends = legendsOf(*view, "voltage");
+    QCOMPARE(legends.size(), size_t(8));
+    ColorBarWidget* legend = legends.front();
     int step = 0;
     QBENCHMARK {
       const double lower = 100.0 + (step++ % 100);
-      emit view->facetColorBars_.front()->clipRangeChanged(lower, lower + 500.0);
+      emit legend->clipRangeChanged(lower, lower + 500.0);
       QApplication::processEvents();
     }
   }

@@ -62,14 +62,14 @@ std::optional<CategoryMenuPick> execCategoryMenu(QWidget* parent,
                                                  const std::vector<PaletteOption>& palettes,
                                                  const QString& currentPalette);
 
-/// How much a legend shows, from the whole card down to a strip for a small facet panel.
+/// How much a legend shows, from the whole card down to a strip for a small tile.
 enum class LegendForm {
   Full,    // the name, the kind under it, then a row per category or the bar over its values
   Compact, // the name and kind on one line, then category chips or the bar between its values
   Minimal, // swatches, or the bar between its values; the name is in the tooltip
 };
 
-/// The form of the legend in a facet panel of this size, in logical pixels: Full from
+/// The form of the legend in a tile of this size, in logical pixels: Full from
 /// 560 x 400, Compact from 260 x 160, Minimal below.
 LegendForm legendFormFor(const QSize& panel);
 
@@ -136,7 +136,7 @@ public:
   /// and every form narrows, to stay inside.
   QSize fittedSize(const QSize& bounds) const;
 
-  /// Sets the form for a facet panel of this size and returns the card's size there: at
+  /// Sets the form for a tile of this size and returns the card's size there: at
   /// most a quarter of the panel, below its middle and margin inside its other edges.
   /// Category cards use at most a fifth of its height when a row fits.
   QSize fitPanel(const QSize& panel, int margin);

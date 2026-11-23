@@ -76,9 +76,9 @@ With `BUILD_TESTING=ON`, CMake builds `vv_render_benchmark` but does not registe
 
 ```sh
 mkdir -p benchmark-results
-QT_QPA_PLATFORM=offscreen VV_RUN_BENCHMARKS=1 build/dev/tests/vv_viewer_tests benchmarkFacetSetup \
+QT_QPA_PLATFORM=offscreen VV_RUN_BENCHMARKS=1 build/dev/tests/vv_viewer_tests benchmarkSplitSetup \
   -iterations 5 -median 5 -o benchmark-results/cpu-setup.xml,xml -o -,txt
-QT_QPA_PLATFORM=offscreen VV_RUN_BENCHMARKS=1 build/dev/tests/vv_viewer_tests benchmarkColumnInteraction \
+QT_QPA_PLATFORM=offscreen VV_RUN_BENCHMARKS=1 build/dev/tests/vv_viewer_tests benchmarkSharedFieldInteraction \
   -iterations 1000 -median 5 -o benchmark-results/cpu-interaction.xml,xml -o -,txt
 build/dev/tests/vv_render_benchmark --require-rendering --output benchmark-results/render.json
 python3 scripts/benchmark-summary.py benchmark-results

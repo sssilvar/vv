@@ -1,12 +1,14 @@
 #include "TemporalSource.h"
 
+#include "ScalarField.h"
+
 #include <algorithm>
+#include <cmath>
 #include <vtkDataArray.h>
 #include <vtkDataArraySelection.h>
+#include <vtkDataSetAttributes.h>
 #include <vtkHDFReader.h>
-#include <vtkInformation.h>
-#include <vtkPointData.h>
-#include <vtkStreamingDemandDrivenPipeline.h>
+#include <vtkNew.h>
 #include <vtkVersionMacros.h>
 
 TemporalSource::~TemporalSource() = default;
@@ -25,45 +27,36 @@ void VTKHDFTemporalSource::init(const vtkSmartPointer<vtkHDFReader>& reader,
                                 std::vector<double> timeValues) {
   reader_ = reader;
   timeValues_ = std::move(timeValues);
-  if (reader_) {
-    // Cache the static geometry/topology so successive frames only re-read the
-    // temporal point-data arrays (incompatible with MergeParts, which is off).
-    // vtkHDFReader gained UseCache in VTK 9.3 and made it always-on (and the
-    // setter deprecated) in 9.7; older VTK still plays back, just re-reading
-    // geometry each frame.
-#if VTK_VERSION_NUMBER >= VTK_VERSION_CHECK(9, 3, 0) &&                                            \
-    VTK_VERSION_NUMBER < VTK_VERSION_CHECK(9, 7, 0)
-    reader_->UseCacheOn();
-#endif
-  }
 }
 
-void VTKHDFTemporalSource::setActiveArray(const std::string& scalarName) {
-  if (!reader_ || scalarName.empty()) {
+void VTKHDFTemporalSource::setActiveArrays(const std::vector<std::string>& scalarNames) {
+  if (!reader_) {
     return;
   }
-  vtkDataArraySelection* sel = reader_->GetPointDataArraySelection();
-  if (!sel) {
-    return;
-  }
+  // VTK can hit its array cache after a field is re-enabled and leave that field
+  // out of the output. Start with an empty cache for each array selection.
+  vtkNew<vtkHDFReader> reader;
+  reader->SetFileName(reader_->GetFileName());
+#if VTK_VERSION_NUMBER >= VTK_VERSION_CHECK(9, 3, 0) &&                                            \
+    VTK_VERSION_NUMBER < VTK_VERSION_CHECK(9, 7, 0)
+  reader->UseCacheOn();
+#endif
+  reader->UpdateInformation();
+  vtkDataArraySelection* sel = reader->GetPointDataArraySelection();
   sel->DisableAllArrays();
-  sel->EnableArray(scalarName.c_str());
+  for (const std::string& name : scalarNames) {
+    if (sel->ArrayExists(name.c_str())) {
+      sel->EnableArray(name.c_str());
+    }
+  }
+  reader_ = reader;
 }
 
 bool VTKHDFTemporalSource::updateToStep(int step) {
   if (!reader_ || step < 0 || step >= steps()) {
     return false;
   }
-  // Drive the time-series pipeline via UPDATE_TIME_STEP: vtkHDFReader::RequestData
-  // recomputes its internal Step from this key on every Update.
-  vtkInformation* outInfo = reader_->GetOutputInformation(0);
-  if (!outInfo) {
-    return false;
-  }
-  outInfo->Set(vtkStreamingDemandDrivenPipeline::UPDATE_TIME_STEP(),
-               timeValues_[static_cast<size_t>(step)]);
-  reader_->Update();
-  return true;
+  return reader_->UpdateTimeStep(timeValues_[static_cast<size_t>(step)]) != 0;
 }
 
 bool VTKHDFTemporalSource::readStepInto(int step, vtkDataSet* target) {
@@ -79,10 +72,10 @@ bool VTKHDFTemporalSource::readStepInto(int step, vtkDataSet* target) {
   return true;
 }
 
-bool VTKHDFTemporalSource::sampledScalarRange(const std::string& scalarName,
+bool VTKHDFTemporalSource::sampledScalarRange(const ScalarField& field,
                                               double out[2],
                                               int maxSamples) {
-  if (!reader_ || steps() <= 0 || scalarName.empty()) {
+  if (!reader_ || steps() <= 0 || field.name.empty()) {
     return false;
   }
   const int sampleCount = std::min(steps(), std::max(1, maxSamples));
@@ -98,16 +91,19 @@ bool VTKHDFTemporalSource::sampledScalarRange(const std::string& scalarName,
     if (!updateToStep(step)) {
       continue;
     }
-    auto* out2 = vtkDataSet::SafeDownCast(reader_->GetOutputDataObject(0));
-    if (!out2 || !out2->GetPointData()) {
-      continue;
-    }
-    vtkDataArray* arr = out2->GetPointData()->GetArray(scalarName.c_str());
-    if (!arr) {
+    auto* data = vtkDataSet::SafeDownCast(reader_->GetOutputDataObject(0));
+    const int association =
+        field.association == FieldAssociation::Point ? vtkDataObject::POINT : vtkDataObject::CELL;
+    auto* attributes = data ? data->GetAttributes(association) : nullptr;
+    auto* arr = attributes ? attributes->GetArray(field.name.c_str()) : nullptr;
+    if (!arr || arr->GetNumberOfComponents() != 1) {
       continue;
     }
     double range[2];
     arr->GetFiniteRange(range);
+    if (!std::isfinite(range[0]) || !std::isfinite(range[1]) || range[0] > range[1]) {
+      continue;
+    }
     if (!any) {
       lo = range[0];
       hi = range[1];

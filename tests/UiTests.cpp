@@ -513,7 +513,7 @@ private slots:
     QVERIFY(view.hasFocus());
   }
 
-  // Smaller than its labels and editor, as a facet panel's legend can get.
+  // Smaller than its labels and editor, as a small tile's legend can get.
   void legendFitsTinySize() {
     ColorBarWidget legend;
     legend.setRange(-1000.0, 1000.0);
@@ -630,7 +630,7 @@ private slots:
     QVERIFY(QTest::qWaitForWindowExposed(&view));
 
     auto labels = frame.findChildren<QLabel*>();
-    QCOMPARE(labels.size(), 3);
+    QCOMPARE(labels.size(), 2);
     QCOMPARE(labels.front()->text(), QStringLiteral("AA"));
     QVERIFY(labels.at(1)->isVisible());
     QVERIFY(labels.at(1)->text().contains(QChar(0x2026)));
@@ -638,18 +638,9 @@ private slots:
     const QImage image = view.grab().toImage();
     const QPoint edge = frame.pos() + QPoint(frame.width() / 2, frame.height() - 1);
     QCOMPARE(image.pixelColor(edge), QColor(Qt::black));
-    frame.setCaption(PanelCaption::Badge);
-    QVERIFY(!labels.at(1)->isVisible());
-    QVERIFY(labels.front()->isVisible());
     frame.resize(120, 160);
-    frame.setCaption(PanelCaption::Filename);
     QVERIFY(frame.rect().contains(labels.at(1)->geometry()));
     QVERIFY(labels.at(1)->isVisible());
-    frame.setStatus(QStringLiteral("No voltage"));
-    QVERIFY(labels.at(2)->isVisible());
-    QCOMPARE(frame.accessibleDescription(), QStringLiteral("No voltage"));
-    frame.setStatus(QString());
-    QVERIFY(!labels.at(2)->isVisible());
   }
 
   void toolPanelsStayAboveLegends() {
@@ -1518,7 +1509,7 @@ private slots:
   }
 
   void pagerShowsPositionInBadge() {
-    ScalarPager pager(PagerPlacement::Capsule);
+    ScalarPager pager(PagerPlacement::Capsule, SpaceAction::NextField);
     pager.setPage(QStringLiteral("lat"), QStringLiteral("Points · continuous"), 3, 12);
     pager.resize(pager.sizeHint());
     pager.show();
@@ -1552,51 +1543,57 @@ private slots:
     QVERIFY(title->mapTo(&pager, QPoint(title->width(), 0)).x() < shown.left());
   }
 
-  void facetPagesKeepPanelsUsable() {
-    constexpr int kPager = 74;
-    const auto pageSize = [](size_t fields, size_t files, int width, int height) {
-      return static_cast<int>(facetPageSize(fields, files, width, height, kPager));
+  void splitPagesKeepTilesUsable() {
+    const auto pageSize = [](size_t fields, int width, int height) {
+      return static_cast<int>(facetPageSize(fields, width, height));
     };
-    // One file: as many fields as keep panels at least 280 x 220, at most 9, evened out.
-    QCOMPARE(pageSize(13, 1, 1300, 925), 7);
-    QCOMPARE(pageSize(13, 1, 1000, 612), 5);
-    QCOMPARE(pageSize(13, 1, 2560, 1400), 7);
-    QCOMPARE(pageSize(30, 1, 2560, 1400), 8);
-    QCOMPARE(pageSize(4, 1, 1300, 925), 4);
-    QCOMPARE(pageSize(13, 1, 400, 300), 1);
-    // Several files: a row each, as many field columns as fit across.
-    QCOMPARE(pageSize(14, 3, 1300, 925), 4);
-    QCOMPARE(pageSize(14, 2, 1700, 1000), 5);
-    QCOMPARE(pageSize(3, 3, 1300, 925), 3);
-    QCOMPARE(pageSize(0, 1, 1300, 925), 0);
+    // As many fields as keep tiles at least 280 x 220, at most 9, evened out.
+    QCOMPARE(pageSize(13, 1300, 851), 7);
+    QCOMPARE(pageSize(13, 1000, 538), 5);
+    QCOMPARE(pageSize(13, 2560, 1326), 7);
+    QCOMPARE(pageSize(30, 2560, 1326), 8);
+    QCOMPARE(pageSize(4, 1300, 851), 4);
+    QCOMPARE(pageSize(13, 400, 300), 1);
+    QCOMPARE(pageSize(1, 100, 100), 1);
+    QCOMPARE(pageSize(0, 1300, 851), 0);
 
     for (int width = 300; width <= 2600; width += 230) {
       for (int height = 240; height <= 1600; height += 170) {
-        const size_t size = facetPageSize(13, 1, width, height, kPager);
+        const size_t size = facetPageSize(13, width, height);
         QVERIFY(size >= 1 && size <= kMaxFacetPage);
         if (size > 1) {
-          const int area = height - kPager;
-          const size_t cols = adaptiveGridCols(size, width, area);
+          const size_t cols = adaptiveGridCols(size, width, height);
           const size_t rows = (size + cols - 1) / cols;
           QVERIFY(width / static_cast<int>(cols) >= kMinFacetPanelWidth);
-          QVERIFY(area / static_cast<int>(rows) >= kMinFacetPanelHeight);
+          QVERIFY(height / static_cast<int>(rows) >= kMinFacetPanelHeight);
         }
       }
     }
   }
 
-  void facetPagerNamesPages() {
+  void splitPagerNamesPages() {
     QCOMPARE(facetPageLabel(0, 6, 12), QStringLiteral("Fields 1–6 of 12"));
     QCOMPARE(facetPageLabel(7, 6, 13), QStringLiteral("Fields 8–13 of 13"));
     QCOMPARE(facetPageLabel(12, 1, 13), QStringLiteral("Field 13 of 13"));
 
-    ScalarPager pager(PagerPlacement::Capsule);
+    ScalarPager pager(PagerPlacement::Capsule, SpaceAction::NextField);
     pager.setStepNames(QStringLiteral("Previous page"), QStringLiteral("Next page"));
     QAbstractButton* next = buttonNamed(pager, QStringLiteral("Next page"));
     QVERIFY(next);
     QCOMPARE(next->toolTip(), QStringLiteral("Next page (Space)"));
     QVERIFY(buttonNamed(pager, QStringLiteral("Previous page")));
     QVERIFY(!buttonNamed(pager, QStringLiteral("Next field")));
+
+    // The toggle asks for the other view and shows what the owner sets back.
+    QAbstractButton* split = buttonNamed(pager, QStringLiteral("Split view"));
+    QVERIFY(split);
+    QSignalSpy requested(&pager, &ScalarPager::splitRequested);
+    split->click();
+    QCOMPARE(requested.count(), 1);
+    QCOMPARE(requested.front().front().toBool(), true);
+    pager.setSplit(false);
+    QVERIFY(!split->isChecked());
+    QCOMPARE(requested.count(), 1);
   }
 
   void layersEyeHidesAndShows() {
@@ -2112,9 +2109,13 @@ private slots:
                              .toString(QKeySequence::NativeText);
     QCOMPARE(buttonNamed(bar, QStringLiteral("Next field"))->toolTip(),
              QStringLiteral("Next field (%1)").arg(next));
-    ScalarPager capsule(PagerPlacement::Capsule);
+    ScalarPager capsule(PagerPlacement::Capsule, SpaceAction::NextField);
     QCOMPARE(buttonNamed(capsule, QStringLiteral("Next field"))->toolTip(),
              QStringLiteral("Next field (Space)"));
+    // A pane's capsule beside a playback bar, where Space plays.
+    ScalarPager beside(PagerPlacement::Capsule, SpaceAction::PlayPause);
+    QCOMPARE(buttonNamed(beside, QStringLiteral("Next field"))->toolTip(),
+             QStringLiteral("Next field (%1)").arg(next));
   }
 
   void playbackBarKeepsItsMargins() {

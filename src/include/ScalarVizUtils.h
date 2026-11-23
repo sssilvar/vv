@@ -2,6 +2,7 @@
 
 #include "Colormaps.h"
 #include "ProbeTrace.h"
+#include "ScalarField.h"
 
 #include <array>
 #include <chrono>
@@ -15,19 +16,6 @@
 #include <vtkSmartPointer.h>
 
 class TemporalSource;
-
-// Whether a scalar array lives on the mesh points or on its cells. VTK keeps the
-// two in separate attribute containers (GetPointData/GetCellData) and a mapper
-// must be told which one to color by, so the association is threaded through the
-// whole scalar pipeline alongside the array name.
-enum class FieldAssociation { Point, Cell };
-
-// A selectable scalar: its array name plus where it lives. Used as the unit the
-// viewer cycles through with the Space key.
-struct ScalarField {
-  std::string name;
-  FieldAssociation association = FieldAssociation::Point;
-};
 
 // Result of scalar field analysis — computed once, passed around.
 struct ScalarAnalysis {
@@ -97,7 +85,7 @@ std::optional<double> fieldValueAtPick(vtkDataSet* mesh,
 // Reads frames of source that trace still lacks, in its order, until budget has passed
 // (at least one): each into frame, a dataset of the series' type apart from the one on
 // screen, then the field's value at `at` there, NaN where the frame has none. The field
-// must be the one source streams (TemporalSource::setActiveArray). Returns the frames read.
+// must be among those source streams (TemporalSource::setActiveArrays). Returns the frames read.
 int readTraceFrames(TemporalSource& source,
                     vtkDataSet* frame,
                     const CellPoint& at,
@@ -133,7 +121,7 @@ vtkSmartPointer<vtkLookupTable> createColormapLookupTable(const ColormapChoice& 
 CategoryColors fileCategoryColors(vtkLookupTable* table, const std::set<double>& values);
 
 // The table a file attached to array, as VTK's legacy reader does with a LOOKUP_TABLE
-// section; nullptr without one. Still found after setMapperScalar takes it off the array.
+// section; nullptr without one. Still found after mapScalar takes it off the array.
 vtkLookupTable* fileLookupTable(vtkDataArray* array);
 
 // Indexed LUT with a row per value, annotated with its label, in coloring's colors.
@@ -147,11 +135,16 @@ vtkSmartPointer<vtkLookupTable> buildLookupTable(const std::string& scalarName,
                                                  const ScalarAnalysis& analysis,
                                                  const double range[2]);
 
-// Draws mesh's field with the table buildLookupTable gives it. A table the file attached to
-// the array moves off it (see fileLookupTable), since vtkMapper would draw with that one.
-bool setMapperScalar(vtkDataSet* mesh,
-                     vtkDataSetMapper* mapper,
-                     const std::string& scalarName,
-                     FieldAssociation association,
-                     const double range[2],
-                     const ScalarAnalysis& analysis);
+// Draws mesh's field through lut over range; false, and plain geometry, when the mesh lacks
+// it. A table the file attached to the array moves off it (see fileLookupTable), since
+// vtkMapper would draw with that one.
+bool mapScalar(vtkDataSet* mesh,
+               vtkDataSetMapper* mapper,
+               const ScalarField& field,
+               bool categorical,
+               vtkLookupTable* lut,
+               const double range[2]);
+
+// The arrays of this many components across every mesh, without repeats: point arrays
+// sorted by name, then cell arrays. 1 gives the colorable scalars, 3 the vectors.
+std::vector<ScalarField> collectFields(const std::vector<vtkDataSet*>& meshes, int components);

@@ -6,6 +6,7 @@
 #include <vtkSmartPointer.h>
 
 class vtkHDFReader;
+struct ScalarField;
 
 // A playable time series backing the rendered dataset. Frames are produced on
 // demand — result files routinely span thousands of steps and gigabytes on disk,
@@ -28,11 +29,11 @@ public:
 
   // Union of an array's range across up to maxSamples evenly spaced steps. Used to
   // fix a stable color range for the whole animation.
-  virtual bool
-  sampledScalarRange(const std::string& scalarName, double out[2], int maxSamples = 16) = 0;
+  virtual bool sampledScalarRange(const ScalarField& field, double out[2], int maxSamples = 16) = 0;
 
-  // Restrict per-frame work to a single array — the dominant playback speed-up.
-  virtual void setActiveArray(const std::string& scalarName) = 0;
+  // Restrict per-frame work to the arrays on view, the dominant playback speed-up.
+  // readStepInto then brings only these to its step.
+  virtual void setActiveArrays(const std::vector<std::string>& scalarNames) = 0;
 
 protected:
   std::vector<double> timeValues_;
@@ -48,8 +49,8 @@ public:
   void init(const vtkSmartPointer<vtkHDFReader>& reader, std::vector<double> timeValues);
 
   bool readStepInto(int step, vtkDataSet* target) override;
-  bool sampledScalarRange(const std::string& scalarName, double out[2], int maxSamples) override;
-  void setActiveArray(const std::string& scalarName) override;
+  bool sampledScalarRange(const ScalarField& field, double out[2], int maxSamples) override;
+  void setActiveArrays(const std::vector<std::string>& scalarNames) override;
 
 private:
   bool updateToStep(int step);

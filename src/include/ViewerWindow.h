@@ -10,9 +10,9 @@
 #include <QMainWindow>
 #include <QPointF>
 #include <array>
-#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,12 +40,13 @@ class QAction;
 class QActionGroup;
 class QCloseEvent;
 class QCursor;
+class QPoint;
 class QTimer;
 class QVTKOpenGLNativeWidget;
 class TemporalSource;
 
 struct ViewerOptions {
-  bool explodeView = false;
+  PaneMode mode = PaneMode::Single; // how every file's pane opens
   // Pinned color range: overrides the data/sampled range for every continuous
   // field, so a wavefront keeps the same colors across frames and files.
   std::optional<std::array<double, 2>> fixedRange;
@@ -60,8 +61,8 @@ class vtkGenericOpenGLRenderWindow;
 class QMouseEvent;
 
 // Main application window: owns the VTK viewport, the overlay widgets (tool
-// rail, layers, color and style panels, legend, probe card, playback and
-// annotation bars) and all viewer state.
+// rail, layers, color and style panels, each pane's pager and legends, probe
+// cards, playback and annotation bars) and all viewer state.
 class ViewerWindow : public QMainWindow {
   Q_OBJECT
 public:
@@ -83,8 +84,8 @@ private:
   void buildViewport(vtkGenericOpenGLRenderWindow* renderWindow);
   QWidget* buildSliceViews(QWidget* parent); // the column beside the 3-D view
   void refreshSliceViews();                  // and the 3-D view's planes
-  void setupFacetMode();
-  void setupNormalMode();
+  void setupPanes(); // the scene, then a pager and label per pane and a legend per tile
+  ColorBarWidget* makeLegend(size_t tile);
   void fillLayersPanel();
   void changeVisibility(const std::vector<LayerVisibilityChange>& changes);
   void buildRail();
@@ -107,37 +108,41 @@ private:
   void clearBrushPreview();
   void pickLabel(int label);
   void setBrushRings(int rings);
-  void applyLabelColoring();
   void undoStroke();
   bool saveAnnotations(); // false when canceled or not written
   void syncAnnotateKeys();
 
-  void applyScalarAtIndex(int index);
-  void applyNoScalar();
-  void cycleScalar(int step);          // +1 forward, -1 back
-  void showPage(int page);             // 0 is plain geometry, then a page per field
-  SearchItem pageItem(int page) const; // its name and kind, as the pager and lists show it
-  void syncPager();
-  void openFieldList();
+  std::optional<size_t> paneAt(const QPointF& pos) const; // pos in vtkWidget_
+  void setActivePane(size_t pane);      // the one Space, the Color panel and the palette act on
+  void stepPane(size_t pane, int step); // +1 forward, -1 back, wrapping
+  void showField(size_t pane, int position); // in the pane's fields; -1 is plain geometry
+  void setPaneSplit(size_t pane, bool split);
+  void showPaneMenu(size_t pane, const QPoint& globalPos);
+  // After the tiles changed what they show: the frames' arrays, legends, pagers, the
+  // Color panel, the overlays' layout, the probe and the trace.
+  void panesChanged();
+  void fieldChanged(size_t field); // after its colors changed, wherever it shows
+  void syncPager(size_t pane);
+  void syncLegend(size_t tile);
+  void syncSplitAction();
+  void syncLayoutMetrics(); // what the bars and pagers take from the panes
+  void streamShownFields(); // a time series reads only the arrays its tiles show
+  SearchItem fieldItem(size_t pane, int position) const; // as the pager and lists show it
+  void openFieldList(size_t pane);
   void togglePalette();
   std::vector<PaletteItem> paletteItems(); // fields, colormaps or palettes, and commands
-  void chooseColormap(const std::string& id, bool reversed); // for the active field
+  // The field the Color panel and the palette's colors edit: the active pane's, while
+  // it shows one field.
+  std::optional<size_t> colorField() const;
+  void chooseColormap(size_t field, const std::string& id, bool reversed);
+  void clipField(size_t field, double lo, double hi);
+  void chooseCategoryPalette(size_t field, const QString& id); // a PaletteOption id
+  void changeCategoryColor(size_t field, int entry, const std::optional<QColor>& color);
+  void showClipRange(size_t field); // on its legends and the Color panel
   void cycleVectorField();
-  void syncColorPanel();     // enables the Color tool for a field, showing its colors
-  void showCategoryLegend(); // the active categorical field's rows and palettes
-  void showCategoryColors(); // on the legend, the Color panel and the probe card
-  void refreshFacetColumn(size_t panel);
-  void showFacetCategories(size_t panel);        // a facet panel legend's rows and palettes
-  void chooseCategoryPalette(const QString& id); // for the active field, a PaletteOption id
-  void changeCategoryColor(int entry, const std::optional<QColor>& color); // legend row entry
+  void syncColorPanel();   // enables the Color tool for a field, showing its colors
   void updateColorRange(); // the panel's range and histogram, from the loaded data
-  void showClipRange();    // the renderer's clip window on the legend and the panel
   void setSurfaceLook(const SurfaceLook& look); // on the meshes and the Style panel
-
-  void updateFacetPages();         // as many fields as the view holds, from the first shown
-  void showFacetPage(size_t page); // keeps clip ranges, colors and the camera
-  void syncFacetPager();
-  std::vector<SearchItem> facetFieldItems() const; // every column, those shown checked
 
   bool paintArmed() const;               // annotation's pencil is on, so the pointer paints
   QCursor sceneCursor() const;           // over the view while not painting
@@ -147,6 +152,8 @@ private:
   void showProbe();
   void pinProbe(const QPointF& pos); // the mesh point there, or unpins over empty space
   void unpin();
+  // The field the pinned point's trace follows: the one its tile shows, on the time series.
+  std::optional<size_t> tracedField() const;
   void restartTrace(); // the pinned point's trace of the field shown, from scratch
   void readTrace();    // a few more frames of it, once per event-loop turn
   void showTrace();    // on the playback bar, with its label
@@ -154,8 +161,7 @@ private:
 
   void notify(const QString& text, NoticeKind kind); // a brief notice at the top of the view
   void layoutOverlays();
-  void layoutFacetColorBars();
-  void layoutPanelLabels();
+  void layoutPanes(); // each pane's label and pager, each tile's legend
   void stackOverlays();
   void onViewportResize();
   void saveSnapshot();
@@ -170,7 +176,6 @@ private:
 
   MeshRenderer renderer_;
   QVTKOpenGLNativeWidget* vtkWidget_ = nullptr;
-  ColorBarWidget* colorBar_ = nullptr;
   LayersPanel* layersPanel_ = nullptr;
   ColorPanel* colorPanel_ = nullptr;
   StylePanel* stylePanel_ = nullptr;
@@ -180,6 +185,8 @@ private:
   QAction* styleAction_ = nullptr;
   QAction* probeAction_ = nullptr;
   QAction* annotateAction_ = nullptr;
+  QAction* splitAction_ = nullptr; // the active pane's mode
+  QAction* linkAction_ = nullptr;  // among several files: panes follow each other's field
   QActionGroup* panels_ = nullptr; // Layers, Color and Style: one open at a time
   std::vector<QAction*> commands_; // what the palette lists: the rail's tools, X-ray and Glass
   CommandPalette* palette_ = nullptr;
@@ -190,30 +197,35 @@ private:
   std::optional<ProbeHit> pin_; // where a click pinned the probe, while Probe is on
   SurfaceStyle styleBeforeSeeThrough_ = SurfaceStyle::Solid; // what X and G return to
   QAction* vectorsAction_ = nullptr;
-  std::vector<ColorBarWidget*> facetColorBars_;
-  std::vector<PanelLabel*> panelLabels_;
 
-  // Volumes, outside exploded view: the slice views beside the 3-D view.
-  std::unique_ptr<VolumeScene> volumeScene_;
-  std::vector<SliceView*> sliceViews_;
-
-  std::vector<ScalarField> scalarFields_;
-  std::vector<QString> fieldDetails_; // each field's kind, "Points · continuous"
-  int activeScalarIdx_ = -1;
-  ScalarPager* scalarPager_ = nullptr;    // normal mode with a field; a time series' is in its bar
-  ScalarPager* facetPager_ = nullptr;     // -e, showing while its fields need several pages
-  FieldList* fieldList_ = nullptr;        // opened from either pager
+  // A file's overlays; the renderer holds what its pane shows.
+  struct PaneUi {
+    ScalarPager* pager = nullptr; // null without a field to page through
+    PanelLabel* label = nullptr;  // among several files
+  };
+  std::vector<PaneUi> paneUi_;           // parallel to the renderer's panes
+  std::vector<ColorBarWidget*> legends_; // parallel to the renderer's tiles
+  size_t activePane_ = 0;
+  FieldList* fieldList_ = nullptr;        // opened from a pager
+  size_t listPane_ = 0;                   // whose fields the list shows
   std::vector<ScalarField> vectorFields_; // 3-component arrays, drawn as glyphs
   int activeVectorIdx_ = -1;
+
+  // Volumes: the slice views beside the 3-D view.
+  std::unique_ptr<VolumeScene> volumeScene_;
+  std::vector<SliceView*> sliceViews_;
 
   // Temporal (playable) support: when a time-series file is loaded, the color
   // range is fixed across the whole animation (sampled once per scalar) so the
   // colormap stays stable while frames advance.
   std::shared_ptr<TemporalSource> temporal_;
-  std::map<std::string, std::array<double, 2>> temporalRangeCache_;
+  std::set<size_t> temporalFields_;
+  std::set<size_t> sampledFields_;     // whose range the series' frames have fixed
+  std::vector<std::string> streamed_;  // the arrays frames bring now
   PlaybackBar* playbackBar_ = nullptr; // a playable time series
   QTimer* playTimer_ = nullptr;
   ProbeTrace trace_;                       // the pinned point's value per frame
+  std::optional<size_t> traced_;           // the field trace_ holds
   vtkSmartPointer<vtkDataSet> traceFrame_; // frames the trace reads, apart from the one shown
   QTimer* traceTimer_ = nullptr;
   QElapsedTimer playClock_;
@@ -229,8 +241,7 @@ private:
   std::optional<AnnotationTool> heldTool_;       // while A or E is held
   int currentLabel_ = 1;
   int brushRings_ = 3;
-  std::optional<int> strokeValue_;                       // what the stroke in progress writes
-  std::array<double, 2> clipBeforeAnnotating_{0.0, 1.0}; // restored on leaving
+  std::optional<int> strokeValue_; // what the stroke in progress writes
   vtkSmartPointer<vtkCellPicker> picker_;
   vtkSmartPointer<vtkLookupTable> labelLut_;     // fixed value→color, stable while painting
   class vtkIntArray* labelArray_ = nullptr;      // owned by the mesh's cell data

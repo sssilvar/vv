@@ -39,6 +39,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -79,7 +80,6 @@
 #include <vtkPolyData.h>
 #include <vtkProperty.h>
 #include <vtkRenderer.h>
-#include <vtkRendererCollection.h>
 #include <vtkUnstructuredGrid.h>
 #include <vtkXMLPolyDataWriter.h>
 #include <vtkXMLUnstructuredGridWriter.h>
@@ -114,7 +114,7 @@ QRect railPanelArea(const QWidget* viewport,
                     const QRect& rail,
                     int width,
                     std::initializer_list<const QWidget*> barsAbove,
-                    std::initializer_list<const QWidget*> barsBelow) {
+                    const std::vector<const QWidget*>& barsBelow) {
   const int left = rail.right() + 1 + kRailPanelGap;
   const QRect column(left, 0, width, viewport->height());
   int top = kOverlayMargin;
@@ -148,23 +148,39 @@ QString railToolTip(const QAction* action) {
                                                        key.toString(QKeySequence::NativeText));
 }
 
-// Bottom-right, lifted above any bottom bar it would otherwise cover.
-QRect legendGeometry(const QWidget* viewport,
-                     const QWidget* legend,
-                     std::initializer_list<const QWidget*> barsBelow) {
-  const QSize hint = legend->sizeHint();
-  const int width = std::min(hint.width(), std::max(1, viewport->width() - 2 * kOverlayMargin));
-  const int x = std::max(kOverlayMargin, viewport->width() - width - kOverlayMargin);
-  const QRect column(x, 0, width, viewport->height());
-  int bottom = viewport->height() - kOverlayMargin;
-  for (const QWidget* bar : barsBelow) {
-    if (bar && !bar->isHidden() && bar->geometry().intersects(column)) {
-      bottom = std::min(bottom, bar->geometry().top() - kOverlayGap);
-    }
+// A viewport of the view, in the view's logical pixels.
+QRect viewportRect(const QWidget* view, const double viewport[4]) {
+  const int left = static_cast<int>(std::lround(viewport[0] * view->width()));
+  const int top = static_cast<int>(std::lround((1.0 - viewport[3]) * view->height()));
+  const int right = static_cast<int>(std::lround(viewport[2] * view->width()));
+  const int bottom = static_cast<int>(std::lround((1.0 - viewport[1]) * view->height()));
+  return {left, top, right - left, bottom - top};
+}
+
+// A tile's legend in its bottom-right corner, lifted above its pane's pager where that
+// would cover it. A whole pane large enough takes the full card; any other tile the form
+// its size calls for.
+QRect legendGeometry(const QRect& tile, ColorBarWidget* legend, PaneMode mode, const QRect& pager) {
+  const bool full = mode == PaneMode::Single && legendFormFor(tile.size()) == LegendForm::Full;
+  const int margin = full ? kOverlayMargin : kFacetLegendMargin;
+  QSize size;
+  if (full) {
+    legend->setForm(LegendForm::Full);
+    size = legend->sizeHint();
+    size.setWidth(std::min(size.width(), std::max(1, tile.width() - 2 * margin)));
+  } else {
+    size = legend->fitPanel(tile.size(), margin);
   }
-  const int available = std::max(legend->minimumSizeHint().height(), bottom - kOverlayMargin);
-  const int height = std::min(hint.height(), available);
-  return QRect(x, bottom - height, width, height);
+  const int x = tile.right() + 1 - margin - size.width();
+  int bottom = tile.bottom() + 1 - margin;
+  if (pager.isValid() && pager.intersects(QRect(x, tile.top(), size.width(), tile.height()))) {
+    bottom = std::min(bottom, pager.top() - kOverlayGap);
+  }
+  if (full) {
+    size.setHeight(std::min(
+        size.height(), std::max(legend->minimumSizeHint().height(), bottom - tile.top() - margin)));
+  }
+  return {x, bottom - size.height(), size.width(), size.height()};
 }
 
 // Bottom center, above whichever of barsBelow are showing.
@@ -200,43 +216,13 @@ QString QStringFromUtf8(const std::string& value) {
   return QString::fromUtf8(value.c_str());
 }
 
-// Union of selectable scalar fields across all meshes, point fields first then
-// cell fields, each group sorted by name. Cell fields are suffixed " (cells)" in
-// the colorbar title so the user can tell which association is shown.
-// wantComponents selects which arrays are collected: 1 for colorable scalars,
-// 3 for vector fields drawn as glyphs.
-std::vector<ScalarField> collectScalarUnion(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
-                                            int wantComponents = 1) {
-  std::set<std::string> pointNames;
-  std::set<std::string> cellNames;
-  for (const auto& mesh : meshes) {
-    if (!mesh) {
-      continue;
-    }
-    if (auto* pd = mesh->GetPointData()) {
-      for (int i = 0; i < pd->GetNumberOfArrays(); ++i) {
-        vtkDataArray* arr = pd->GetArray(i);
-        if (arr && arr->GetName() && arr->GetNumberOfComponents() == wantComponents)
-          pointNames.insert(arr->GetName());
-      }
-    }
-    if (auto* cd = mesh->GetCellData()) {
-      for (int i = 0; i < cd->GetNumberOfArrays(); ++i) {
-        vtkDataArray* arr = cd->GetArray(i);
-        if (arr && arr->GetName() && arr->GetNumberOfComponents() == wantComponents)
-          cellNames.insert(arr->GetName());
-      }
-    }
-  }
-  std::vector<ScalarField> fields;
-  fields.reserve(pointNames.size() + cellNames.size());
-  for (const std::string& name : pointNames) {
-    fields.push_back({name, FieldAssociation::Point});
-  }
-  for (const std::string& name : cellNames) {
-    fields.push_back({name, FieldAssociation::Cell});
-  }
-  return fields;
+std::vector<vtkDataSet*> rawPointers(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes) {
+  std::vector<vtkDataSet*> pointers;
+  pointers.reserve(meshes.size());
+  std::transform(meshes.begin(), meshes.end(), std::back_inserter(pointers), [](const auto& m) {
+    return m.GetPointer();
+  });
+  return pointers;
 }
 
 QString scalarTitle(const ScalarField& field) {
@@ -424,17 +410,20 @@ public:
   // view with no button held, also after a release or wheel zoom changed what lies
   // under it, and std::nullopt once it stops: a press or drag, leaving the view,
   // moving onto an overlay, or onPointerEvent consuming the event. onClick gets where a
-  // left press was released without dragging, before the release's onHover.
+  // left or right press was released without dragging, before the release's onHover.
+  // onZoom gets the factor a wheel turn moves the camera by.
   explicit VtkMouseFilter(QWidget* vtkRoot,
                           std::function<void(Qt::KeyboardModifiers)> onSpace,
                           std::function<bool(QMouseEvent*)> onPointerEvent,
                           std::function<void(const std::optional<QPointF>&)> onHover,
-                          std::function<void(const QPointF&)> onClick,
+                          std::function<void(const QPointF&, Qt::MouseButton)> onClick,
+                          std::function<void(double factor)> onZoom,
                           std::function<void(bool active, bool erase)> onPaintHold,
                           QObject* parent = nullptr)
       : QObject(parent), vtkRoot_(vtkRoot), onSpace_(std::move(onSpace)),
         onPointerEvent_(std::move(onPointerEvent)), onHover_(std::move(onHover)),
-        onClick_(std::move(onClick)), onPaintHold_(std::move(onPaintHold)) {
+        onClick_(std::move(onClick)), onZoom_(std::move(onZoom)),
+        onPaintHold_(std::move(onPaintHold)) {
     if (vtkRoot_) {
       connect(vtkRoot_, &QObject::destroyed, this, [this] { vtkRoot_ = nullptr; });
     }
@@ -495,8 +484,10 @@ protected:
     }
     case QEvent::MouseButtonPress: {
       auto* me = static_cast<QMouseEvent*>(event);
-      if (me->button() == Qt::LeftButton && me->buttons() == Qt::LeftButton) {
+      const bool clickable = me->button() == Qt::LeftButton || me->button() == Qt::RightButton;
+      if (clickable && me->buttons() == me->button()) {
         pressedAt_ = mouseLocalPos(me);
+        pressedButton_ = me->button();
       } else {
         pressedAt_.reset();
       }
@@ -508,8 +499,8 @@ protected:
       break;
     case QEvent::MouseButtonRelease: {
       auto* me = static_cast<QMouseEvent*>(event);
-      if (me->button() == Qt::LeftButton && pressedAt_ && onClick_) {
-        onClick_(mouseLocalPos(me));
+      if (me->button() == pressedButton_ && pressedAt_ && onClick_) {
+        onClick_(mouseLocalPos(me), pressedButton_);
       }
       pressedAt_.reset();
       if (me->buttons() == Qt::NoButton) {
@@ -517,44 +508,15 @@ protected:
       }
       break;
     }
-    case QEvent::Wheel:
-      if (auto* we = static_cast<QWheelEvent*>(event)) {
-        auto* vtkView = qobject_cast<QVTKOpenGLNativeWidget*>(vtkRoot);
-        if (!vtkView || !vtkView->renderWindow()) {
-          return true;
-        }
-
-        double steps = 0.0;
-        if (!we->pixelDelta().isNull()) {
-          steps = static_cast<double>(we->pixelDelta().y()) / 120.0;
-        } else {
-          steps = static_cast<double>(we->angleDelta().y()) / 120.0;
-        }
-        if (std::abs(steps) < 1e-6) {
-          return true;
-        }
-
-        auto* renderWindow = vtkView->renderWindow();
-        auto* renderers = renderWindow->GetRenderers();
-        if (!renderers) {
-          return true;
-        }
-
-        vtkCollectionSimpleIterator cameraCookie;
-        renderers->InitTraversal(cameraCookie);
-        vtkRenderer* renderer = renderers->GetNextRenderer(cameraCookie);
-        if (!renderer || !renderer->GetActiveCamera()) {
-          return true;
-        }
-
-        const double factor = std::pow(1.20, steps);
-        renderer->GetActiveCamera()->Dolly(factor);
-        renderer->ResetCameraClippingRange();
-        renderWindow->Render();
+    case QEvent::Wheel: {
+      auto* we = static_cast<QWheelEvent*>(event);
+      const int delta = we->pixelDelta().isNull() ? we->angleDelta().y() : we->pixelDelta().y();
+      if (delta != 0 && onZoom_) {
+        onZoom_(std::pow(1.20, delta / 120.0));
         hover(we->position());
-        return true;
       }
       return true;
+    }
     case QEvent::HoverMove:
     case QEvent::NativeGesture:
     case QEvent::Gesture:
@@ -617,9 +579,11 @@ private:
   std::function<void(Qt::KeyboardModifiers)> onSpace_;
   std::function<bool(QMouseEvent*)> onPointerEvent_;
   std::function<void(const std::optional<QPointF>&)> onHover_;
-  std::function<void(const QPointF&)> onClick_;
+  std::function<void(const QPointF&, Qt::MouseButton)> onClick_;
+  std::function<void(double factor)> onZoom_;
   std::function<void(bool active, bool erase)> onPaintHold_;
-  std::optional<QPointF> pressedAt_; // where a left press that may become a click began
+  std::optional<QPointF> pressedAt_; // where a press that may become a click began
+  Qt::MouseButton pressedButton_ = Qt::NoButton;
 };
 
 // Paintable labels 1..kNumLabels, one swatch each; value 0 is "unlabeled". Kept at
@@ -702,12 +666,7 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult,
   buildViewport(renderWindow);
 
   if (options_.commonCatLut) {
-    std::vector<vtkDataSet*> ptrs;
-    ptrs.reserve(meshes.size());
-    std::transform(meshes.begin(), meshes.end(), std::back_inserter(ptrs), [](const auto& m) {
-      return m.GetPointer();
-    });
-    renderer_.setSharedCatAnalysis(buildCommonCatAnalysis(ptrs));
+    renderer_.setSharedCatAnalysis(buildCommonCatAnalysis(rawPointers(meshes)));
   }
 
   qApp->installEventFilter(new VtkMouseFilter(
@@ -720,14 +679,21 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult,
           }
           break;
         case SpaceAction::NextField:
-          cycleScalar(1);
+          stepPane(activePane_, 1);
           break;
         case SpaceAction::PreviousField:
-          cycleScalar(-1);
+          stepPane(activePane_, -1);
           break;
         }
       },
-      [this](QMouseEvent* e) { return handleAnnotatePointer(e); },
+      [this](QMouseEvent* e) {
+        if (e->type() == QEvent::MouseButtonPress) {
+          if (const auto pane = paneAt(mouseLocalPos(e))) {
+            setActivePane(*pane);
+          }
+        }
+        return handleAnnotatePointer(e);
+      },
       // While annotation paints, the hover belongs to its brush preview. A pinned card
       // stays at its pin, which a turn or zoom of the camera may have moved.
       [this](const std::optional<QPointF>& pos) {
@@ -739,38 +705,28 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult,
           hideProbe();
         }
       },
-      [this](const QPointF& pos) {
-        if (probeAction_ && probeAction_->isChecked() && !paintArmed()) {
+      [this](const QPointF& pos, Qt::MouseButton button) {
+        if (button == Qt::RightButton) {
+          if (const auto pane = paneAt(pos)) {
+            showPaneMenu(*pane, vtkWidget_->mapToGlobal(pos.toPoint()));
+          }
+        } else if (probeAction_ && probeAction_->isChecked() && !paintArmed()) {
           pinProbe(pos);
         }
       },
+      [this](double factor) { renderer_.dolly(factor); },
       [this](bool active, bool erase) { setPaintHold(active, erase); },
       this));
 
-  if (options_.explodeView) {
-    setupFacetMode();
-  } else {
-    setupNormalMode();
-  }
+  setupPanes();
   if (volumeScene_) {
     renderer_.addImagePlanes(volumeScene_->planes(), volumeScene_->worldBounds());
   }
   buildRail();
-  if (load_.meshes.groups.size() > 1) {
-    const size_t count =
-        options_.explodeView ? renderer_.getFacetPanelCount() : load_.meshes.groups.size();
-    const size_t columns = options_.explodeView ? renderer_.getFacetColumnCount() : 1;
-    for (size_t i = 0; i < count; ++i) {
-      const size_t file = i / columns;
-      panelLabels_.push_back(
-          new PanelLabel(file, QStringFromUtf8(load_.meshes.groups[file].name), vtkWidget_));
-    }
-  }
-  if (facetPager_) {
-    updateFacetPages();
-  }
-  layoutOverlays();
+  syncLayoutMetrics();
+  panesChanged();
   if (playbackBar_) {
+    restartTrace(); // its label, until a pin gives it a trace
     // Narrower, the bar's controls would overlap; shorter, the bar would reach the
     // view's edge or the rail would come down over it.
     QSize minimum = playbackBarViewMinimum(*playbackBar_, kOverlayMargin);
@@ -867,7 +823,7 @@ void ViewerWindow::buildViewport(vtkGenericOpenGLRenderWindow* renderWindow) {
   vtkWidget_->setFocusPolicy(Qt::StrongFocus);
   vtkWidget_->setAttribute(Qt::WA_AcceptTouchEvents, false);
   layout->addWidget(vtkWidget_, 3);
-  if (!load_.volumes.empty() && !options_.explodeView) {
+  if (!load_.volumes.empty()) {
     // The gaps between the views show the window behind them.
     QPalette frame = central->palette();
     frame.setColor(QPalette::Window, overlay::kPopupSurface);
@@ -884,15 +840,6 @@ void ViewerWindow::buildViewport(vtkGenericOpenGLRenderWindow* renderWindow) {
 
   renderer_.setRenderContext(renderWindow, vtkWidget_->interactor());
 
-  colorBar_ = new ColorBarWidget(vtkWidget_);
-  connect(colorBar_, &ColorBarWidget::sizeHintChanged, this, &ViewerWindow::layoutOverlays);
-  colorBar_->setVisible(false);
-  colorBar_->setFocusPolicy(Qt::NoFocus);
-  connect(colorBar_,
-          &ColorBarWidget::colormapChosen,
-          this,
-          [this](const QString& id, bool reversed) { chooseColormap(id.toStdString(), reversed); });
-
   // Opened from the rail's Layers button.
   layersPanel_ = new LayersPanel(vtkWidget_);
   layersPanel_->setVisible(false);
@@ -901,36 +848,50 @@ void ViewerWindow::buildViewport(vtkGenericOpenGLRenderWindow* renderWindow) {
   QObject::connect(
       layersPanel_, &LayersPanel::expansionChanged, this, [this]() { layoutOverlays(); });
 
-  // Opened from the rail's Color button.
+  // Opened from the rail's Color button; it edits colorField().
   colorPanel_ = new ColorPanel(vtkWidget_);
   colorPanel_->setVisible(false);
   QObject::connect(
       colorPanel_, &ColorPanel::colormapChosen, this, [this](const QString& id, bool reversed) {
-        chooseColormap(id.toStdString(), reversed);
+        if (const auto field = colorField()) {
+          chooseColormap(*field, id.toStdString(), reversed);
+        }
       });
   QObject::connect(colorPanel_, &ColorPanel::outOfRangeChosen, this, [this](OutOfRange outside) {
-    if (renderer_.setOutOfRange(outside)) {
-      const ColormapChoice& colormap = renderer_.getActiveScalarAnalysis().colormap;
-      colorBar_->setColormap(colormap);
-      colorPanel_->setColormap(colormap);
+    const auto field = colorField();
+    if (field && renderer_.setOutOfRange(*field, outside)) {
+      fieldChanged(*field);
     }
   });
   QObject::connect(colorPanel_, &ColorPanel::clipRangeChanged, this, [this](double lo, double hi) {
-    renderer_.setClipRange(lo, hi);
-    showClipRange();
+    if (const auto field = colorField()) {
+      clipField(*field, lo, hi);
+    }
   });
   connect(colorPanel_,
           &ColorPanel::clipValueFormatChanged,
-          colorBar_,
-          &ColorBarWidget::setClipValueFormat);
+          this,
+          [this](ColorBarWidget::Bound bound, ColorBarWidget::ValueFormat format) {
+            const auto field = colorField();
+            for (size_t tile = 0; field && tile < legends_.size(); ++tile) {
+              if (renderer_.tiles()[tile].field == field) {
+                legends_[tile]->setClipValueFormat(bound, format);
+              }
+            }
+          });
   QObject::connect(colorPanel_, &ColorPanel::paletteChosen, this, [this](const QString& id) {
-    chooseCategoryPalette(id);
+    if (const auto field = colorField()) {
+      chooseCategoryPalette(*field, id);
+    }
   });
-  QObject::connect(
-      colorPanel_,
-      &ColorPanel::categoryColorChanged,
-      this,
-      [this](int entry, const std::optional<QColor>& color) { changeCategoryColor(entry, color); });
+  QObject::connect(colorPanel_,
+                   &ColorPanel::categoryColorChanged,
+                   this,
+                   [this](int entry, const std::optional<QColor>& color) {
+                     if (const auto field = colorField()) {
+                       changeCategoryColor(*field, entry, color);
+                     }
+                   });
 
   // Zero-delay single shot: one pick per event-loop turn, at the latest position.
   probeTimer_ = new QTimer(this);
@@ -941,15 +902,12 @@ void ViewerWindow::buildViewport(vtkGenericOpenGLRenderWindow* renderWindow) {
   // What an action did, briefly, at the top of the view.
   notice_ = new Notice(vtkWidget_);
 
-  // Opened from the field pager, or the -e grid's page pager.
+  // Opened from a pane's pager. A Single pane lists plain geometry before its fields.
   fieldList_ = new FieldList(vtkWidget_);
   fieldList_->setVisible(false);
   QObject::connect(fieldList_, &FieldList::pageChosen, this, [this](int index) {
-    if (options_.explodeView) {
-      showFacetPage(static_cast<size_t>(index) / renderer_.getFacetPageSize());
-    } else {
-      showPage(index);
-    }
+    const bool single = renderer_.panes()[listPane_].mode == PaneMode::Single;
+    showField(listPane_, single ? index - 1 : index);
   });
   // Back to the view, so Space cycles again.
   QObject::connect(fieldList_, &FieldList::closed, this, [this]() {
@@ -986,154 +944,102 @@ void ViewerWindow::buildViewport(vtkGenericOpenGLRenderWindow* renderWindow) {
   });
 }
 
-void ViewerWindow::setupFacetMode() {
-  renderer_.setupFacetGrid(load_.meshes.meshes, load_.meshes.groups, partColors_);
-  colorBar_->setVisible(false);
-
-  const size_t panelCount = renderer_.getFacetPanelCount();
-  facetColorBars_.reserve(panelCount);
-  for (size_t panelIndex = 0; panelIndex < panelCount; ++panelIndex) {
-    FacetPanelInfo panelInfo;
-    // facetColorBars_ stays index-aligned with the panels; plain panels get none.
-    if (!renderer_.getFacetPanelInfo(panelIndex, panelInfo) || !panelInfo.hasScalar) {
-      facetColorBars_.push_back(nullptr);
-      continue;
-    }
-
-    if (options_.fixedRange && !panelInfo.analysis.categorical &&
-        renderer_.setFacetPanelGlobalRange(
-            panelIndex, (*options_.fixedRange)[0], (*options_.fixedRange)[1])) {
-      renderer_.getFacetPanelInfo(panelIndex, panelInfo);
-    }
-
-    auto* panelBar = new ColorBarWidget(vtkWidget_);
-    panelBar->setFocusPolicy(Qt::NoFocus);
-    panelBar->setTitle(QStringFromUtf8(panelInfo.title));
-    panelBar->setSubtitle(legendSubtitle(std::nullopt, panelInfo.analysis));
-    panelBar->setRange(panelInfo.globalRange[0], panelInfo.globalRange[1]);
-    panelBar->setColormap(panelInfo.analysis.colormap);
-
-    connect(panelBar,
-            &ColorBarWidget::colormapChosen,
-            this,
-            [this, panelIndex](const QString& id, bool reversed) {
-              if (!renderer_.setFacetColormap(panelIndex, id.toStdString(), reversed)) {
-                return;
-              }
-              refreshFacetColumn(panelIndex);
-            });
-    facetColorBars_.push_back(panelBar);
-    connect(panelBar, &ColorBarWidget::sizeHintChanged, this, &ViewerWindow::layoutFacetColorBars);
-    if (panelInfo.analysis.categorical) {
-      showFacetCategories(panelIndex);
-    } else {
-      panelBar->setClipRange(panelInfo.clipRange[0], panelInfo.clipRange[1]);
-    }
-
-    connect(panelBar,
-            &ColorBarWidget::clipRangeChanged,
-            this,
-            [this, panelIndex](double lo, double hi) {
-              if (renderer_.setFacetClipRange(panelIndex, lo, hi)) {
-                refreshFacetColumn(panelIndex);
-              }
-            });
-    connect(panelBar,
-            &ColorBarWidget::clipValueFormatChanged,
-            this,
-            [this, panelIndex](ColorBarWidget::Bound bound, ColorBarWidget::ValueFormat format) {
-              FacetPanelInfo selected;
-              if (!renderer_.getFacetPanelInfo(panelIndex, selected))
-                return;
-              for (size_t i = 0; i < facetColorBars_.size(); ++i) {
-                FacetPanelInfo info;
-                if (facetColorBars_[i] && renderer_.getFacetPanelInfo(i, info) &&
-                    info.column == selected.column) {
-                  facetColorBars_[i]->setClipValueFormat(bound, format);
-                }
-              }
-            });
-    connect(panelBar,
-            &ColorBarWidget::categoryColorChanged,
-            this,
-            [this, panelIndex](int entry, const std::optional<QColor>& color) {
-              FacetPanelInfo info;
-              if (renderer_.getFacetPanelInfo(panelIndex, info)) {
-                if (const auto value = categoryValue(info.analysis, entry)) {
-                  if (renderer_.setFacetCategoryColor(panelIndex, *value, lutRgb(color))) {
-                    refreshFacetColumn(panelIndex);
-                  }
-                }
-              }
-            });
-    connect(panelBar, &ColorBarWidget::paletteChosen, this, [this, panelIndex](const QString& id) {
-      if (renderer_.setFacetCategoryPalette(panelIndex, id.toStdString())) {
-        refreshFacetColumn(panelIndex);
-      }
-    });
-  }
-
-  // More fields than the view holds page through like the single view's fields.
-  facetPager_ = new ScalarPager(PagerPlacement::Capsule, vtkWidget_);
-  facetPager_->setStepNames(QStringLiteral("Previous page"), QStringLiteral("Next page"));
-  facetPager_->setVisible(false);
-  QObject::connect(
-      facetPager_, &ScalarPager::stepRequested, this, [this](int step) { cycleScalar(step); });
-  QObject::connect(facetPager_, &ScalarPager::listRequested, this, [this]() { openFieldList(); });
-  updateFacetPages();
-  renderer_.startFacetGrid();
-}
-
-void ViewerWindow::setupNormalMode() {
-  renderer_.setup(load_.meshes.meshes, load_.meshes.groups, partColors_);
-  renderer_.start();
-
+void ViewerWindow::setupPanes() {
+  renderer_.setup(load_.meshes.meshes, load_.meshes.groups, partColors_, options_.mode);
   fillLayersPanel();
+  vectorFields_ = collectFields(rawPointers(load_.meshes.meshes), 3);
 
-  QObject::connect(
-      colorBar_, &ColorBarWidget::clipRangeChanged, this, [this](double lo, double hi) {
-        renderer_.setClipRange(lo, hi);
-        showClipRange();
-      });
-  QObject::connect(
-      colorBar_,
-      &ColorBarWidget::categoryColorChanged,
-      this,
-      [this](int entry, const std::optional<QColor>& color) { changeCategoryColor(entry, color); });
-  QObject::connect(colorBar_, &ColorBarWidget::paletteChosen, this, [this](const QString& id) {
-    chooseCategoryPalette(id);
-  });
-
-  scalarFields_ = collectScalarUnion(load_.meshes.meshes);
-  vectorFields_ = collectScalarUnion(load_.meshes.meshes, 3);
-  // Read before a time series loads its first frame, which holds only the shown field's
-  // point arrays.
-  fieldDetails_.reserve(scalarFields_.size());
-  for (const ScalarField& field : scalarFields_) {
-    fieldDetails_.push_back(
-        legendSubtitle(field.association, renderer_.analyzeField(field.name, field.association)));
+  const std::vector<SceneField>& fields = renderer_.fields();
+  for (size_t field = 0; options_.fixedRange && field < fields.size(); ++field) {
+    if (!fields[field].analysis.categorical) {
+      renderer_.setFieldRange(field, (*options_.fixedRange)[0], (*options_.fixedRange)[1]);
+    }
   }
-  // A time series switches fields from its playback bar.
   if (temporal_ && temporal_->playable()) {
     setupPlayback();
   }
-  if (!scalarFields_.empty()) {
-    scalarPager_ =
-        playbackBar_ ? playbackBar_->pager() : new ScalarPager(PagerPlacement::Capsule, vtkWidget_);
-    QObject::connect(
-        scalarPager_, &ScalarPager::stepRequested, this, [this](int step) { cycleScalar(step); });
-    QObject::connect(
-        scalarPager_, &ScalarPager::listRequested, this, [this]() { openFieldList(); });
-    applyScalarAtIndex(0);
-  } else {
-    if (playbackBar_) {
-      playbackBar_->hidePager();
+
+  const std::vector<Pane>& panes = renderer_.panes();
+  // A lone time series switches fields from its playback bar.
+  const bool barPager = playbackBar_ && panes.size() == 1 && !panes.front().fields.empty();
+  if (playbackBar_ && !barPager) {
+    playbackBar_->hidePager();
+  }
+  for (size_t pane = 0; pane < panes.size(); ++pane) {
+    PaneUi ui;
+    if (panes.size() > 1) {
+      ui.label = new PanelLabel(pane, QStringFromUtf8(load_.meshes.groups[pane].name), vtkWidget_);
     }
-    applyNoScalar();
+    if (!panes[pane].fields.empty()) {
+      ui.pager = barPager ? playbackBar_->pager()
+                          : new ScalarPager(PagerPlacement::Capsule,
+                                            spaceAction(Qt::NoModifier, playbackBar_ != nullptr),
+                                            vtkWidget_);
+      connect(ui.pager, &ScalarPager::stepRequested, this, [this, pane](int step) {
+        stepPane(pane, step);
+      });
+      connect(ui.pager, &ScalarPager::listRequested, this, [this, pane]() { openFieldList(pane); });
+      connect(ui.pager, &ScalarPager::splitRequested, this, [this, pane](bool split) {
+        setPaneSplit(pane, split);
+      });
+    }
+    paneUi_.push_back(ui);
   }
-  if (playbackBar_) {
-    restartTrace();
+  for (size_t tile = 0; tile < renderer_.tiles().size(); ++tile) {
+    legends_.push_back(makeLegend(tile));
   }
+  // Files with the same fields page through them together until told otherwise.
+  renderer_.setFieldsLinked(panes.size() > 1 &&
+                            std::all_of(panes.begin(), panes.end(), [&panes](const Pane& pane) {
+                              return !pane.fields.empty() && pane.fields == panes.front().fields;
+                            }));
+}
+
+// The legend follows whichever field its tile shows when the user acts on it.
+ColorBarWidget* ViewerWindow::makeLegend(size_t tile) {
+  auto* legend = new ColorBarWidget(vtkWidget_);
+  legend->setVisible(false);
+  legend->setFocusPolicy(Qt::NoFocus);
+  const auto shown = [this, tile]() { return renderer_.tiles()[tile].field; };
+  connect(legend, &ColorBarWidget::sizeHintChanged, this, &ViewerWindow::layoutPanes);
+  connect(legend,
+          &ColorBarWidget::colormapChosen,
+          this,
+          [this, shown](const QString& id, bool reversed) {
+            if (const auto field = shown()) {
+              chooseColormap(*field, id.toStdString(), reversed);
+            }
+          });
+  connect(legend, &ColorBarWidget::clipRangeChanged, this, [this, shown](double lo, double hi) {
+    if (const auto field = shown()) {
+      clipField(*field, lo, hi);
+    }
+  });
+  connect(legend,
+          &ColorBarWidget::clipValueFormatChanged,
+          this,
+          [this, shown](ColorBarWidget::Bound bound, ColorBarWidget::ValueFormat format) {
+            const auto field = shown();
+            for (size_t other = 0; field && other < legends_.size(); ++other) {
+              if (renderer_.tiles()[other].field == field) {
+                legends_[other]->setClipValueFormat(bound, format);
+              }
+            }
+          });
+  connect(legend,
+          &ColorBarWidget::categoryColorChanged,
+          this,
+          [this, shown](int entry, const std::optional<QColor>& color) {
+            if (const auto field = shown()) {
+              changeCategoryColor(*field, entry, color);
+            }
+          });
+  connect(legend, &ColorBarWidget::paletteChosen, this, [this, shown](const QString& id) {
+    if (const auto field = shown()) {
+      chooseCategoryPalette(*field, id);
+    }
+  });
+  return legend;
 }
 
 void ViewerWindow::changeVisibility(const std::vector<LayerVisibilityChange>& changes) {
@@ -1180,6 +1086,12 @@ void ViewerWindow::fillLayersPanel() {
 }
 
 void ViewerWindow::setupPlayback() {
+  vtkDataSet* mesh = load_.meshes.meshes[load_.temporalMesh];
+  for (const ScalarField& field : collectFields({mesh}, 1)) {
+    if (const auto index = renderer_.findField(field)) {
+      temporalFields_.insert(*index);
+    }
+  }
   const int numSteps = temporal_->steps();
   std::vector<double> times;
   times.reserve(static_cast<size_t>(numSteps));
@@ -1192,8 +1104,7 @@ void ViewerWindow::setupPlayback() {
 
   // HDF5 readers are not safe beside playback's reads on another thread, so the trace
   // reads a few frames per event-loop turn here, into a dataset of its own.
-  traceFrame_ =
-      vtkSmartPointer<vtkDataSet>::Take(load_.meshes.meshes[load_.temporalMesh]->NewInstance());
+  traceFrame_ = vtkSmartPointer<vtkDataSet>::Take(mesh->NewInstance());
   traceTimer_ = new QTimer(this);
   traceTimer_->setInterval(0);
   QObject::connect(traceTimer_, &QTimer::timeout, this, &ViewerWindow::readTrace);
@@ -1390,36 +1301,33 @@ void ViewerWindow::setAnnotating(bool on) {
   if (on == annotating_) {
     return;
   }
+  const double range[2] = {0.0, static_cast<double>(kNumLabels)};
   if (on) {
     if (!annotationBar_) {
       setupAnnotation();
     }
-    double clip[2] = {0.0, 1.0};
-    renderer_.getClipRange(clip);
-    clipBeforeAnnotating_ = {clip[0], clip[1]};
+    // The labels take the pane's one tile; the bar's swatches are their legend.
+    renderer_.setPaneMode(0, PaneMode::Single);
     annotating_ = true;
-    applyLabelColoring();
+    renderer_.setLabelColoring("label", labelLut_, range);
   } else {
     endStroke();
     heldTool_.reset();
     annotating_ = false;
-    // Back to the field shown before, with its clip window.
-    applyScalarAtIndex(activeScalarIdx_);
-    if (activeScalarIdx_ >= 0 && !renderer_.getActiveScalarAnalysis().categorical &&
-        renderer_.setClipRange(clipBeforeAnnotating_[0], clipBeforeAnnotating_[1])) {
-      showClipRange();
+    // Back to the field shown before; a label field of the file has new values.
+    renderer_.setLabelColoring("label", nullptr, range);
+    if (const auto labels = renderer_.findField({"label", FieldAssociation::Cell})) {
+      renderer_.reanalyzeField(*labels);
     }
   }
   annotationBar_->setVisible(on);
   keyHints_->setVisible(on);
-  if (scalarPager_) {
-    scalarPager_->setVisible(!on);
+  if (paneUi_.front().pager && paneUi_.front().pager->parentWidget() != vtkWidget_) {
+    paneUi_.front().pager->setVisible(!on);
   }
   syncAnnotateKeys();
-  syncColorPanel();
+  panesChanged();
   applyTool();
-  refreshProbe();
-  layoutOverlays();
 }
 
 AnnotationTool ViewerWindow::activeTool() const {
@@ -1638,12 +1546,6 @@ void ViewerWindow::undoStroke() {
   }
 }
 
-void ViewerWindow::applyLabelColoring() {
-  const double range[2] = {0.0, static_cast<double>(kNumLabels)};
-  renderer_.colorByFixedCategorical("label", FieldAssociation::Cell, labelLut_, range);
-  colorBar_->setVisible(false); // the swatches are the legend
-}
-
 bool ViewerWindow::saveAnnotations() {
   endStroke();
   vtkDataSet* mesh = renderer_.getPrimaryMesh();
@@ -1723,143 +1625,272 @@ void ViewerWindow::closeEvent(QCloseEvent* event) {
   QMainWindow::closeEvent(event);
 }
 
-void ViewerWindow::applyNoScalar() {
-  renderer_.clearActiveScalar();
-  colorBar_->setVisible(false);
-  activeScalarIdx_ = -1;
-  syncPager();
+std::optional<size_t> ViewerWindow::paneAt(const QPointF& pos) const {
+  const std::array<double, 2> display = displayPoint(vtkWidget_, pos);
+  return renderer_.paneAt(display[0], display[1]);
 }
 
-void ViewerWindow::applyScalarAtIndex(int index) {
-  if (index < 0 || index >= static_cast<int>(scalarFields_.size())) {
-    applyNoScalar();
+void ViewerWindow::setActivePane(size_t pane) {
+  if (pane == activePane_ || pane >= paneUi_.size()) {
     return;
   }
-
-  const ScalarField& field = scalarFields_[static_cast<size_t>(index)];
-  const std::string& scalarName = field.name;
-
-  // Temporal: restrict frame reads to this array and reload the current frame so
-  // the mesh holds it before the scalar is applied. VTKHDF's array selection covers
-  // point data only, so there a cell field reads every cell array per frame.
-  const bool temporalField = temporal_ && temporal_->playable();
-  if (temporalField) {
-    temporal_->setActiveArray(scalarName);
-    temporal_->readStepInto(currentPlaybackStep_, load_.meshes.meshes[load_.temporalMesh]);
+  activePane_ = pane;
+  for (size_t index = 0; index < paneUi_.size(); ++index) {
+    syncPager(index);
   }
-
-  if (!renderer_.setActiveScalar(scalarName, field.association)) {
-    return;
-  }
-  activeScalarIdx_ = index;
-  fieldDetails_[static_cast<size_t>(index)] =
-      legendSubtitle(field.association, renderer_.getActiveScalarAnalysis());
-  colorBar_->setTitle(QStringFromUtf8(field.name));
-  syncPager();
-
-  // For temporal data, fix the color range to the union across sampled steps so
-  // the colormap does not flicker as frames advance.
-  if (temporalField) {
-    auto cached = temporalRangeCache_.find(scalarName);
-    if (cached == temporalRangeCache_.end()) {
-      double sampled[2];
-      if (temporal_->sampledScalarRange(scalarName, sampled)) {
-        cached =
-            temporalRangeCache_.emplace(scalarName, std::array<double, 2>{sampled[0], sampled[1]})
-                .first;
-      }
-    }
-    if (cached != temporalRangeCache_.end()) {
-      renderer_.setActiveScalarRange(cached->second[0], cached->second[1]);
-    }
-  }
-
-  const ScalarAnalysis& analysis = renderer_.getActiveScalarAnalysis();
-  if (options_.fixedRange && !analysis.categorical) {
-    renderer_.setActiveScalarRange((*options_.fixedRange)[0], (*options_.fixedRange)[1]);
-  }
-
-  double globalRange[2] = {0.0, 1.0};
-  if (!renderer_.getActiveScalarGlobalRange(globalRange)) {
-    colorBar_->setVisible(false);
-    return;
-  }
-  colorBar_->setVisible(true);
-  colorBar_->setRange(globalRange[0], globalRange[1]);
-  colorBar_->setSubtitle(fieldDetails_[static_cast<size_t>(index)]);
-
-  colorBar_->setColormap(analysis.colormap);
-  if (analysis.categorical) {
-    showCategoryLegend();
-  } else {
-    colorBar_->clearCategorical();
-    double clipRange[2] = {globalRange[0], globalRange[1]};
-    renderer_.getClipRange(clipRange);
-    colorBar_->setClipRange(clipRange[0], clipRange[1]);
-  }
-  layoutOverlays(); // the legend's height follows its rows
+  syncSplitAction();
+  syncColorPanel();
 }
 
-void ViewerWindow::cycleScalar(int step) {
-  // Wrapping both ways, through the -e grid's pages of fields there.
-  if (options_.explodeView) {
-    const auto pages = static_cast<int>(renderer_.getFacetPageCount());
-    const int page = static_cast<int>(renderer_.getFacetPage()) + step;
-    showFacetPage(static_cast<size_t>((page % pages + pages) % pages));
-    return;
-  }
-  const int pages = static_cast<int>(scalarFields_.size()) + 1;
-  showPage(((activeScalarIdx_ + 1 + step) % pages + pages) % pages);
-}
-
-void ViewerWindow::showPage(int page) {
+void ViewerWindow::stepPane(size_t pane, int step) {
   // The labels stay on view while annotating; leaving shows the field again.
   if (annotating_) {
     return;
   }
-  applyScalarAtIndex(page - 1);
-  syncColorPanel();
-  refreshProbe();
-  restartTrace();
+  setActivePane(pane);
+  renderer_.stepPane(pane, step);
+  panesChanged();
 }
 
-SearchItem ViewerWindow::pageItem(int page) const {
+void ViewerWindow::showField(size_t pane, int position) {
+  if (annotating_) {
+    return;
+  }
+  setActivePane(pane);
+  renderer_.showField(pane, position);
+  panesChanged();
+}
+
+void ViewerWindow::setPaneSplit(size_t pane, bool split) {
+  // Annotation paints in the pane's one tile.
+  if (!annotating_) {
+    setActivePane(pane);
+    renderer_.setPaneMode(pane, split ? PaneMode::Split : PaneMode::Single);
+  }
+  panesChanged();
+}
+
+void ViewerWindow::showPaneMenu(size_t pane, const QPoint& globalPos) {
+  setActivePane(pane);
+  auto* menu = new QMenu(this);
+  menu->setAttribute(Qt::WA_DeleteOnClose);
+  overlay::styleMenu(menu);
+  menu->addAction(splitAction_);
+  if (paneUi_[pane].pager) {
+    QAction* choose = menu->addAction(QStringLiteral("Choose field…"));
+    choose->setEnabled(!annotating_);
+    connect(choose, &QAction::triggered, this, [this, pane]() { openFieldList(pane); });
+  }
+  if (linkAction_) {
+    menu->addSeparator();
+    menu->addAction(linkAction_);
+  }
+  menu->popup(globalPos);
+}
+
+void ViewerWindow::panesChanged() {
+  streamShownFields();
+  for (size_t tile = 0; tile < legends_.size(); ++tile) {
+    syncLegend(tile);
+  }
+  for (size_t pane = 0; pane < paneUi_.size(); ++pane) {
+    syncPager(pane);
+  }
+  syncSplitAction();
+  syncColorPanel();
+  layoutOverlays();
+  refreshProbe();
+  if (tracedField() != traced_) {
+    restartTrace();
+  }
+}
+
+void ViewerWindow::fieldChanged(size_t field) {
+  for (size_t tile = 0; tile < legends_.size(); ++tile) {
+    if (renderer_.tiles()[tile].field == field) {
+      syncLegend(tile);
+    }
+  }
+  // A cyclic map makes the field "cyclic" on its legends, the pagers and the field list.
+  for (size_t pane = 0; pane < paneUi_.size(); ++pane) {
+    syncPager(pane);
+  }
+  if (colorField() == field) {
+    syncColorPanel();
+  }
+  refreshProbe(); // the card's swatch
+}
+
+void ViewerWindow::syncPager(size_t index) {
+  ScalarPager* pager = paneUi_[index].pager;
+  if (!pager) {
+    return;
+  }
+  const Pane& pane = renderer_.panes()[index];
+  const bool split = pane.mode == PaneMode::Split;
+  pager->setSplit(split);
+  pager->setActive(paneUi_.size() > 1 && index == activePane_);
+  pager->setStepNames(split ? QStringLiteral("Previous page") : QStringLiteral("Previous field"),
+                      split ? QStringLiteral("Next page") : QStringLiteral("Next field"));
+  if (!split) {
+    const SearchItem item = fieldItem(index, pane.first);
+    pager->setPage(item.text, item.detail, pane.first + 1, static_cast<int>(pane.fields.size()));
+    return;
+  }
+  const auto first = static_cast<size_t>(pane.first);
+  QStringList names;
+  for (size_t position = first; position < first + pane.shownCount(); ++position) {
+    names << QStringFromUtf8(renderer_.fields()[pane.fields[position]].field.name);
+  }
+  pager->setPage(facetPageLabel(first, pane.shownCount(), pane.fields.size()),
+                 names.join(QStringLiteral(", ")),
+                 static_cast<int>(pane.page()) + 1,
+                 static_cast<int>(pane.pageCount()));
+}
+
+void ViewerWindow::syncLegend(size_t index) {
+  const Tile& tile = renderer_.tiles()[index];
+  ColorBarWidget* legend = legends_[index];
+  // While annotating, the bar's swatches are the legend.
+  const bool show = tile.shown && tile.field && !annotating_;
+  legend->setVisible(show);
+  if (!show) {
+    return;
+  }
+  const SceneField& field = renderer_.fields()[*tile.field];
+  // A tile among others keeps its line short.
+  const bool single = renderer_.panes()[tile.pane].mode == PaneMode::Single;
+  legend->setTitle(QStringFromUtf8(field.field.name));
+  legend->setSubtitle(legendSubtitle(
+      single ? std::optional<FieldAssociation>(field.field.association) : std::nullopt,
+      field.analysis));
+  legend->setRange(field.globalRange[0], field.globalRange[1]);
+  legend->setColormap(field.analysis.colormap);
+  if (field.analysis.categorical) {
+    legend->setCategorical(categoricalEntries(field.lut, field.analysis));
+    legend->setPalettes(paletteOptions(field.analysis), paletteId(field.analysis.coloring));
+  } else {
+    legend->clearCategorical();
+    legend->setClipRange(field.clipRange[0], field.clipRange[1]);
+  }
+}
+
+void ViewerWindow::syncSplitAction() {
+  const Pane& pane = renderer_.panes()[activePane_];
+  QString unavailable;
+  if (annotating_) {
+    unavailable = QStringLiteral("Split view: not available while annotating");
+  } else if (pane.fields.empty()) {
+    unavailable = QStringLiteral("Split view: no field to show");
+  }
+  splitAction_->setChecked(pane.mode == PaneMode::Split);
+  splitAction_->setEnabled(unavailable.isEmpty());
+  splitAction_->setToolTip(unavailable.isEmpty() ? railToolTip(splitAction_) : unavailable);
+}
+
+void ViewerWindow::syncLayoutMetrics() {
+  LayoutMetrics metrics;
+  metrics.pixelRatio = vtkWidget_->devicePixelRatioF();
+  if (playbackBar_) {
+    const QRect bar = playbackBarGeometry(vtkWidget_->size(), *playbackBar_, kOverlayMargin);
+    metrics.bottomInset = vtkWidget_->height() - bar.top() + kOverlayGap;
+  }
+  const auto capsule = std::find_if(paneUi_.begin(), paneUi_.end(), [this](const PaneUi& ui) {
+    return ui.pager && ui.pager->parentWidget() == vtkWidget_;
+  });
+  if (capsule != paneUi_.end()) {
+    metrics.pagerStrip = capsule->pager->sizeHint().height() + kOverlayMargin + kOverlayGap;
+  }
+  renderer_.setLayoutMetrics(metrics);
+}
+
+void ViewerWindow::streamShownFields() {
+  if (!playbackBar_) {
+    return;
+  }
+  std::vector<std::string> names;
+  std::set<size_t> fields;
+  for (const Tile& tile : renderer_.tiles()) {
+    const std::vector<size_t>& meshes = renderer_.panes()[tile.pane].meshes;
+    if (!tile.field || temporalFields_.count(*tile.field) == 0 ||
+        std::find(meshes.begin(), meshes.end(), load_.temporalMesh) == meshes.end()) {
+      continue;
+    }
+    fields.insert(*tile.field);
+    const std::string& name = renderer_.fields()[*tile.field].field.name;
+    if (std::find(names.begin(), names.end(), name) == names.end()) {
+      names.push_back(name);
+    }
+  }
+  const bool selectionChanged = names != streamed_;
+  if (selectionChanged) {
+    streamed_ = std::move(names);
+    temporal_->setActiveArrays(streamed_);
+  }
+  bool sampledFrames = false;
+  for (size_t index : fields) {
+    const SceneField& field = renderer_.fields()[index];
+    if ((options_.fixedRange && !field.analysis.categorical) ||
+        !sampledFields_.insert(index).second) {
+      continue;
+    }
+    sampledFrames = true;
+    double sampled[2];
+    if (!temporal_->sampledScalarRange(field.field, sampled)) {
+      continue;
+    }
+    // Keep static values in the shared scale and preserve bounds already edited in another pane.
+    const double lo = std::min(field.globalRange[0], sampled[0]);
+    const double hi = std::max(field.globalRange[1], sampled[1]);
+    if (lo != field.globalRange[0] || hi != field.globalRange[1]) {
+      const double clipLo = field.clipRange[0] == field.globalRange[0] ? lo : field.clipRange[0];
+      const double clipHi = field.clipRange[1] == field.globalRange[1] ? hi : field.clipRange[1];
+      renderer_.setFieldRange(index, lo, hi);
+      if (clipLo != lo || clipHi != hi) {
+        renderer_.setClipRange(index, clipLo, clipHi);
+      }
+    }
+  }
+  if (selectionChanged || sampledFrames) {
+    temporal_->readStepInto(currentPlaybackStep_, load_.meshes.meshes[load_.temporalMesh]);
+    renderer_.refreshAfterDataChange(load_.temporalMesh);
+  }
+}
+
+SearchItem ViewerWindow::fieldItem(size_t index, int position) const {
+  const Pane& pane = renderer_.panes()[index];
   SearchItem item;
-  item.current = page == activeScalarIdx_ + 1;
-  if (page == 0) {
+  if (position < 0) {
     item.text = QStringLiteral("Geometry");
     item.detail = QStringLiteral("Part colors");
-  } else {
-    const auto index = static_cast<size_t>(page - 1);
-    item.text = QStringFromUtf8(scalarFields_[index].name);
-    item.detail = fieldDetails_[index];
+    item.current = pane.first < 0;
+    return item;
   }
+  const SceneField& field = renderer_.fields()[pane.fields[static_cast<size_t>(position)]];
+  item.text = QStringFromUtf8(field.field.name);
+  item.detail = legendSubtitle(field.field.association, field.analysis);
+  item.current = pane.first >= 0 && position >= pane.first &&
+                 position < pane.first + static_cast<int>(pane.shownCount());
   return item;
 }
 
-void ViewerWindow::syncPager() {
-  if (!scalarPager_) {
+void ViewerWindow::openFieldList(size_t index) {
+  ScalarPager* pager = paneUi_[index].pager;
+  if (!pager || annotating_) {
     return;
   }
-  const int page = activeScalarIdx_ + 1;
-  const SearchItem item = pageItem(page);
-  scalarPager_->setPage(item.text, item.detail, page, static_cast<int>(scalarFields_.size()));
-}
-
-void ViewerWindow::openFieldList() {
-  std::vector<SearchItem> pages;
-  if (options_.explodeView) {
-    pages = facetFieldItems();
-  } else {
-    pages.reserve(scalarFields_.size() + 1);
-    for (int page = 0; page <= static_cast<int>(scalarFields_.size()); ++page) {
-      pages.push_back(pageItem(page));
-    }
+  setActivePane(index);
+  listPane_ = index;
+  const Pane& pane = renderer_.panes()[index];
+  std::vector<SearchItem> items;
+  for (int position = pane.mode == PaneMode::Single ? -1 : 0;
+       position < static_cast<int>(pane.fields.size());
+       ++position) {
+    items.push_back(fieldItem(index, position));
   }
   hideProbe();
-  const ScalarPager* pager = facetPager_ ? facetPager_ : scalarPager_;
   fieldList_->setAnchor(QRect(pager->mapTo(vtkWidget_, QPoint(0, 0)), pager->size()));
-  fieldList_->open(pages);
+  fieldList_->open(items);
 }
 
 void ViewerWindow::togglePalette() {
@@ -1874,28 +1905,22 @@ void ViewerWindow::togglePalette() {
 
 std::vector<PaletteItem> ViewerWindow::paletteItems() {
   std::vector<PaletteItem> items;
-  if (scalarPager_) {
-    for (int page = 0; page <= static_cast<int>(scalarFields_.size()); ++page) {
-      SearchItem row = pageItem(page);
-      row.group = QStringLiteral("Fields");
-      row.enabled = !annotating_;
-      if (annotating_) {
-        row.toolTip = QStringLiteral("Fields: not available while annotating");
-      }
-      items.push_back({row, [this, page]() { showPage(page); }});
+  const Pane& pane = renderer_.panes()[activePane_];
+  for (int position = pane.mode == PaneMode::Single ? -1 : 0;
+       !pane.fields.empty() && position < static_cast<int>(pane.fields.size());
+       ++position) {
+    SearchItem row = fieldItem(activePane_, position);
+    row.group = QStringLiteral("Fields");
+    row.enabled = !annotating_;
+    if (annotating_) {
+      row.toolTip = QStringLiteral("Fields: not available while annotating");
     }
+    items.push_back(
+        {row, [this, active = activePane_, position]() { showField(active, position); }});
   }
-  if (renderer_.getFacetPageCount() > 1) {
-    std::vector<SearchItem> fields = facetFieldItems();
-    for (size_t field = 0; field < fields.size(); ++field) {
-      fields[field].group = QStringLiteral("Fields");
-      items.push_back({fields[field],
-                       [this, field]() { showFacetPage(field / renderer_.getFacetPageSize()); }});
-    }
-  }
-  // A field is shown, and nothing else stops it changing color.
-  const ScalarAnalysis& analysis = renderer_.getActiveScalarAnalysis();
-  if (colorAction_->isEnabled() && analysis.categorical) {
+  const std::optional<size_t> field = colorField();
+  if (field && renderer_.fields()[*field].analysis.categorical) {
+    const ScalarAnalysis& analysis = renderer_.fields()[*field].analysis;
     const QString current = paletteId(analysis.coloring);
     for (const PaletteOption& palette : paletteOptions(analysis)) {
       SearchItem row;
@@ -1904,10 +1929,11 @@ std::vector<PaletteItem> ViewerWindow::paletteItems() {
       row.current = palette.id == current;
       row.group = QStringLiteral("Palettes");
       row.icon = paletteIcon(palette.colors, QSize(16, 16));
-      items.push_back({row, [this, id = palette.id]() { chooseCategoryPalette(id); }});
+      items.push_back(
+          {row, [this, shown = *field, id = palette.id]() { chooseCategoryPalette(shown, id); }});
     }
-  } else if (colorAction_->isEnabled()) {
-    const ColormapChoice& choice = analysis.colormap;
+  } else if (field) {
+    const ColormapChoice& choice = renderer_.fields()[*field].analysis.colormap;
     for (const Colormap& map : colormaps()) {
       SearchItem row;
       row.text = fromView(map.label);
@@ -1915,9 +1941,10 @@ std::vector<PaletteItem> ViewerWindow::paletteItems() {
       row.current = &map == choice.map;
       row.group = QStringLiteral("Colormaps");
       row.icon = colormapIcon(map, choice.reversed, QSize(16, 16));
-      items.push_back({row, [this, id = std::string(map.id), reversed = choice.reversed]() {
-                         chooseColormap(id, reversed);
-                       }});
+      items.push_back(
+          {row, [this, shown = *field, id = std::string(map.id), reversed = choice.reversed]() {
+             chooseColormap(shown, id, reversed);
+           }});
     }
   }
   for (QAction* action : commands_) {
@@ -1936,45 +1963,77 @@ std::vector<PaletteItem> ViewerWindow::paletteItems() {
   return items;
 }
 
-void ViewerWindow::chooseColormap(const std::string& id, bool reversed) {
-  if (activeScalarIdx_ < 0 || !renderer_.setColormap(id, reversed)) {
-    return;
+std::optional<size_t> ViewerWindow::colorField() const {
+  const Pane& pane = renderer_.panes()[activePane_];
+  if (annotating_ || pane.mode != PaneMode::Single || pane.first < 0) {
+    return std::nullopt;
   }
-  const ScalarAnalysis& analysis = renderer_.getActiveScalarAnalysis();
-  const auto index = static_cast<size_t>(activeScalarIdx_);
-  // A cyclic map makes the field "cyclic" on the legend, the pager and the field list.
-  fieldDetails_[index] = legendSubtitle(scalarFields_[index].association, analysis);
-  colorBar_->setColormap(analysis.colormap);
-  colorBar_->setSubtitle(fieldDetails_[index]);
-  syncPager();
-  colorPanel_->setColormap(analysis.colormap);
+  return pane.fields[static_cast<size_t>(pane.first)];
+}
+
+void ViewerWindow::chooseColormap(size_t field, const std::string& id, bool reversed) {
+  if (renderer_.setColormap(field, id, reversed)) {
+    fieldChanged(field);
+  }
+}
+
+void ViewerWindow::clipField(size_t field, double lo, double hi) {
+  renderer_.setClipRange(field, lo, hi);
+  showClipRange(field);
+}
+
+void ViewerWindow::chooseCategoryPalette(size_t field, const QString& id) {
+  if (renderer_.setCategoryPalette(field, id.toStdString())) {
+    fieldChanged(field);
+  }
+}
+
+void ViewerWindow::changeCategoryColor(size_t field,
+                                       int entry,
+                                       const std::optional<QColor>& color) {
+  const auto value = categoryValue(renderer_.fields()[field].analysis, entry);
+  if (value && renderer_.setCategoryColor(field, *value, lutRgb(color))) {
+    fieldChanged(field);
+  }
+}
+
+void ViewerWindow::showClipRange(size_t field) {
+  const double* clip = renderer_.fields()[field].clipRange;
+  for (size_t tile = 0; tile < legends_.size(); ++tile) {
+    if (renderer_.tiles()[tile].field == field) {
+      legends_[tile]->setClipRange(clip[0], clip[1]);
+    }
+  }
+  if (colorField() == field) {
+    colorPanel_->setClipRange(clip[0], clip[1]);
+  }
 }
 
 void ViewerWindow::syncColorPanel() {
-  QString unavailable;
-  const ScalarAnalysis& analysis = renderer_.getActiveScalarAnalysis();
-  if (options_.explodeView) {
-    unavailable =
-        QStringLiteral("Color: click a legend gradient or category swatch in the facet grid");
-  } else if (annotating_) {
-    unavailable = QStringLiteral("Color: not available while annotating");
-  } else if (activeScalarIdx_ < 0) {
-    unavailable = QStringLiteral("Color: no field shown");
-  }
-  colorAction_->setEnabled(unavailable.isEmpty());
-  if (!unavailable.isEmpty()) {
+  const std::optional<size_t> field = colorField();
+  if (!field) {
+    const Pane& pane = renderer_.panes()[activePane_];
+    QString unavailable = QStringLiteral("Color: no field shown");
+    if (annotating_) {
+      unavailable = QStringLiteral("Color: not available while annotating");
+    } else if (pane.mode == PaneMode::Split) {
+      unavailable = QStringLiteral("Color: click a legend gradient or category swatch");
+    }
+    colorAction_->setEnabled(false);
     colorAction_->setToolTip(unavailable);
     colorAction_->setChecked(false);
     return;
   }
+  const SceneField& scene = renderer_.fields()[*field];
+  colorAction_->setEnabled(true);
   colorAction_->setToolTip(railToolTip(colorAction_));
-  colorPanel_->setField(QStringFromUtf8(scalarFields_[static_cast<size_t>(activeScalarIdx_)].name));
-  if (analysis.categorical) {
-    colorPanel_->setCategories(paletteOptions(analysis),
-                               paletteId(analysis.coloring),
-                               categoricalEntries(renderer_.getActiveLUT(), analysis));
+  colorPanel_->setField(QStringFromUtf8(scene.field.name));
+  if (scene.analysis.categorical) {
+    colorPanel_->setCategories(paletteOptions(scene.analysis),
+                               paletteId(scene.analysis.coloring),
+                               categoricalEntries(scene.lut, scene.analysis));
   } else {
-    colorPanel_->setColormap(analysis.colormap);
+    colorPanel_->setColormap(scene.analysis.colormap);
   }
   if (colorPanel_->isVisible()) {
     updateColorRange();
@@ -1982,73 +2041,14 @@ void ViewerWindow::syncColorPanel() {
   }
 }
 
-void ViewerWindow::showCategoryLegend() {
-  const ScalarAnalysis& analysis = renderer_.getActiveScalarAnalysis();
-  colorBar_->setCategorical(categoricalEntries(renderer_.getActiveLUT(), analysis));
-  colorBar_->setPalettes(paletteOptions(analysis), paletteId(analysis.coloring));
-}
-
-void ViewerWindow::refreshFacetColumn(size_t panel) {
-  FacetPanelInfo selected;
-  if (!renderer_.getFacetPanelInfo(panel, selected)) {
-    return;
-  }
-  for (size_t i = 0; i < facetColorBars_.size(); ++i) {
-    FacetPanelInfo info;
-    if (!facetColorBars_[i] || !renderer_.getFacetPanelInfo(i, info) ||
-        info.column != selected.column) {
-      continue;
-    }
-    if (info.analysis.categorical) {
-      showFacetCategories(i);
-    } else {
-      facetColorBars_[i]->setColormap(info.analysis.colormap);
-      facetColorBars_[i]->setClipRange(info.clipRange[0], info.clipRange[1]);
-      facetColorBars_[i]->setSubtitle(legendSubtitle(std::nullopt, info.analysis));
-    }
-  }
-  syncFacetPager();
-  refreshProbe();
-}
-
-void ViewerWindow::showFacetCategories(size_t panel) {
-  FacetPanelInfo info;
-  if (panel < facetColorBars_.size() && facetColorBars_[panel] &&
-      renderer_.getFacetPanelInfo(panel, info)) {
-    facetColorBars_[panel]->setCategorical(
-        categoricalEntries(renderer_.getFacetPanelLUT(panel), info.analysis));
-    facetColorBars_[panel]->setPalettes(paletteOptions(info.analysis),
-                                        paletteId(info.analysis.coloring));
-  }
-}
-
-void ViewerWindow::chooseCategoryPalette(const QString& id) {
-  if (renderer_.setCategoryPalette(id.toStdString())) {
-    showCategoryColors();
-  }
-}
-
-void ViewerWindow::changeCategoryColor(int entry, const std::optional<QColor>& color) {
-  const auto value = categoryValue(renderer_.getActiveScalarAnalysis(), entry);
-  if (value && renderer_.setCategoryColor(*value, lutRgb(color))) {
-    showCategoryColors();
-  }
-}
-
-void ViewerWindow::showCategoryColors() {
-  showCategoryLegend();
-  syncColorPanel();
-  refreshProbe(); // the card's swatch
-}
-
 void ViewerWindow::updateColorRange() {
-  double range[2] = {0.0, 1.0};
-  if (renderer_.getActiveScalarAnalysis().categorical ||
-      !renderer_.getActiveScalarGlobalRange(range)) {
+  const std::optional<size_t> field = colorField();
+  if (!field || renderer_.fields()[*field].analysis.categorical) {
     return;
   }
-  colorPanel_->setRange(range[0], range[1], renderer_.getActiveScalarHistogram(kHistogramBins));
-  showClipRange();
+  const double* range = renderer_.fields()[*field].globalRange;
+  colorPanel_->setRange(range[0], range[1], renderer_.fieldHistogram(*field, kHistogramBins));
+  showClipRange(*field);
 }
 
 void ViewerWindow::setSurfaceLook(const SurfaceLook& look) {
@@ -2058,13 +2058,6 @@ void ViewerWindow::setSurfaceLook(const SurfaceLook& look) {
   renderer_.setSurfaceLook(look);
   stylePanel_->setLook(renderer_.getSurfaceLook());
   layoutOverlays(); // the panel shows the Opacity row for X-ray, Density for Glass
-}
-
-void ViewerWindow::showClipRange() {
-  double clip[2] = {0.0, 1.0};
-  renderer_.getClipRange(clip);
-  colorBar_->setClipRange(clip[0], clip[1]);
-  colorPanel_->setClipRange(clip[0], clip[1]);
 }
 
 // 'v': cycle vector-field glyphs (each 3-component array, then off).
@@ -2089,76 +2082,6 @@ void ViewerWindow::cycleVectorField() {
   }
 }
 
-void ViewerWindow::updateFacetPages() {
-  // The pager, with the margin under it and the gap above it, while it shows.
-  const int pagerStrip = facetPager_->sizeHint().height() + kOverlayMargin + kOverlayGap;
-  const size_t pageSize = std::max<size_t>(1,
-                                           facetPageSize(renderer_.getFacetColumnCount(),
-                                                         load_.meshes.groups.size(),
-                                                         vtkWidget_->width(),
-                                                         vtkWidget_->height(),
-                                                         pagerStrip));
-  const size_t firstShown = renderer_.getFacetPage() * renderer_.getFacetPageSize();
-  renderer_.setFacetPages(
-      pageSize,
-      firstShown / pageSize,
-      static_cast<int>(std::lround(pagerStrip * vtkWidget_->devicePixelRatioF())));
-  syncFacetPager();
-}
-
-void ViewerWindow::showFacetPage(size_t page) {
-  if (page == renderer_.getFacetPage()) {
-    return;
-  }
-  renderer_.showFacetPage(page);
-  syncFacetPager();
-  layoutOverlays();
-  refreshProbe();
-}
-
-void ViewerWindow::syncFacetPager() {
-  const size_t pages = renderer_.getFacetPageCount();
-  facetPager_->setVisible(pages > 1);
-  if (pages <= 1) {
-    return;
-  }
-  const size_t fields = renderer_.getFacetColumnCount();
-  const size_t page = renderer_.getFacetPage();
-  const size_t first = page * renderer_.getFacetPageSize();
-  const size_t count = std::min(renderer_.getFacetPageSize(), fields - first);
-  QStringList names;
-  for (size_t column = first; column < first + count; ++column) {
-    FacetPanelInfo info;
-    renderer_.getFacetPanelInfo(column, info);
-    names << QStringFromUtf8(info.title);
-  }
-  facetPager_->setPage(facetPageLabel(first, count, fields),
-                       names.join(QStringLiteral(", ")),
-                       static_cast<int>(page) + 1,
-                       static_cast<int>(pages));
-}
-
-std::vector<SearchItem> ViewerWindow::facetFieldItems() const {
-  const size_t fields = renderer_.getFacetColumnCount();
-  const size_t pageSize = renderer_.getFacetPageSize();
-  std::vector<SearchItem> items;
-  items.reserve(fields);
-  for (size_t column = 0; column < fields; ++column) {
-    // The column's first panel whose file has the field, which knows its kind.
-    FacetPanelInfo info;
-    size_t panel = column;
-    while (renderer_.getFacetPanelInfo(panel, info) && !info.hasScalar) {
-      panel += fields;
-    }
-    SearchItem item;
-    item.text = QStringFromUtf8(info.title);
-    item.detail = legendSubtitle(info.association, info.analysis);
-    item.current = column / pageSize == renderer_.getFacetPage();
-    items.push_back(item);
-  }
-  return items;
-}
-
 void ViewerWindow::buildRail() {
   rail_ = new ToolRail(vtkWidget_);
   const auto addTool = [this](Lucide icon, const QString& name, const QKeySequence& key) {
@@ -2172,11 +2095,9 @@ void ViewerWindow::buildRail() {
 
   layersAction_ = addTool(Lucide::Layers, QStringLiteral("Layers"), QKeySequence());
   layersAction_->setCheckable(true);
-  if (options_.explodeView || load_.meshes.groups.empty()) {
+  if (load_.meshes.groups.empty()) {
     layersAction_->setEnabled(false);
-    layersAction_->setToolTip(options_.explodeView
-                                  ? QStringLiteral("Layers: not available in the -e facet grid")
-                                  : QStringLiteral("Layers: no parts to show"));
+    layersAction_->setToolTip(QStringLiteral("Layers: no parts to show"));
   }
   QObject::connect(layersAction_, &QAction::toggled, this, [this](bool open) {
     layersPanel_->setVisible(open);
@@ -2193,7 +2114,6 @@ void ViewerWindow::buildRail() {
     colorPanel_->setVisible(open);
     layoutOverlays();
   });
-  syncColorPanel();
   // One panel beside the rail at a time.
   panels_ = new QActionGroup(this);
   panels_->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
@@ -2258,8 +2178,6 @@ void ViewerWindow::buildRail() {
   QString annotateUnavailable;
   if (load_.meshes.groups.size() != 1) {
     annotateUnavailable = QStringLiteral("Annotate: needs a single file");
-  } else if (options_.explodeView) {
-    annotateUnavailable = QStringLiteral("Annotate: not available in the -e facet grid");
   } else if (temporal_ && temporal_->playable()) {
     // A frame replaces the mesh's arrays, labels included.
     annotateUnavailable = QStringLiteral("Annotate: not available for a time series");
@@ -2328,6 +2246,26 @@ void ViewerWindow::buildRail() {
                    this,
                    [this]() { saveSnapshot(); });
 
+  // The active pane's mode, also on its pager and in its context menu.
+  splitAction_ = new QAction(
+      lucideIcon(Lucide::LayoutGrid, kRailIconSize), QStringLiteral("Split view"), this);
+  splitAction_->setCheckable(true);
+  splitAction_->setShortcut(QKeySequence(Qt::Key_T));
+  addAction(splitAction_);
+  commands_.push_back(splitAction_);
+  QObject::connect(splitAction_, &QAction::triggered, this, [this](bool split) {
+    setPaneSplit(activePane_, split);
+  });
+  if (paneUi_.size() > 1) {
+    linkAction_ = new QAction(QStringLiteral("Link fields across files"), this);
+    linkAction_->setCheckable(true);
+    linkAction_->setChecked(renderer_.fieldsLinked());
+    commands_.push_back(linkAction_);
+    QObject::connect(linkAction_, &QAction::toggled, this, [this](bool linked) {
+      renderer_.setFieldsLinked(linked);
+    });
+  }
+
   // Qt reads Ctrl as Cmd on macOS. A search field takes neither, so it opens the palette
   // while one has the focus, and closes it from its own.
   auto* palette = new QAction(QStringLiteral("Command palette"), this);
@@ -2365,13 +2303,14 @@ void ViewerWindow::saveSnapshot() {
     return;
   }
 
-  std::vector<ColorBarWidget*> legends = facetColorBars_;
-  legends.push_back(colorBar_);
-  const QImage image =
-      snapshotWithLegends(vtkWidget_->grabFramebuffer(),
-                          vtkWidget_->devicePixelRatioF(),
-                          legends,
-                          std::vector<QWidget*>(panelLabels_.begin(), panelLabels_.end()));
+  std::vector<QWidget*> labels;
+  for (const PaneUi& ui : paneUi_) {
+    if (ui.label) {
+      labels.push_back(ui.label);
+    }
+  }
+  const QImage image = snapshotWithLegends(
+      vtkWidget_->grabFramebuffer(), vtkWidget_->devicePixelRatioF(), legends_, labels);
   if (!image.save(path, "PNG")) {
     QMessageBox::warning(
         this, QStringLiteral("Save failed"), QStringLiteral("Could not write ") + path);
@@ -2441,16 +2380,12 @@ void ViewerWindow::showProbe() {
     }
     const auto& match = matches[i];
     const auto display = renderer_.displayPosition(match);
-    double viewport[4];
-    if (!display || !renderer_.getPanelViewport(match.panel, viewport)) {
+    if (!display) {
       card->hide();
       continue;
     }
     const QPoint point = widgetPoint(vtkWidget_, *display).toPoint();
-    const QRect bounds(QPoint(static_cast<int>(viewport[0] * vtkWidget_->width()),
-                              static_cast<int>((1.0 - viewport[3]) * vtkWidget_->height())),
-                       QPoint(static_cast<int>(viewport[2] * vtkWidget_->width()) - 1,
-                              static_cast<int>((1.0 - viewport[1]) * vtkWidget_->height()) - 1));
+    const QRect bounds = viewportRect(vtkWidget_, renderer_.tiles()[match.tile].viewport);
     if (!bounds.contains(point)) {
       card->hide();
       continue;
@@ -2494,13 +2429,22 @@ void ViewerWindow::unpin() {
   restartTrace();
 }
 
+std::optional<size_t> ViewerWindow::tracedField() const {
+  if (!playbackBar_ || !pin_ || pin_->mesh != load_.temporalMesh) {
+    return std::nullopt;
+  }
+  const std::optional<ProbeHit> shown = renderer_.probeAgain(*pin_);
+  const auto field = shown ? renderer_.tiles()[shown->tile].field : std::nullopt;
+  return field && temporalFields_.count(*field) != 0 ? field : std::nullopt;
+}
+
 void ViewerWindow::restartTrace() {
   if (!playbackBar_) {
     return;
   }
-  const bool traceable = pin_ && activeScalarIdx_ >= 0 && pin_->mesh == load_.temporalMesh;
-  trace_.reset(traceable ? temporal_->steps() : 0);
-  if (traceable) {
+  traced_ = tracedField();
+  trace_.reset(traced_ ? temporal_->steps() : 0);
+  if (traced_) {
     traceTimer_->start();
   } else {
     traceTimer_->stop();
@@ -2509,17 +2453,13 @@ void ViewerWindow::restartTrace() {
 }
 
 void ViewerWindow::readTrace() {
-  if (!pin_ || activeScalarIdx_ < 0) {
+  if (!pin_ || !traced_) {
     traceTimer_->stop();
     return;
   }
-  readTraceFrames(*temporal_,
-                  traceFrame_,
-                  pin_->at,
-                  scalarFields_[static_cast<size_t>(activeScalarIdx_)],
-                  renderer_.getActiveScalarAnalysis(),
-                  trace_,
-                  kTraceBudget);
+  const SceneField& field = renderer_.fields()[*traced_];
+  readTraceFrames(
+      *temporal_, traceFrame_, pin_->at, field.field, field.analysis, trace_, kTraceBudget);
   if (trace_.complete()) {
     traceTimer_->stop();
   }
@@ -2527,22 +2467,15 @@ void ViewerWindow::readTrace() {
 }
 
 void ViewerWindow::showTrace() {
-  QString label;
-  if (activeScalarIdx_ >= 0) {
-    label =
-        pin_ && trace_.frames() > 0
-            ? QStringLiteral("%1 at cell %2")
-                  .arg(QStringFromUtf8(scalarFields_[static_cast<size_t>(activeScalarIdx_)].name))
-                  .arg(pin_->cell)
-            : QStringLiteral("Pin a point with the probe to trace it");
-  }
-  playbackBar_->setTraceLabel(label);
-  double range[2] = {0.0, 1.0};
-  if (trace_.frames() > 0 && renderer_.getActiveScalarGlobalRange(range)) {
-    playbackBar_->setTrace(trace_.values(), range[0], range[1]);
-  } else {
+  if (!traced_ || !pin_ || trace_.frames() == 0) {
+    playbackBar_->setTraceLabel(QStringLiteral("Pin a point with the probe to trace it"));
     playbackBar_->setTrace({}, 0.0, 1.0);
+    return;
   }
+  const SceneField& field = renderer_.fields()[*traced_];
+  playbackBar_->setTraceLabel(
+      QStringLiteral("%1 at cell %2").arg(QStringFromUtf8(field.field.name)).arg(pin_->cell));
+  playbackBar_->setTrace(trace_.values(), field.globalRange[0], field.globalRange[1]);
 }
 
 // What tells the mesh apart from the others: its file, after the file's letter, among
@@ -2568,14 +2501,16 @@ QString ViewerWindow::meshSource(size_t mesh) const {
 }
 
 void ViewerWindow::onViewportResize() {
-  if (facetPager_) {
-    updateFacetPages();
+  // A resize can arrive while the window is still being built.
+  if (!splitAction_) {
+    return;
   }
+  syncLayoutMetrics();
   renderer_.refitCameraIfUntouched();
-  // The widget's resizeEvent has already drawn the panels as they were laid out before.
+  // The widget's resizeEvent has already drawn the tiles as they were laid out before.
   vtkWidget_->renderWindow()->Render();
-  layoutOverlays();
-  refreshProbe();
+  // A split pane's page holds what fits, so its tiles may show other fields now.
+  panesChanged();
 }
 
 void ViewerWindow::notify(const QString& text, NoticeKind kind) {
@@ -2585,22 +2520,24 @@ void ViewerWindow::notify(const QString& text, NoticeKind kind) {
 }
 
 void ViewerWindow::layoutOverlays() {
-  // In a time series the pager sits inside the playback bar.
-  ScalarPager* listPager = facetPager_ ? facetPager_ : scalarPager_;
-  QWidget* bottomPager = playbackBar_ ? nullptr : listPager;
+  // A panel's signal can ask before the panes exist.
+  if (paneUi_.empty()) {
+    return;
+  }
   if (playbackBar_) {
     playbackBar_->setGeometry(
         playbackBarGeometry(vtkWidget_->size(), *playbackBar_, kOverlayMargin));
-  } else if (listPager) {
-    listPager->setGeometry(bottomCenterGeometry(vtkWidget_, listPager, {}));
   }
+  if (rail_) {
+    rail_->setGeometry(railGeometry(vtkWidget_, rail_, playbackBar_));
+  }
+  layoutPanes();
   fieldList_->setGeometry(vtkWidget_->rect());
-  if (listPager) {
-    fieldList_->setAnchor(QRect(listPager->mapTo(vtkWidget_, QPoint(0, 0)), listPager->size()));
+  if (const ScalarPager* pager = paneUi_[listPane_].pager) {
+    fieldList_->setAnchor(QRect(pager->mapTo(vtkWidget_, QPoint(0, 0)), pager->size()));
   }
   palette_->setGeometry(vtkWidget_->rect());
   if (rail_) {
-    rail_->setGeometry(railGeometry(vtkWidget_, rail_, playbackBar_));
     if (annotating_) {
       annotationBar_->setGeometry(
           annotationBarGeometry(vtkWidget_, annotationBar_, rail_->geometry()));
@@ -2610,12 +2547,14 @@ void ViewerWindow::layoutOverlays() {
       keyHints_->setVisible(hints.left() > rail_->geometry().right() + kRailPanelGap &&
                             hints.right() < vtkWidget_->width() - kOverlayMargin);
     }
-    const auto besideRail = [this, bottomPager](int width) {
-      return railPanelArea(vtkWidget_,
-                           rail_->geometry(),
-                           width,
-                           {annotationBar_},
-                           {playbackBar_, keyHints_, bottomPager});
+    std::vector<const QWidget*> barsBelow{playbackBar_, keyHints_};
+    for (const PaneUi& ui : paneUi_) {
+      if (ui.pager && ui.pager->parentWidget() == vtkWidget_) {
+        barsBelow.push_back(ui.pager);
+      }
+    }
+    const auto besideRail = [this, &barsBelow](int width) {
+      return railPanelArea(vtkWidget_, rail_->geometry(), width, {annotationBar_}, barsBelow);
     };
     if (!layersPanel_->isHidden()) {
       const QRect area = besideRail(layersPanel_->sizeHint().width());
@@ -2633,30 +2572,64 @@ void ViewerWindow::layoutOverlays() {
           railPanelGeometry(besideRail(size.width()), rail_->geometry(), size));
     }
   }
-  if (!colorBar_->isHidden()) {
-    colorBar_->setGeometry(
-        legendGeometry(vtkWidget_, colorBar_, {playbackBar_, keyHints_, bottomPager}));
-  }
   // After the annotation bar, which it goes under.
   notice_->setGeometry(noticeGeometry(vtkWidget_, notice_, annotationBar_));
-  layoutPanelLabels();
-  layoutFacetColorBars();
   stackOverlays();
 }
 
-void ViewerWindow::stackOverlays() {
-  colorBar_->raise();
-  for (ColorBarWidget* legend : facetColorBars_) {
-    if (legend) {
-      legend->raise();
+void ViewerWindow::layoutPanes() {
+  const std::vector<Pane>& panes = renderer_.panes();
+  for (size_t index = 0; index < panes.size(); ++index) {
+    const Pane& pane = panes[index];
+    const PaneUi& ui = paneUi_[index];
+    const QRect area = viewportRect(vtkWidget_, pane.viewport);
+    if (ui.label) {
+      ui.label->setGeometry(area);
+      ui.label->lower();
     }
+    // Bottom center of its pane, unless the playback bar holds it.
+    QRect pager;
+    if (ui.pager && ui.pager->parentWidget() == vtkWidget_) {
+      const int height = ui.pager->sizeHint().height();
+      QRect strip = area.adjusted(kFacetLegendMargin, 0, -kFacetLegendMargin, 0);
+      strip.setTop(area.bottom() + 1 - kOverlayMargin - height);
+      strip.setHeight(height);
+      if (rail_ && strip.intersects(rail_->geometry())) {
+        strip.setLeft(rail_->geometry().right() + 1 + kOverlayGap);
+      }
+      const QSize size = ui.pager->fitWidth(std::max(0, strip.width()));
+      const bool fits = size.width() <= strip.width() && area.contains(strip);
+      if (fits) {
+        pager = QRect(QPoint(strip.left() + (strip.width() - size.width()) / 2, strip.top()), size);
+        ui.pager->setGeometry(pager);
+      }
+      ui.pager->setVisible(fits && !annotating_);
+    }
+    for (size_t tile = pane.firstTile; tile < pane.firstTile + pane.tileCount; ++tile) {
+      if (!legends_[tile]->isHidden()) {
+        legends_[tile]->setGeometry(
+            legendGeometry(viewportRect(vtkWidget_, renderer_.tiles()[tile].viewport),
+                           legends_[tile],
+                           pane.mode,
+                           ui.pager && !ui.pager->isHidden() ? pager : QRect()));
+      }
+    }
+  }
+}
+
+void ViewerWindow::stackOverlays() {
+  for (ColorBarWidget* legend : legends_) {
+    legend->raise();
   }
   for (ProbeCard* card : probeCards_) {
     card->raise();
   }
+  for (const PaneUi& ui : paneUi_) {
+    if (ui.pager && ui.pager->parentWidget() == vtkWidget_) {
+      ui.pager->raise();
+    }
+  }
   overlay::stackOverlays({playbackBar_,
-                          scalarPager_,
-                          facetPager_,
                           keyHints_,
                           notice_,
                           rail_,
@@ -2666,64 +2639,4 @@ void ViewerWindow::stackOverlays() {
                           annotationBar_,
                           fieldList_,
                           palette_});
-}
-
-void ViewerWindow::layoutPanelLabels() {
-  for (size_t i = 0; i < panelLabels_.size(); ++i) {
-    PanelLabel* frame = panelLabels_[i];
-    double viewport[4];
-    const bool shown = renderer_.getPanelViewport(i, viewport);
-    frame->setVisible(shown);
-    if (!shown) {
-      continue;
-    }
-    const int left = static_cast<int>(std::lround(viewport[0] * vtkWidget_->width()));
-    const int top = static_cast<int>(std::lround((1.0 - viewport[3]) * vtkWidget_->height()));
-    const int right = static_cast<int>(std::lround(viewport[2] * vtkWidget_->width()));
-    const int bottom = static_cast<int>(std::lround((1.0 - viewport[1]) * vtkWidget_->height()));
-    frame->setGeometry(left, top, right - left, bottom - top);
-    FacetPanelInfo info;
-    const bool leading = !options_.explodeView ||
-                         (renderer_.getFacetPanelInfo(i, info) &&
-                          info.column == renderer_.getFacetPage() * renderer_.getFacetPageSize());
-    frame->setCaption(leading ? PanelCaption::Filename : PanelCaption::Badge);
-    frame->setStatus(options_.explodeView && !info.hasScalar && !info.title.empty()
-                         ? QStringLiteral("No %1").arg(QStringFromUtf8(info.title))
-                         : QString());
-    frame->lower();
-  }
-}
-
-// Each panel's legend sits in its bottom-right corner, in the form its panel's size calls for.
-void ViewerWindow::layoutFacetColorBars() {
-  const int viewportWidth = vtkWidget_->width();
-  const int viewportHeight = vtkWidget_->height();
-  for (size_t panelIndex = 0; panelIndex < facetColorBars_.size(); ++panelIndex) {
-    ColorBarWidget* legend = facetColorBars_[panelIndex];
-    FacetPanelInfo panelInfo;
-    if (!legend || !renderer_.getFacetPanelInfo(panelIndex, panelInfo)) {
-      continue;
-    }
-    legend->setVisible(panelInfo.shown);
-    if (!panelInfo.shown) {
-      continue;
-    }
-    const int panelRight = static_cast<int>(std::round(panelInfo.viewport[2] * viewportWidth));
-    const int panelBottom =
-        static_cast<int>(std::round((1.0 - panelInfo.viewport[1]) * viewportHeight));
-    const int panelWidth =
-        std::max(1,
-                 static_cast<int>(
-                     std::round((panelInfo.viewport[2] - panelInfo.viewport[0]) * viewportWidth)));
-    const int panelHeight =
-        std::max(1,
-                 static_cast<int>(
-                     std::round((panelInfo.viewport[3] - panelInfo.viewport[1]) * viewportHeight)));
-
-    const QSize size = legend->fitPanel(QSize(panelWidth, panelHeight), kFacetLegendMargin);
-    legend->setGeometry(panelRight - kFacetLegendMargin - size.width(),
-                        panelBottom - kFacetLegendMargin - size.height(),
-                        size.width(),
-                        size.height());
-  }
 }

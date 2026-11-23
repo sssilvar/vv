@@ -90,8 +90,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p benchmark-results
-          build/tests/vv_viewer_tests benchmarkFacetSetup -iterations 5 -median 5 -o benchmark-results/cpu-setup.xml,xml -o -,txt
-          build/tests/vv_viewer_tests benchmarkColumnInteraction -iterations 1000 -median 5 -o benchmark-results/cpu-interaction.xml,xml -o -,txt
+          build/tests/vv_viewer_tests benchmarkSplitSetup -iterations 5 -median 5 -o benchmark-results/cpu-setup.xml,xml -o -,txt
+          build/tests/vv_viewer_tests benchmarkSharedFieldInteraction -iterations 1000 -median 5 -o benchmark-results/cpu-interaction.xml,xml -o -,txt
       - name: Software OpenGL frame benchmark
         timeout-minutes: 3
         env:
@@ -230,8 +230,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p benchmark-results
-          build/tests/vv_viewer_tests benchmarkFacetSetup -iterations 5 -median 5 -o benchmark-results/cpu-setup.xml,xml -o -,txt
-          build/tests/vv_viewer_tests benchmarkColumnInteraction -iterations 1000 -median 5 -o benchmark-results/cpu-interaction.xml,xml -o -,txt
+          build/tests/vv_viewer_tests benchmarkSplitSetup -iterations 5 -median 5 -o benchmark-results/cpu-setup.xml,xml -o -,txt
+          build/tests/vv_viewer_tests benchmarkSharedFieldInteraction -iterations 1000 -median 5 -o benchmark-results/cpu-interaction.xml,xml -o -,txt
       - name: Native OpenGL frame benchmark
         timeout-minutes: 3
         env:

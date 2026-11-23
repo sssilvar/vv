@@ -177,6 +177,10 @@ void ColorBarWidget::setCategorical(const std::vector<std::pair<QString, QColor>
 }
 
 void ColorBarWidget::clearCategorical() {
+  // Already a gradient: a typed bound keeps its digits when the owner syncs the legend again.
+  if (!categorical_) {
+    return;
+  }
   categorical_ = false;
   catEntries_.clear();
   clipValueFormats_.fill(ValueFormat::Rounded);
