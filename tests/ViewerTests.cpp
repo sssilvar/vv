@@ -187,6 +187,9 @@ class ViewerTests : public QObject {
   // The widget point showing world point (x, y, 0) in the first tile.
   static QPointF widgetPointAt(const ViewerWindow& view, double x, double y) {
     vtkRenderer* renderer = view.renderer_.getRenderer();
+    if (!renderer) {
+      qFatal("The viewer test needs a renderer in the first tile");
+    }
     renderer->SetWorldPoint(x, y, 0.0, 1.0);
     renderer->WorldToDisplay();
     const double* display = renderer->GetDisplayPoint();
