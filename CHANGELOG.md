@@ -1,5 +1,7 @@
 # [Unreleased]
 
+# [3.0.0] - 2026-11-25
+
 ### Added
 
 - Each file opens in a pane of its own with its own field, pager and legend, so one file can show `potential` while the one beside it shows `dispersion`. A pane switches between single view (one field at a time) and split view (a tile per field, paged when they do not fit) from the grid button on its pager, a right click on its mesh or **T**, independently of the other panes.
