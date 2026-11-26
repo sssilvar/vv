@@ -1,5 +1,7 @@
 # [Unreleased]
 
+# [3.0.1] - 2026-11-26
+
 ### Changed
 
 - A whole-number category takes its color from its value rather than its rank, so a region keeps its color in a file that lacks another region.
