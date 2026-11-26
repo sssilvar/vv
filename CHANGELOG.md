@@ -1,5 +1,9 @@
 # [Unreleased]
 
+### Added
+
+- Hold **J** to paint and **K** to erase while annotating, beside **A** and **E**, so the left hand can stay on the mouse.
+
 # [3.0.0] - 2026-11-25
 
 ### Added

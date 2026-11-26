@@ -419,11 +419,12 @@ public:
                           std::function<void(const QPointF&, Qt::MouseButton)> onClick,
                           std::function<void(double factor)> onZoom,
                           std::function<void(bool active, bool erase)> onPaintHold,
+                          std::function<bool()> paintKeysLive,
                           QObject* parent = nullptr)
       : QObject(parent), vtkRoot_(vtkRoot), onSpace_(std::move(onSpace)),
         onPointerEvent_(std::move(onPointerEvent)), onHover_(std::move(onHover)),
         onClick_(std::move(onClick)), onZoom_(std::move(onZoom)),
-        onPaintHold_(std::move(onPaintHold)) {
+        onPaintHold_(std::move(onPaintHold)), paintKeysLive_(std::move(paintKeysLive)) {
     if (vtkRoot_) {
       connect(vtkRoot_, &QObject::destroyed, this, [this] { vtkRoot_ = nullptr; });
     }
@@ -541,7 +542,14 @@ private:
       return false;
     }
     auto* ke = static_cast<QKeyEvent*>(event);
-    const bool paintKey = ke->key() == Qt::Key_A || ke->key() == Qt::Key_E;
+    const bool eraseKey = ke->key() == Qt::Key_E || ke->key() == Qt::Key_K;
+    // Only bare holds while annotating, so shortcuts such as Ctrl+K keep their keys. A
+    // release passes whatever the modifiers, so a hold always ends.
+    const bool bare =
+        event->type() == QEvent::KeyRelease ||
+        !(ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
+    const bool paintKey = bare && paintKeysLive_ && paintKeysLive_() &&
+                          (eraseKey || ke->key() == Qt::Key_A || ke->key() == Qt::Key_J);
     if (event->type() == QEvent::ShortcutOverride) {
       if (ke->key() == Qt::Key_Space || ke->key() == Qt::Key_Q || paintKey) {
         ke->accept();
@@ -559,9 +567,10 @@ private:
       vtkRoot_->window()->close();
       return true;
     }
-    // Hold 'a' to paint, 'e' to erase; ignore X11 auto-repeat so the hold sticks.
+    // Hold A or J to paint, E or K to erase (J and K suit the left hand on the
+    // mouse); ignore X11 auto-repeat so the hold sticks.
     if (!ke->isAutoRepeat() && onPaintHold_ && paintKey) {
-      onPaintHold_(pressed, pressed && ke->key() == Qt::Key_E);
+      onPaintHold_(pressed, pressed && eraseKey);
       return true;
     }
     return false;
@@ -582,6 +591,7 @@ private:
   std::function<void(const QPointF&, Qt::MouseButton)> onClick_;
   std::function<void(double factor)> onZoom_;
   std::function<void(bool active, bool erase)> onPaintHold_;
+  std::function<bool()> paintKeysLive_;
   std::optional<QPointF> pressedAt_; // where a press that may become a click began
   Qt::MouseButton pressedButton_ = Qt::NoButton;
 };
@@ -716,6 +726,7 @@ ViewerWindow::ViewerWindow(MeshLoadResult loadResult,
       },
       [this](double factor) { renderer_.dolly(factor); },
       [this](bool active, bool erase) { setPaintHold(active, erase); },
+      [this]() { return annotating_; },
       this));
 
   setupPanes();
@@ -1288,12 +1299,13 @@ void ViewerWindow::setupAnnotation() {
   });
 
   const QString undo = QKeySequence(QKeySequence::Undo).toString(QKeySequence::NativeText);
-  keyHints_ = new KeyHints({{{QStringLiteral("A")}, QStringLiteral("hold to paint")},
-                            {{QStringLiteral("E")}, QStringLiteral("hold to erase")},
-                            {{QStringLiteral("1–9")}, QStringLiteral("pick label")},
-                            {{QStringLiteral("+"), QStringLiteral("−")}, QStringLiteral("brush")},
-                            {{undo}, QStringLiteral("undo")}},
-                           vtkWidget_);
+  keyHints_ =
+      new KeyHints({{{QStringLiteral("A"), QStringLiteral("J")}, QStringLiteral("hold to paint")},
+                    {{QStringLiteral("E"), QStringLiteral("K")}, QStringLiteral("hold to erase")},
+                    {{QStringLiteral("1–9")}, QStringLiteral("pick label")},
+                    {{QStringLiteral("+"), QStringLiteral("−")}, QStringLiteral("brush")},
+                    {{undo}, QStringLiteral("undo")}},
+                   vtkWidget_);
 }
 
 // Leaving keeps the labels, the tool, label and brush for the next entry.
@@ -1345,7 +1357,7 @@ void ViewerWindow::applyTool() {
   refreshBrushPreview();
 }
 
-// Press-and-hold from VtkMouseFilter: A arms Paint and E arms Erase while held; the
+// Press-and-hold from VtkMouseFilter: A or J arms Paint and E or K arms Erase while held; the
 // release goes back to the tool chosen on the bar.
 void ViewerWindow::setPaintHold(bool active, bool erase) {
   if (!annotating_) {
