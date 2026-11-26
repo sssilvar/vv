@@ -1,5 +1,9 @@
 # [Unreleased]
 
+### Changed
+
+- A whole-number category takes its color from its value rather than its rank, so a region keeps its color in a file that lacks another region.
+
 ### Added
 
 - Hold **J** to paint and **K** to erase while annotating, beside **A** and **E**, so the left hand can stay on the mouse.

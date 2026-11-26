@@ -332,6 +332,13 @@ std::array<double, 3> categoryColor(const CategoryColoring& coloring,
       return given->second;
     }
   }
+  // A whole value picks its color itself, so a category keeps it in a file that lacks
+  // another one (a segmentation missing a region); other values go by rank.
+  if (std::isfinite(value) && value == std::floor(value)) {
+    const double cycle = 5.0 * static_cast<double>(palette.colors.size());
+    return paletteColor(palette,
+                        static_cast<size_t>(std::fmod(std::fmod(value, cycle) + cycle, cycle)));
+  }
   return paletteColor(palette, rank);
 }
 

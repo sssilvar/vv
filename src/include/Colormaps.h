@@ -47,8 +47,9 @@ struct CategoryColoring {
   std::array<double, 3> nanColor = kCategoryNanColor; // independent of the finite palette
 };
 
-// The color of the category with this value, the rank-th lowest of its field. Default
-// takes fileColors' color for it where the file gives one.
+// The color of the category with this value, the rank-th lowest of its field: a whole
+// value's own palette entry (value modulo the palette's 5-round cycle), else the
+// rank-th. Default takes fileColors' color for it where the file gives one.
 std::array<double, 3> categoryColor(const CategoryColoring& coloring,
                                     const CategoryColors& fileColors,
                                     double value,
