@@ -27,6 +27,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QCursor>
 #include <QDir>
@@ -45,6 +46,9 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
+#include <QPushButton>
+#include <QSaveFile>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSize>
 #include <QStringList>
@@ -71,6 +75,8 @@
 #include <vtkCellPicker.h>
 #include <vtkDataArray.h>
 #include <vtkDataSetMapper.h>
+#include <vtkDataSetWriter.h>
+#include <vtkErrorCode.h>
 #include <vtkExtractCells.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkIdList.h>
@@ -609,6 +615,57 @@ QRect annotationBarGeometry(const QWidget* viewport, AnnotationBar* bar, const Q
   const int x = std::clamp(
       (viewport->width() - size.width()) / 2, left, std::max(left, right - size.width()));
   return {QPoint(x, kOverlayMargin), size};
+}
+
+const QString kConfirmReplaceKey = QStringLiteral("annotation/confirmReplace");
+
+// The bytes of mesh in the format suffix names: legacy vtk, vtp or vtu. std::nullopt
+// when the writer reports an error, which it can do while Write() returns 1.
+std::optional<std::string> serializeMesh(vtkDataSet* mesh, const QString& suffix) {
+  const auto written = [](vtkAlgorithm* writer, int status) {
+    return status != 0 && writer->GetErrorCode() == vtkErrorCode::NoError;
+  };
+  if (suffix == QStringLiteral("vtk")) {
+    // Rendering moves the tables a file attached off their arrays (see
+    // fileLookupTable); a legacy file keeps them only when they are back on.
+    std::vector<vtkDataArray*> restored;
+    for (vtkDataSetAttributes* data : {static_cast<vtkDataSetAttributes*>(mesh->GetPointData()),
+                                       static_cast<vtkDataSetAttributes*>(mesh->GetCellData())}) {
+      for (int i = 0; i < data->GetNumberOfArrays(); ++i) {
+        vtkDataArray* array = data->GetArray(i);
+        if (array && !array->GetLookupTable()) {
+          if (vtkLookupTable* table = fileLookupTable(array)) {
+            array->SetLookupTable(table);
+            restored.push_back(array);
+          }
+        }
+      }
+    }
+    auto w = vtkSmartPointer<vtkDataSetWriter>::New();
+    w->WriteToOutputStringOn();
+    w->SetInputData(mesh);
+    w->SetFileTypeToBinary();
+    const bool ok = written(w, w->Write());
+    for (vtkDataArray* array : restored) {
+      array->SetLookupTable(nullptr);
+    }
+    return ok ? std::optional<std::string>(w->GetOutputStdString()) : std::nullopt;
+  }
+  if (auto* pd = vtkPolyData::SafeDownCast(mesh); pd && suffix == QStringLiteral("vtp")) {
+    auto w = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
+    w->WriteToOutputStringOn();
+    w->SetInputData(pd);
+    w->SetDataModeToBinary(); // VTK 9.1's reader can't read its own appended-mode output
+    return written(w, w->Write()) ? std::optional<std::string>(w->GetOutputString()) : std::nullopt;
+  }
+  if (auto* ug = vtkUnstructuredGrid::SafeDownCast(mesh); ug && suffix == QStringLiteral("vtu")) {
+    auto w = vtkSmartPointer<vtkXMLUnstructuredGridWriter>::New();
+    w->WriteToOutputStringOn();
+    w->SetInputData(ug);
+    w->SetDataModeToBinary();
+    return written(w, w->Write()) ? std::optional<std::string>(w->GetOutputString()) : std::nullopt;
+  }
+  return std::nullopt;
 }
 
 // Grow a set of cells outward from `seed` over shared-vertex adjacency, up to
@@ -1359,8 +1416,12 @@ void ViewerWindow::setupAnnotation() {
     setBrushRings(rings);
   });
   QObject::connect(annotationBar_, &AnnotationBar::undoRequested, this, [this]() { undoStroke(); });
-  QObject::connect(
-      annotationBar_, &AnnotationBar::saveRequested, this, [this]() { saveAnnotations(); });
+  QObject::connect(annotationBar_, &AnnotationBar::saveRequested, this, [this]() {
+    saveAnnotations(SaveMode::InPlace);
+  });
+  QObject::connect(annotationBar_, &AnnotationBar::saveAsRequested, this, [this]() {
+    saveAnnotations(SaveMode::NewFile);
+  });
   QObject::connect(annotationBar_, &AnnotationBar::leaveRequested, this, [this]() {
     annotateAction_->setChecked(false);
   });
@@ -1641,7 +1702,22 @@ void ViewerWindow::undoStroke() {
   }
 }
 
-bool ViewerWindow::saveAnnotations() {
+QString ViewerWindow::inPlacePath() const {
+  if (load_.meshes.groups.size() != 1 || load_.meshes.groups.front().partIndices.size() != 1 ||
+      load_.meshes.names.empty()) {
+    return {};
+  }
+  const QFileInfo file(QStringFromUtf8(load_.meshes.names.front()));
+  const QString suffix = file.suffix().toLower();
+  vtkDataSet* mesh = renderer_.getPrimaryMesh();
+  const bool writable =
+      suffix == QStringLiteral("vtk") ||
+      (suffix == QStringLiteral("vtp") && vtkPolyData::SafeDownCast(mesh)) ||
+      (suffix == QStringLiteral("vtu") && vtkUnstructuredGrid::SafeDownCast(mesh));
+  return writable && file.isFile() ? file.absoluteFilePath() : QString();
+}
+
+bool ViewerWindow::saveAnnotations(SaveMode mode) {
   endStroke();
   vtkDataSet* mesh = renderer_.getPrimaryMesh();
   if (!mesh) {
@@ -1656,36 +1732,61 @@ bool ViewerWindow::saveAnnotations() {
     return false;
   }
 
-  const bool poly = pd != nullptr;
-  QString suggested;
-  if (!load_.meshes.names.empty()) {
-    QFileInfo fi(QStringFromUtf8(load_.meshes.names.front()));
-    suggested = fi.dir().filePath(fi.completeBaseName() + (poly ? QStringLiteral(".labeled.vtp")
-                                                                : QStringLiteral(".labeled.vtu")));
-  }
-  const QString filter = poly ? QStringLiteral("VTK PolyData (*.vtp)")
-                              : QStringLiteral("VTK UnstructuredGrid (*.vtu)");
-  const QString path = QFileDialog::getSaveFileName(this, "Save annotations", suggested, filter);
-  if (path.isEmpty()) {
-    return false;
+  QString path = mode == SaveMode::InPlace ? inPlacePath() : QString();
+  if (!path.isEmpty()) {
+    // defaultFormat() rather than the native store, so tests can point it elsewhere.
+    QSettings settings(QSettings::defaultFormat(),
+                       QSettings::UserScope,
+                       QStringLiteral("vv"),
+                       QStringLiteral("vv"));
+    if (settings.value(kConfirmReplaceKey, true).toBool()) {
+      QMessageBox ask(
+          QMessageBox::Question,
+          QStringLiteral("Replace file"),
+          QStringLiteral("Replace %1 with the labeled mesh?").arg(QDir::toNativeSeparators(path)),
+          QMessageBox::Save | QMessageBox::Cancel,
+          this);
+      ask.button(QMessageBox::Save)->setText(QStringLiteral("Replace"));
+      ask.setDefaultButton(QMessageBox::Save);
+      auto* skip = new QCheckBox(QStringLiteral("Don't ask again"), &ask);
+      ask.setCheckBox(skip);
+      if (ask.exec() != QMessageBox::Save) {
+        return false;
+      }
+      if (skip->isChecked()) {
+        settings.setValue(kConfirmReplaceKey, false);
+      }
+    }
+  } else {
+    const bool poly = pd != nullptr;
+    QString suggested;
+    if (!load_.meshes.names.empty()) {
+      QFileInfo fi(QStringFromUtf8(load_.meshes.names.front()));
+      suggested =
+          fi.dir().filePath(fi.completeBaseName() + (poly ? QStringLiteral(".labeled.vtp")
+                                                          : QStringLiteral(".labeled.vtu")));
+    }
+    const QString filter = poly ? QStringLiteral("VTK PolyData (*.vtp)")
+                                : QStringLiteral("VTK UnstructuredGrid (*.vtu)");
+    path = QFileDialog::getSaveFileName(this, "Save annotations", suggested, filter);
+    if (path.isEmpty()) {
+      return false;
+    }
   }
 
-  const std::string p = path.toUtf8().toStdString();
-  int ok = 0;
-  if (poly) {
-    auto w = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
-    w->SetFileName(p.c_str());
-    w->SetInputData(pd);
-    w->SetDataModeToBinary(); // VTK 9.1's reader can't read its own appended-mode output
-    ok = w->Write();
-  } else {
-    auto w = vtkSmartPointer<vtkXMLUnstructuredGridWriter>::New();
-    w->SetFileName(p.c_str());
-    w->SetInputData(ug);
-    w->SetDataModeToBinary(); // VTK 9.1's reader can't read its own appended-mode output
-    ok = w->Write();
+  QString format = QFileInfo(path).suffix().toLower();
+  if (format != QStringLiteral("vtk") && format != QStringLiteral("vtp") &&
+      format != QStringLiteral("vtu")) {
+    format = pd ? QStringLiteral("vtp") : QStringLiteral("vtu");
   }
-  if (ok == 0) {
+  // QSaveFile writes beside the target and replaces it only once everything is
+  // written, so a failed save leaves the original whole and touches no other file.
+  const std::optional<std::string> bytes = serializeMesh(mesh, format);
+  QSaveFile file(path);
+  if (!bytes || !file.open(QIODevice::WriteOnly) ||
+      file.write(bytes->data(), static_cast<qint64>(bytes->size())) !=
+          static_cast<qint64>(bytes->size()) ||
+      !file.commit()) {
     QMessageBox::warning(
         this, QStringLiteral("Save failed"), QStringLiteral("Could not write ") + path);
     return false;
@@ -1712,7 +1813,8 @@ void ViewerWindow::closeEvent(QCloseEvent* event) {
     ask.setInformativeText(QStringLiteral("Labels you don't save are lost."));
     ask.setDefaultButton(QMessageBox::Save);
     const int answer = ask.exec();
-    if (answer == QMessageBox::Cancel || (answer == QMessageBox::Save && !saveAnnotations())) {
+    if (answer == QMessageBox::Cancel ||
+        (answer == QMessageBox::Save && !saveAnnotations(SaveMode::InPlace))) {
       event->ignore();
       return;
     }
@@ -2304,6 +2406,23 @@ void ViewerWindow::buildRail() {
     addAction(action);
     QObject::connect(action, &QAction::triggered, this, [this, step = brushKey.step]() {
       setBrushRings(brushRings_ + step);
+    });
+    annotateKeys_.push_back(action);
+  }
+  struct SaveKey {
+    int keys;
+    SaveMode mode;
+  };
+  // Spelled out: QKeySequence::SaveAs is empty on Windows.
+  for (const SaveKey saveKey :
+       {SaveKey{static_cast<int>(Qt::CTRL) | Qt::Key_S, SaveMode::InPlace},
+        SaveKey{static_cast<int>(Qt::CTRL) | static_cast<int>(Qt::SHIFT) | Qt::Key_S,
+                SaveMode::NewFile}}) {
+    auto* action = new QAction(this);
+    action->setShortcut(QKeySequence(saveKey.keys));
+    addAction(action);
+    QObject::connect(action, &QAction::triggered, this, [this, mode = saveKey.mode]() {
+      saveAnnotations(mode);
     });
     annotateKeys_.push_back(action);
   }

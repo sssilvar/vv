@@ -15,7 +15,9 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -23,6 +25,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
@@ -38,6 +41,8 @@
 #include <vtkActorCollection.h>
 #include <vtkCellArray.h>
 #include <vtkCellData.h>
+#include <vtkDataSetReader.h>
+#include <vtkDataSetWriter.h>
 #include <vtkFloatArray.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
@@ -210,6 +215,8 @@ class ViewerTests : public QObject {
         {kind, image, vtkSmartPointer<vtkMatrix4x4>::New(), std::move(labels)}, "volume.nii", 0};
   }
 
+  QTemporaryDir configHome_;
+
   static void paint(ViewerWindow& view) {
     view.strokeValue_ = 1;
     view.paintAtWidgetPos(widgetPointAt(view, 0.33, 0.27), 1);
@@ -218,6 +225,11 @@ class ViewerTests : public QObject {
 private slots:
   void initTestCase() {
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    // Keeps the replace confirmation's setting out of the user's settings, which are
+    // the registry or a plist rather than a file on Windows and macOS.
+    QVERIFY(configHome_.isValid());
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, configHome_.path());
   }
 
   // A label map on a grid shifted one voxel in x lands on the intensity grid by world
@@ -419,7 +431,7 @@ private slots:
         dialog->reject();
       }
     });
-    QVERIFY(view->saveAnnotations());
+    QVERIFY(view->saveAnnotations(ViewerWindow::SaveMode::NewFile));
     QVERIFY(!view->isWindowModified());
     vtkNew<vtkXMLPolyDataReader> saved;
     saved->SetFileName(path.toUtf8().constData());
@@ -433,6 +445,97 @@ private slots:
     QCloseEvent clean;
     view->closeEvent(&clean);
     QVERIFY(clean.isAccepted());
+  }
+
+  // Writes the first test mesh as a legacy file with a table on regions, its active
+  // scalars, and opens it in a viewer showing regions.
+  static std::unique_ptr<ViewerWindow> openLegacy(CountingWindow* window, const QString& path) {
+    auto load = testMeshes(1);
+    auto* points = load.meshes.meshes.front()->GetPointData();
+    vtkNew<vtkLookupTable> table;
+    table->SetNumberOfTableValues(20);
+    table->Build();
+    table->SetTableValue(1, 0.8, 0.1, 0.5, 1.0);
+    points->GetArray("regions")->SetLookupTable(table);
+    points->SetActiveScalars("regions");
+    vtkNew<vtkDataSetWriter> writer;
+    writer->SetFileName(path.toUtf8().constData());
+    writer->SetInputData(load.meshes.meshes.front());
+    if (writer->Write() == 0) {
+      return nullptr;
+    }
+    load.meshes.names = {path.toStdString()};
+    load.meshes.groups = {{path.toStdString(), {0}}};
+    auto view = viewer(window, std::move(load), ViewerOptions{});
+    const auto& fields = view->renderer_.panes().front().fields;
+    const auto field = std::find(fields.begin(), fields.end(), fieldNamed(*view, "regions"));
+    view->showField(0, static_cast<int>(std::distance(fields.begin(), field)));
+    return view;
+  }
+
+  // Save replaces the opened file after a confirmation that "Don't ask again" skips,
+  // keeping the file's table and leaving other files alone.
+  void annotationSavesInPlace() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath("mesh.vtk");
+    QFile sibling(path + ".partial");
+    QVERIFY(sibling.open(QIODevice::WriteOnly) && sibling.write("keep") == 4);
+    sibling.close();
+    vtkNew<CountingWindow> window;
+    auto view = openLegacy(window, path);
+    QVERIFY(view);
+    view->annotateAction_->setChecked(true);
+    QCOMPARE(view->inPlacePath(), QFileInfo(path).absoluteFilePath());
+    int prompts = 0;
+    const auto replace = [&prompts]() {
+      if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+        ++prompts;
+        box->checkBox()->setChecked(true);
+        box->button(QMessageBox::Save)->click();
+      }
+    };
+
+    // A "Save failed" warning would wait for a click; close it and report it instead.
+    QStringList warnings;
+    QTimer guard;
+    connect(&guard, &QTimer::timeout, &guard, [&warnings]() {
+      auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+      if (box && box->icon() == QMessageBox::Warning) {
+        warnings << box->text();
+        box->accept();
+      }
+    });
+    guard.start(100);
+
+    paint(*view);
+    QTimer::singleShot(0, view.get(), replace);
+    QVERIFY2(view->saveAnnotations(ViewerWindow::SaveMode::InPlace),
+             qPrintable(warnings.join('\n')));
+    view->undoStroke();
+    QVERIFY(view->saveAnnotations(ViewerWindow::SaveMode::InPlace));
+    paint(*view);
+    QVERIFY(view->saveAnnotations(ViewerWindow::SaveMode::InPlace));
+
+    QCOMPARE(prompts, 1);
+    QVERIFY(!view->isWindowModified());
+    QCOMPARE(QDir(directory.path()).entryList(QDir::Files | QDir::Hidden),
+             QStringList({"mesh.vtk", "mesh.vtk.partial"}));
+    QVERIFY(sibling.open(QIODevice::ReadOnly));
+    QCOMPARE(sibling.readAll(), QByteArray("keep"));
+    vtkNew<vtkDataSetReader> saved;
+    saved->SetFileName(path.toUtf8().constData());
+    saved->Update();
+    auto* table = saved->GetOutput()->GetPointData()->GetScalars()->GetLookupTable();
+    QVERIFY(table);
+    double rgba[4];
+    table->GetTableValue(1, rgba);
+    QCOMPARE(rgba[0], 0.8);
+    auto* labels = saved->GetOutput()->GetCellData()->GetArray("label");
+    QVERIFY(labels);
+    double range[2];
+    labels->GetRange(range);
+    QCOMPARE(range[1], 1.0);
   }
 
   // Filled-in swatches are only values the array stores exactly, and filling them
@@ -476,6 +579,52 @@ private slots:
     const QList<double> offered(view->labelValues_.begin() + 1, view->labelValues_.end());
     QCOMPARE(offered, swatches);
   }
+
+#ifdef Q_OS_UNIX
+  // A save that cannot write keeps the original file and the unsaved state. Unix only:
+  // a read-only directory on Windows still takes new files.
+  void annotationFailedSaveKeepsTheFile() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath("mesh.vtk");
+    vtkNew<CountingWindow> window;
+    auto view = openLegacy(window, path);
+    QVERIFY(view);
+    view->annotateAction_->setChecked(true);
+    QFile original(path);
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    const QByteArray bytes = original.readAll();
+    original.close();
+    QSettings(QSettings::defaultFormat(), QSettings::UserScope, "vv", "vv")
+        .setValue("annotation/confirmReplace", false);
+    QVERIFY(QFile::setPermissions(directory.path(), QFile::ReadOwner | QFile::ExeOwner));
+    if (QFileInfo(directory.path()).isWritable()) {
+      // Root writes anyway; nothing to check.
+      QFile::setPermissions(directory.path(),
+                            QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+      return;
+    }
+    QTimer guard;
+    connect(&guard, &QTimer::timeout, &guard, []() {
+      if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+        box->accept();
+      }
+    });
+    guard.start(50);
+
+    paint(*view);
+    view->endStroke();
+    const bool saved = view->saveAnnotations(ViewerWindow::SaveMode::InPlace);
+
+    QFile::setPermissions(directory.path(), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    QSettings(QSettings::defaultFormat(), QSettings::UserScope, "vv", "vv")
+        .remove("annotation/confirmReplace");
+    QVERIFY(!saved);
+    QVERIFY(view->isWindowModified());
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    QCOMPARE(original.readAll(), bytes);
+  }
+#endif
 
   // A shown categorical field is fixed in place, point by point, its categories on the
   // swatches in order: any values, NaN left unlabeled and written back by Erase.

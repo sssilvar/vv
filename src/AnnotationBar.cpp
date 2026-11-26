@@ -237,17 +237,26 @@ AnnotationBar::AnnotationBar(QWidget* parent) : QWidget(parent) {
                      QKeySequence(QKeySequence::Undo).toString(QKeySequence::NativeText));
   actions->layout()->addWidget(undo_);
   connect(undo_, &QToolButton::clicked, this, &AnnotationBar::undoRequested);
-  auto* save = new QToolButton(actions);
-  save->setObjectName("annotationSave");
-  save->setText(QStringLiteral("Save as…"));
+  const auto saveButton = [actions](const QString& text, const QString& tip) {
+    auto* button = new QToolButton(actions);
+    button->setObjectName("annotationSave");
+    button->setText(text);
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    button->setFixedHeight(kButtonSize);
+    button->setToolTip(tip);
+    button->setFocusPolicy(Qt::NoFocus);
+    actions->layout()->addWidget(button);
+    return button;
+  };
+  auto* save = saveButton(QStringLiteral("Save"),
+                          QStringLiteral("Replace the opened file with the labeled mesh (Ctrl+S)"));
   save->setIcon(lucideIcon(Lucide::Save, kIconSize));
   save->setIconSize(QSize(kIconSize, kIconSize));
-  save->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-  save->setFixedHeight(kButtonSize);
-  save->setToolTip(QStringLiteral("Save the mesh with its labels to a .vtp or .vtu file"));
-  save->setFocusPolicy(Qt::NoFocus);
-  actions->layout()->addWidget(save);
   connect(save, &QToolButton::clicked, this, &AnnotationBar::saveRequested);
+  auto* saveAs = saveButton(QStringLiteral("Save as…"),
+                            QStringLiteral("Save the labeled mesh to a new .vtp or .vtu file "
+                                           "(Ctrl+Shift+S)"));
+  connect(saveAs, &QToolButton::clicked, this, &AnnotationBar::saveAsRequested);
   auto* leave =
       iconButton(actions, Lucide::X, QStringLiteral("Leave annotate"), QStringLiteral("Esc"));
   actions->layout()->addWidget(leave);

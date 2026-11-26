@@ -4,6 +4,7 @@
 
 - Hold **J** to paint and **K** to erase while annotating, beside **A** and **E**, so the left hand can stay on the mouse.
 - Annotate edits the shown categorical field in place, point or cell, when it has at most 9 categories: swatches take its categories and colors, plus missing whole-number categories when they fit, so an existing annotation can be fixed without a separate `label` array.
+- Annotation **Save** (**Ctrl+S**) replaces the opened `.vtk`, `.vtp` or `.vtu` file after a confirmation that can be turned off; **Save as…** moves to **Ctrl+Shift+S**.
 
 # [3.0.0] - 2026-11-25
 

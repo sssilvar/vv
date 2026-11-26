@@ -130,8 +130,9 @@ Open Annotate to paint a per-cell integer `label` array, or start with `vv -a me
 - **Rotate**, **Paint** and **Erase** choose the left-drag action. Hold-to-paint/erase keys temporarily override it; right-drag erases while Paint or Erase is selected.
 - Swatches 1 to 9 select the label. The brush paints the hovered cell and the chosen number of neighboring rings along the surface, without jumping to nearby disconnected sheets. A preview shows the affected cells.
 - **Undo** reverts up to 50 strokes.
-- **Save as…** writes the labeled mesh to `.vtp` for PolyData or `.vtu` for an unstructured grid. VTK XML `.vtu` output is not currently supported as input by vv.
-- Closing the annotation bar restores the scalar field and retains labels for another editing session in the same window. Closing vv with unsaved labels asks whether to save, discard or cancel.
+- **Save** (Ctrl+S) replaces the opened file with the labeled mesh, after a confirmation whose **Don't ask again** box turns it off. It applies to a single-mesh `.vtk`, `.vtp` or `.vtu` file; otherwise it asks for a file like Save as.
+- **Save as…** (Ctrl+Shift+S) writes the labeled mesh to `.vtp` for PolyData or `.vtu` for an unstructured grid. VTK XML `.vtu` output is not currently supported as input by vv.
+- Closing the annotation bar restores the scalar field and retains labels for another editing session in the same window. Closing vv with unsaved labels asks whether to save (as Save does), discard or cancel.
 
 Annotation requires a single file and is unavailable for a time series, whose frames replace mesh arrays. Entering it puts the pane in single view. For a multipart file, only its first part receives labels. During annotation, digits select labels, Color is unavailable and field cycling keeps labels visible. Probe reads labels while Rotate is selected. The bottom strip shows annotation keys.
 
@@ -180,6 +181,7 @@ Letter keys below do not require Shift. Shortcuts apply to the viewer; focused e
 | Hold A or J / E or K              | Paint / erase during annotation.                                                                                  |
 | + or = / - or _                   | Increase / decrease brush rings during annotation.                                                                |
 | Ctrl+Z; Command+Z on macOS        | Undo an annotation stroke.                                                                                        |
+| Ctrl+S / Ctrl+Shift+S             | Save annotations in place / to a new file.                                                                        |
 | Ctrl+K; Command+K on macOS        | Toggle the command palette.                                                                                       |
 | Up / Down, Return                 | Navigate and select in a field list or command palette.                                                           |
 | Escape                            | Dismiss search; otherwise close the open panel, release the probe pin, then leave annotation, one step per press. |
