@@ -1630,7 +1630,10 @@ void ViewerWindow::updateBrushPreview(const QPointF& pos) {
     previewActor_ = vtkSmartPointer<vtkActor>::New();
     auto mapper = vtkSmartPointer<vtkDataSetMapper>::New();
     mapper->ScalarVisibilityOff();
-    mapper->SetResolveCoincidentTopologyToPolygonOffset(); // draw over the mesh, no z-fight
+    // The offset mode is global and shifts the mesh as much as the preview, so only the
+    // preview's own extra offset toward the camera keeps it from z-fighting the mesh.
+    vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+    mapper->SetRelativeCoincidentTopologyPolygonOffsetParameters(-1.0, -6.0);
     previewActor_->SetMapper(mapper);
     previewActor_->GetProperty()->SetOpacity(0.5);
     previewActor_->GetProperty()->SetLighting(false);
