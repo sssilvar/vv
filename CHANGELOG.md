@@ -3,6 +3,7 @@
 ### Added
 
 - Hold **J** to paint and **K** to erase while annotating, beside **A** and **E**, so the left hand can stay on the mouse.
+- Annotate edits the shown categorical field in place, point or cell, when it has at most 9 categories: swatches take its categories and colors, plus missing whole-number categories when they fit, so an existing annotation can be fixed without a separate `label` array.
 
 # [3.0.0] - 2026-11-25
 

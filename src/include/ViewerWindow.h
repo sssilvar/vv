@@ -93,17 +93,17 @@ private:
 
   void setAnnotating(bool on); // from the rail's Annotate action
   void setupAnnotation();      // on first entry: label array, colors, picker, bar, hints
-  void ensureLabelArray();
+  void bindLabelArray();
   AnnotationTool activeTool() const; // the held key's, else the one chosen on the bar
   void applyTool();                  // after the active tool changed
   void setPaintHold(bool active, bool erase);
   // Handle a pointer event over the viewport while annotating; returns true if
   // consumed (so the VTK camera does not also react).
   bool handleAnnotatePointer(QMouseEvent* event);
-  vtkIdType annotationCellAt(const QPointF& pos); // primary mesh cell under pos, or -1
-  void paintAtWidgetPos(const QPointF& pos, int value);
-  void endStroke();                            // onto the undo stack
-  void updateBrushPreview(const QPointF& pos); // faded overlay of cells a click would hit
+  vtkIdType annotationCellAt(const QPointF& pos);       // primary mesh cell under pos, or -1
+  void paintAtWidgetPos(const QPointF& pos, int label); // label 0 writes what Erase does
+  void endStroke();                                     // onto the undo stack
+  void updateBrushPreview(const QPointF& pos);          // faded overlay of cells a click would hit
   void refreshBrushPreview(); // at the pointer, after the tool, label or brush changed
   void clearBrushPreview();
   void pickLabel(int label);
@@ -243,10 +243,13 @@ private:
   int brushRings_ = 3;
   std::optional<int> strokeValue_; // what the stroke in progress writes
   vtkSmartPointer<vtkCellPicker> picker_;
-  vtkSmartPointer<vtkLookupTable> labelLut_;     // fixed value→color, stable while painting
-  class vtkIntArray* labelArray_ = nullptr;      // owned by the mesh's cell data
+  vtkSmartPointer<vtkLookupTable> labelLut_; // fixed value→color, stable while painting
+  ScalarField labelField_{"label", FieldAssociation::Cell}; // what strokes write
+  class vtkDataArray* labelArray_ = nullptr;                // owned by the mesh
+  std::vector<double> labelValues_; // [0] is what Erase writes, [i] what label i writes
+  double labelRange_[2] = {0.0, 1.0};
   vtkSmartPointer<class vtkActor> previewActor_; // faded hover overlay of the brush footprint
-  // Undo: each stroke records the (cell, previous value) pairs it changed.
-  std::vector<std::pair<long long, int>> currentStroke_;
-  std::vector<std::vector<std::pair<long long, int>>> undoStack_;
+  // Undo: each stroke records the (tuple, previous value) pairs it changed.
+  std::vector<std::pair<long long, double>> currentStroke_;
+  std::vector<std::vector<std::pair<long long, double>>> undoStack_;
 };

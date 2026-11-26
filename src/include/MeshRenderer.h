@@ -185,10 +185,10 @@ public:
   // Analyze a field again after its values changed, keeping its colormap and palette.
   void reanalyzeField(size_t field);
 
-  // Color the primary mesh in the first tile by a categorical cell array through an
+  // Color the primary mesh in the first tile by a categorical array through an
   // externally owned LUT, so the value-to-color mapping stays fixed while the array is
   // edited (annotation mode). A null lut gives the tile its field back.
-  void setLabelColoring(const std::string& arrayName, vtkLookupTable* lut, const double range[2]);
+  void setLabelColoring(const ScalarField& field, vtkLookupTable* lut, const double range[2]);
   // Draw again after the specified mesh's data changed (e.g. a new playback frame),
   // keeping every color range.
   void refreshAfterDataChange(size_t mesh);

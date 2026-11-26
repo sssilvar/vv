@@ -125,7 +125,7 @@ The command palette searches fields, the active field's colormaps or categorical
 
 ## Annotation
 
-Open Annotate to paint a per-cell integer `label` array, or start with `vv -a mesh.vtk`. An existing integer `label` array is edited in place; otherwise one is created. The mesh displays labels with 0 (unlabeled) in gray.
+Open Annotate to paint a per-cell integer `label` array, or start with `vv -a mesh.vtk`. An existing integer `label` array is edited in place; otherwise one is created. When the shown field is categorical with at most 9 categories, Annotate fixes that field in place instead: swatches 1 to N are its categories in legend order, with their colors and with whole-number gaps plus the next value filled in when they fit, so a category the file lacks can be painted back, and erasing leaves no value (NaN in a floating-point array, otherwise 0). A point field takes the points of the brushed cells. The mesh displays labels with 0 (unlabeled) in gray.
 
 - **Rotate**, **Paint** and **Erase** choose the left-drag action. Hold-to-paint/erase keys temporarily override it; right-drag erases while Paint or Erase is selected.
 - Swatches 1 to 9 select the label. The brush paints the hovered cell and the chosen number of neighboring rings along the surface, without jumping to nearby disconnected sheets. A preview shows the affected cells.

@@ -435,6 +435,94 @@ private slots:
     QVERIFY(clean.isAccepted());
   }
 
+  // Filled-in swatches are only values the array stores exactly, and filling them
+  // ends where doubles no longer step by one.
+  void annotationSwatchesFitTheArray_data() {
+    QTest::addColumn<int>("type");
+    QTest::addColumn<double>("low");
+    QTest::addColumn<double>("high");
+    QTest::addColumn<QList<double>>("swatches");
+    QTest::newRow("unsigned-char")
+        << VTK_UNSIGNED_CHAR << 254.0 << 255.0 << QList<double>{254.0, 255.0};
+    const double big = 9007199254740992.0; // 2^53
+    QTest::newRow("beyond-double-steps")
+        << VTK_DOUBLE << big << big + 2.0 << QList<double>{big, big + 2.0};
+  }
+
+  void annotationSwatchesFitTheArray() {
+    QFETCH(int, type);
+    QFETCH(double, low);
+    QFETCH(double, high);
+    QFETCH(QList<double>, swatches);
+    vtkNew<CountingWindow> window;
+    auto load = testMeshes(1);
+    auto& mesh = load.meshes.meshes.front();
+    vtkSmartPointer<vtkDataArray> zones;
+    zones.TakeReference(vtkDataArray::CreateDataArray(type));
+    zones->SetName("zones");
+    zones->SetNumberOfTuples(mesh->GetNumberOfPoints());
+    for (vtkIdType i = 0; i < zones->GetNumberOfTuples(); ++i) {
+      zones->SetTuple1(i, i % 2 == 0 ? low : high);
+    }
+    mesh->GetPointData()->AddArray(zones);
+    auto view = viewer(window, std::move(load), ViewerOptions{});
+    const auto& fields = view->renderer_.panes().front().fields;
+    const auto field = std::find(fields.begin(), fields.end(), fieldNamed(*view, "zones"));
+    QVERIFY(field != fields.end());
+    view->showField(0, static_cast<int>(std::distance(fields.begin(), field)));
+
+    view->annotateAction_->setChecked(true);
+
+    const QList<double> offered(view->labelValues_.begin() + 1, view->labelValues_.end());
+    QCOMPARE(offered, swatches);
+  }
+
+  // A shown categorical field is fixed in place, point by point, its categories on the
+  // swatches in order: any values, NaN left unlabeled and written back by Erase.
+  void annotationFixesCategoricalField() {
+    vtkNew<CountingWindow> window;
+    auto load = testMeshes(1);
+    auto& mesh = load.meshes.meshes.front();
+    vtkNew<vtkFloatArray> sources;
+    sources->SetName("sources");
+    sources->SetNumberOfTuples(mesh->GetNumberOfPoints());
+    for (vtkIdType i = 0; i < sources->GetNumberOfTuples(); ++i) {
+      sources->SetValue(i,
+                        i % 4 == 0 ? std::numeric_limits<float>::quiet_NaN()
+                                   : 100.0F + static_cast<float>(i % 3));
+    }
+    mesh->GetPointData()->AddArray(sources);
+    auto view = viewer(window, std::move(load), ViewerOptions{});
+    const auto& fields = view->renderer_.panes().front().fields;
+    const auto field = std::find(fields.begin(), fields.end(), fieldNamed(*view, "sources"));
+    QVERIFY(field != fields.end());
+    view->showField(0, static_cast<int>(std::distance(fields.begin(), field)));
+    view->annotateAction_->setChecked(true);
+    // 100 to 102 and the next value, for a category this file lacks.
+    QCOMPARE(view->labelValues_.size(), size_t(5));
+    QCOMPARE(view->labelValues_.back(), 103.0);
+
+    view->paintAtWidgetPos(widgetPointAt(*view, 0.33, 0.27), 3);
+    view->endStroke();
+
+    auto* data = view->renderer_.getPrimaryMesh();
+    QVERIFY(!data->GetCellData()->GetArray("label"));
+    auto* edited = data->GetPointData()->GetArray("sources");
+    vtkIdType painted = 0;
+    for (vtkIdType i = 0; i < edited->GetNumberOfTuples(); ++i) {
+      painted += edited->GetTuple1(i) == 102.0 && i % 3 != 2 ? 1 : 0;
+    }
+    QVERIFY(painted > 0);
+
+    view->paintAtWidgetPos(widgetPointAt(*view, 0.33, 0.27), 0);
+    view->endStroke();
+    painted = 0;
+    for (vtkIdType i = 0; i < edited->GetNumberOfTuples(); ++i) {
+      painted += edited->GetTuple1(i) == 102.0 && i % 3 != 2 ? 1 : 0;
+    }
+    QCOMPARE(painted, vtkIdType(0));
+  }
+
   void hiddenPinVisibility() {
     vtkNew<CountingWindow> window;
     auto load = testMeshes(2);

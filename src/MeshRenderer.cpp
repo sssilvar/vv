@@ -953,14 +953,14 @@ void MeshRenderer::reanalyzeField(size_t field) {
   }
 }
 
-void MeshRenderer::setLabelColoring(const std::string& arrayName,
+void MeshRenderer::setLabelColoring(const ScalarField& field,
                                     vtkLookupTable* lut,
                                     const double range[2]) {
   if (tiles_.empty()) {
     return;
   }
   if (lut) {
-    labels_ = LabelColoring{{arrayName, FieldAssociation::Cell}, lut, {range[0], range[1]}};
+    labels_ = LabelColoring{field, lut, {range[0], range[1]}};
   } else {
     labels_.reset();
   }
