@@ -1223,12 +1223,32 @@ void ViewerWindow::applyPlayTimerInterval() {
   playTimer_->setInterval(std::max(4, static_cast<int>(std::round(1000.0 / fps))));
 }
 
-void ViewerWindow::ensureLabelArray() {
+// The array strokes write: the shown field when it is categorical with at most
+// kNumLabels categories, so an existing annotation is fixed in place with its values
+// and colors; otherwise the cell array "label", created when missing.
+void ViewerWindow::bindLabelArray() {
   vtkDataSet* mesh = renderer_.getPrimaryMesh();
   if (!mesh) {
     return;
   }
-  labelArray_ = vtkIntArray::SafeDownCast(mesh->GetCellData()->GetArray("label"));
+  ScalarField target{"label", FieldAssociation::Cell};
+  const SceneField* shown = nullptr;
+  const Pane& pane = renderer_.panes().front();
+  if (pane.first >= 0) {
+    const SceneField& field = renderer_.fields()[pane.fields[static_cast<size_t>(pane.first)]];
+    if (field.analysis.categorical &&
+        field.analysis.uniqueValues.size() <= static_cast<size_t>(kNumLabels) &&
+        arrayForAssociation(mesh, field.field.name, field.field.association)) {
+      target = field.field;
+      shown = &field;
+    }
+  }
+  if (target.name != labelField_.name || target.association != labelField_.association) {
+    undoStack_.clear();
+    annotationBar_->setUndoAvailable(false);
+  }
+  labelField_ = target;
+  labelArray_ = arrayForAssociation(mesh, target.name, target.association);
   if (!labelArray_) {
     auto arr = vtkSmartPointer<vtkIntArray>::New();
     arr->SetName("label");
@@ -1238,16 +1258,86 @@ void ViewerWindow::ensureLabelArray() {
     mesh->GetCellData()->AddArray(arr);
     labelArray_ = arr;
   }
-  // GetPointCells (used by the surface brush BFS) needs the reverse links built.
-  if (auto* pd = vtkPolyData::SafeDownCast(mesh)) {
-    pd->BuildLinks();
-  } else if (auto* ug = vtkUnstructuredGrid::SafeDownCast(mesh)) {
-    ug->BuildLinks();
+
+  std::vector<AnnotationBar::Label> labels;
+  const auto addLabel = [&labels, this](double value) {
+    double rgb[3];
+    labelLut_->GetColor(value, rgb);
+    labels.push_back({QString::number(value, 'g', 15), qColor({rgb[0], rgb[1], rgb[2]})});
+  };
+  if (shown) {
+    // The swatches are the categories, with the whole-number gaps filled and the value
+    // past the largest, when they fit: a region missing from this file (one the
+    // segmentation lost) can be painted back. Erase leaves no value: NaN where the
+    // array can hold it, else 0.
+    const std::set<double>& present = shown->analysis.uniqueValues;
+    std::set<double> domain = present;
+    constexpr double kExactWhole = 9007199254740992.0; // 2^53
+    const bool whole = std::all_of(present.begin(), present.end(), [](double v) {
+      return v == std::floor(v) && std::abs(v) < kExactWhole;
+    });
+    // Only values the array stores as they are: 256 in an unsigned char array would
+    // land as 0. Past 2^53 doubles no longer step by one, so nothing is filled in.
+    const auto storable = [array = labelArray_](double v) {
+      if (array->GetDataType() == VTK_FLOAT) {
+        return static_cast<double>(static_cast<float>(v)) == v;
+      }
+      return v >= array->GetDataTypeMin() && v <= array->GetDataTypeMax();
+    };
+    if (whole && !present.empty() && *present.rbegin() - *present.begin() + 2.0 <= kNumLabels) {
+      for (double v = *present.begin(); v <= *present.rbegin() + 1.0; ++v) {
+        if (storable(v)) {
+          domain.insert(v);
+        }
+      }
+    }
+    // Colored as the field is: whole values pick their colors by value.
+    labelLut_ =
+        createCategoricalLookupTable(domain, shown->analysis.coloring, shown->analysis.fileColors);
+    labelRange_[0] = *domain.begin();
+    labelRange_[1] = *domain.rbegin();
+    const bool floating =
+        labelArray_->GetDataType() == VTK_FLOAT || labelArray_->GetDataType() == VTK_DOUBLE;
+    labelValues_ = {floating ? std::numeric_limits<double>::quiet_NaN() : 0.0};
+    for (const double v : domain) {
+      labelValues_.push_back(v);
+      addLabel(v);
+    }
+  } else {
+    // Fixed value→color LUT so a value keeps its color while the array is edited;
+    // Tab10, the colors labels had before palettes could be picked.
+    std::set<double> domain;
+    labelValues_.clear();
+    for (int v = 0; v <= kNumLabels; ++v) {
+      domain.insert(static_cast<double>(v));
+      labelValues_.push_back(static_cast<double>(v));
+    }
+    CategoryColoring labelColors;
+    labelColors.palette = findCategoryPalette("tab10");
+    labelLut_ = createCategoricalLookupTable(domain, labelColors, {});
+    labelLut_->SetTableValue(0, 0.6, 0.6, 0.6, 1.0); // value 0 = unlabeled → grey
+    labelLut_->Modified();
+    labelRange_[0] = 0.0;
+    labelRange_[1] = kNumLabels;
+    for (int v = 1; v <= kNumLabels; ++v) {
+      addLabel(static_cast<double>(v));
+    }
   }
+  annotationBar_->setArrayName(QString::fromStdString(target.name));
+  annotationBar_->setLabels(labels);
+  if (currentLabel_ >= static_cast<int>(labelValues_.size())) {
+    currentLabel_ = 1;
+  }
+  annotationBar_->setLabel(currentLabel_);
 }
 
 void ViewerWindow::setupAnnotation() {
-  ensureLabelArray();
+  // GetPointCells (used by the surface brush BFS) needs the reverse links built.
+  if (auto* pd = vtkPolyData::SafeDownCast(renderer_.getPrimaryMesh())) {
+    pd->BuildLinks();
+  } else if (auto* ug = vtkUnstructuredGrid::SafeDownCast(renderer_.getPrimaryMesh())) {
+    ug->BuildLinks();
+  }
   picker_ = vtkSmartPointer<vtkCellPicker>::New();
   picker_->SetTolerance(0.0005);
   // Only the labelled mesh's actor: the brush preview, glyphs and other parts would
@@ -1257,30 +1347,7 @@ void ViewerWindow::setupAnnotation() {
     picker_->AddPickList(renderer_.context.actors.front());
   }
 
-  // Fixed value→color LUT so a value keeps its color while the array is edited.
-  std::set<double> domain;
-  for (int v = 0; v <= kNumLabels; ++v) {
-    domain.insert(static_cast<double>(v));
-  }
-  // Tab10, the colors labels had before palettes could be picked.
-  CategoryColoring labelColors;
-  labelColors.palette = findCategoryPalette("tab10");
-  labelLut_ = createCategoricalLookupTable(domain, labelColors, {});
-  labelLut_->SetTableValue(0, 0.6, 0.6, 0.6, 1.0); // value 0 = unlabeled → grey
-  labelLut_->Modified();
-
   annotationBar_ = new AnnotationBar(vtkWidget_);
-  annotationBar_->setArrayName(QStringLiteral("label"));
-  std::array<QColor, kNumLabels> colors;
-  for (int v = 1; v <= kNumLabels; ++v) {
-    double rgb[3];
-    labelLut_->GetColor(static_cast<double>(v), rgb);
-    colors[static_cast<size_t>(v - 1)] = QColor::fromRgbF(static_cast<QColorComponent>(rgb[0]),
-                                                          static_cast<QColorComponent>(rgb[1]),
-                                                          static_cast<QColorComponent>(rgb[2]));
-  }
-  annotationBar_->setLabelColors(colors);
-  annotationBar_->setLabel(currentLabel_);
   annotationBar_->setBrushRings(brushRings_);
   QObject::connect(annotationBar_, &AnnotationBar::toolChosen, this, [this](AnnotationTool tool) {
     tool_ = tool;
@@ -1313,22 +1380,22 @@ void ViewerWindow::setAnnotating(bool on) {
   if (on == annotating_) {
     return;
   }
-  const double range[2] = {0.0, static_cast<double>(kNumLabels)};
   if (on) {
     if (!annotationBar_) {
       setupAnnotation();
     }
+    bindLabelArray();
     // The labels take the pane's one tile; the bar's swatches are their legend.
     renderer_.setPaneMode(0, PaneMode::Single);
     annotating_ = true;
-    renderer_.setLabelColoring("label", labelLut_, range);
+    renderer_.setLabelColoring(labelField_, labelLut_, labelRange_);
   } else {
     endStroke();
     heldTool_.reset();
     annotating_ = false;
     // Back to the field shown before; a label field of the file has new values.
-    renderer_.setLabelColoring("label", nullptr, range);
-    if (const auto labels = renderer_.findField({"label", FieldAssociation::Cell})) {
+    renderer_.setLabelColoring(labelField_, nullptr, labelRange_);
+    if (const auto labels = renderer_.findField(labelField_)) {
       renderer_.reanalyzeField(*labels);
     }
   }
@@ -1422,23 +1489,36 @@ vtkIdType ViewerWindow::annotationCellAt(const QPointF& pos) {
   return picker_->Pick(display[0], display[1], 0.0, ren) != 0 ? picker_->GetCellId() : -1;
 }
 
-void ViewerWindow::paintAtWidgetPos(const QPointF& pos, int value) {
+void ViewerWindow::paintAtWidgetPos(const QPointF& pos, int label) {
   vtkDataSet* mesh = renderer_.getPrimaryMesh();
   const vtkIdType cell = annotationCellAt(pos);
-  if (!mesh || !labelArray_ || cell < 0) {
+  if (!mesh || !labelArray_ || cell < 0 || label < 0 ||
+      label >= static_cast<int>(labelValues_.size())) {
     return;
   }
+  const double value = labelValues_[static_cast<size_t>(label)];
+  std::vector<vtkIdType> ids = growCells(mesh, cell, brushRings_);
+  // A point field takes the brushed cells' points.
+  if (labelField_.association == FieldAssociation::Point) {
+    std::set<vtkIdType> points;
+    auto cellPts = vtkSmartPointer<vtkIdList>::New();
+    for (const vtkIdType c : ids) {
+      mesh->GetCellPoints(c, cellPts);
+      points.insert(cellPts->begin(), cellPts->end());
+    }
+    ids.assign(points.begin(), points.end());
+  }
   bool changed = false;
-  for (vtkIdType c : growCells(mesh, cell, brushRings_)) {
-    if (c < 0 || c >= labelArray_->GetNumberOfTuples()) {
+  for (const vtkIdType id : ids) {
+    if (id < 0 || id >= labelArray_->GetNumberOfTuples()) {
       continue;
     }
-    const int prev = labelArray_->GetValue(c);
-    if (prev == value) {
+    const double prev = labelArray_->GetTuple1(id);
+    if (prev == value || (std::isnan(prev) && std::isnan(value))) {
       continue;
     }
-    currentStroke_.emplace_back(static_cast<long long>(c), prev);
-    labelArray_->SetValue(c, value);
+    currentStroke_.emplace_back(static_cast<long long>(id), prev);
+    labelArray_->SetTuple1(id, value);
     changed = true;
   }
   if (!changed) {
@@ -1499,9 +1579,9 @@ void ViewerWindow::updateBrushPreview(const QPointF& pos) {
 
   // What a left click would write.
   double rgb[3];
-  labelLut_->GetColor(
-      static_cast<double>(strokeLabel(activeTool(), Qt::LeftButton, currentLabel_).value_or(0)),
-      rgb);
+  labelLut_->GetColor(labelValues_[static_cast<size_t>(
+                          strokeLabel(activeTool(), Qt::LeftButton, currentLabel_).value_or(0))],
+                      rgb);
   previewActor_->GetProperty()->SetColor(rgb);
   previewActor_->VisibilityOn();
   if (renderer_.context.window) {
@@ -1529,6 +1609,9 @@ void ViewerWindow::clearBrushPreview() {
 }
 
 void ViewerWindow::pickLabel(int label) {
+  if (label < 1 || label >= static_cast<int>(labelValues_.size())) {
+    return;
+  }
   currentLabel_ = label;
   annotationBar_->setLabel(label);
   refreshBrushPreview();
@@ -1544,9 +1627,9 @@ void ViewerWindow::undoStroke() {
   if (!labelArray_ || undoStack_.empty() || strokeValue_) {
     return;
   }
-  for (const auto& [cell, prev] : undoStack_.back()) {
-    if (cell >= 0 && cell < labelArray_->GetNumberOfTuples()) {
-      labelArray_->SetValue(static_cast<vtkIdType>(cell), prev);
+  for (const auto& [id, prev] : undoStack_.back()) {
+    if (id >= 0 && id < labelArray_->GetNumberOfTuples()) {
+      labelArray_->SetTuple1(static_cast<vtkIdType>(id), prev);
     }
   }
   undoStack_.pop_back();

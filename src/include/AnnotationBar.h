@@ -47,8 +47,13 @@ public:
   explicit AnnotationBar(QWidget* parent = nullptr);
 
   void setArrayName(const QString& name);
-  /// colors[i] is label i + 1's.
-  void setLabelColors(const std::array<QColor, kLabels>& colors);
+  /// What label i + 1 writes, shown on its swatch's tooltip, and its color.
+  struct Label {
+    QString name;
+    QColor color;
+  };
+  /// One swatch per label, at most kLabels; the swatches past them are hidden.
+  void setLabels(const std::vector<Label>& labels);
 
   // Mark the state; they emit nothing.
   void setTool(AnnotationTool tool);

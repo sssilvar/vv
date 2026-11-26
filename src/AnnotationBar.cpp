@@ -272,10 +272,16 @@ void AnnotationBar::setArrayName(const QString& name) {
   arrayName_->setText(name);
 }
 
-void AnnotationBar::setLabelColors(const std::array<QColor, kLabels>& colors) {
+void AnnotationBar::setLabels(const std::vector<Label>& labels) {
   for (int label = 1; label <= kLabels; ++label) {
-    static_cast<LabelSwatch*>(swatches_->button(label))
-        ->setColor(colors[static_cast<size_t>(label - 1)]);
+    auto* swatch = static_cast<LabelSwatch*>(swatches_->button(label));
+    const auto index = static_cast<size_t>(label - 1);
+    swatch->setVisible(index < labels.size());
+    if (index < labels.size()) {
+      swatch->setColor(labels[index].color);
+      swatch->setAccessibleName(QStringLiteral("Label %1").arg(labels[index].name));
+      swatch->setToolTip(QStringLiteral("%1 (%2)").arg(labels[index].name).arg(label));
+    }
   }
 }
 
