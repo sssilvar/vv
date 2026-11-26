@@ -296,6 +296,23 @@ private slots:
     QVERIFY(view->renderer_.panes().front().first != before);
   }
 
+  // Paint holds claim only bare keys while annotating: Ctrl+K stays the palette's.
+  void paintHoldsLeaveShortcuts() {
+    vtkNew<CountingWindow> window;
+    auto view = viewer(window, testMeshes(1), {});
+    const auto claimed = [&view](Qt::KeyboardModifiers modifiers) {
+      QKeyEvent event(QEvent::ShortcutOverride, Qt::Key_K, modifiers);
+      event.ignore();
+      QApplication::sendEvent(view->vtkWidget_, &event);
+      return event.isAccepted();
+    };
+
+    QVERIFY(!claimed(Qt::NoModifier));
+    view->annotateAction_->setChecked(true);
+    QVERIFY(claimed(Qt::NoModifier));
+    QVERIFY(!claimed(Qt::ControlModifier));
+  }
+
   void windowTitle_data() {
     QTest::addColumn<QString>("source");
     QTest::addColumn<int>("files");

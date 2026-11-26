@@ -177,7 +177,7 @@ Letter keys below do not require Shift. Shortcuts apply to the viewer; focused e
 | X / G                             | Toggle X-ray / Glass.                                                                                             |
 | S / W                             | Solid / Wireframe.                                                                                                |
 | 1 to 9                            | Select a label during annotation.                                                                                 |
-| Hold A / E                        | Paint / erase during annotation.                                                                                  |
+| Hold A or J / E or K              | Paint / erase during annotation.                                                                                  |
 | + or = / - or _                   | Increase / decrease brush rings during annotation.                                                                |
 | Ctrl+Z; Command+Z on macOS        | Undo an annotation stroke.                                                                                        |
 | Ctrl+K; Command+K on macOS        | Toggle the command palette.                                                                                       |
