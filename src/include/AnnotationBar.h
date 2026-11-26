@@ -32,7 +32,7 @@ std::optional<int> strokeLabel(AnnotationTool tool, Qt::MouseButton button, int 
 bool strokeReleaseMissed(QEvent::Type type, Qt::MouseButton button, Qt::MouseButtons buttons);
 
 /// Bar of the annotate mode: the painted array's name, the tool (Rotate, Paint,
-/// Erase), a swatch per label, the brush size in rings of cells, Undo, Save as… and
+/// Erase), a swatch per label, the brush size in rings of cells, Undo, Save, Save as… and
 /// a button that leaves the mode.
 ///
 /// Intent-only: it emits what the user asks for and shows what the set methods push.
@@ -71,6 +71,7 @@ signals:
   void brushRingsChosen(int rings);
   void undoRequested();
   void saveRequested();
+  void saveAsRequested();
   void leaveRequested();
 
 private:

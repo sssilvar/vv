@@ -109,7 +109,11 @@ private:
   void pickLabel(int label);
   void setBrushRings(int rings);
   void undoStroke();
-  bool saveAnnotations(); // false when canceled or not written
+  enum class SaveMode { InPlace, NewFile };
+  // InPlace replaces the opened file, after a confirmation the user can turn off, or
+  // asks for a file when vv cannot write it back; false when canceled or not written.
+  bool saveAnnotations(SaveMode mode);
+  QString inPlacePath() const; // empty when the opened file cannot be written back
   void syncAnnotateKeys();
 
   std::optional<size_t> paneAt(const QPointF& pos) const; // pos in vtkWidget_
