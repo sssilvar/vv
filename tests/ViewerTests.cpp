@@ -626,6 +626,24 @@ private slots:
   }
 #endif
 
+  // The brush preview lies on the mesh; only an offset of its own beyond the mesh's keeps
+  // the two from z-fighting.
+  void brushPreviewDrawsOverTheMesh() {
+    vtkNew<CountingWindow> window;
+    ViewerOptions options;
+    options.annotate = true;
+    auto view = viewer(window, testMeshes(1), options);
+
+    view->updateBrushPreview(widgetPointAt(*view, 0.33, 0.27));
+
+    QVERIFY(view->previewActor_ && view->previewActor_->GetVisibility());
+    double factor = 0.0;
+    double units = 0.0;
+    view->previewActor_->GetMapper()->GetRelativeCoincidentTopologyPolygonOffsetParameters(factor,
+                                                                                           units);
+    QVERIFY(factor < 0.0 && units < 0.0);
+  }
+
   // A shown categorical field is fixed in place, point by point, its categories on the
   // swatches in order: any values, NaN left unlabeled and written back by Erase.
   void annotationFixesCategoricalField() {
