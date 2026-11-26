@@ -80,7 +80,7 @@ Every legend edits its field in place: click a continuous legend's gradient or r
 
 **Default** uses file-provided category colors, or ten colors chosen for the dark view. Legacy VTK colors come from a field's `LOOKUP_TABLE`, which VTK attaches only to the first `SCALARS` block of each point/cell association. Categories index the table directly when all values are whole numbers within it; otherwise entries are assigned in category order. Mesh JSON can provide painter colors.
 
-The Color panel, legend's Palette menu and command palette also offer Tab10, Tab20, Okabe-Ito (colorblind-safe), Set2, Paired and Dark2. Longer category lists reuse palette colors with lighter, then darker variants.
+The Color panel, legend's Palette menu and command palette also offer Tab10, Tab20, Okabe-Ito (colorblind-safe), Set2, Paired and Dark2. A whole-number category takes the palette entry at its value, so it keeps its color in a file missing another category; other categories take entries in order. The entries continue past the palette with lighter, then darker variants.
 
 Click a legend swatch or right-click its row to recolor a category or reset it to its palette color. **More colors…** opens a full picker. Editing a finite category creates **Custom**, which overlays your choices on the current palette. Switching palettes retains Custom; editing another category starts a new Custom over the palette then shown. Choices last until vv exits and apply wherever the field shows.
 

@@ -1099,7 +1099,7 @@ bool checkCategoryPalettes(MeshRenderer& renderer) {
     return false;
   }
   const size_t zones = show(renderer, {"zones", FieldAssociation::Cell});
-  if (!categoryColored(lutOf(renderer, zones), 10.0, defaults.colors[1])) {
+  if (!categoryColored(lutOf(renderer, zones), 10.0, paletteColor(defaults, 10))) {
     std::cerr << "A palette picked for one field colors another\n";
     return false;
   }
@@ -1107,7 +1107,7 @@ bool checkCategoryPalettes(MeshRenderer& renderer) {
   if (!renderer.setCategoryColor(zones, 20.0, red) ||
       !renderer.fields()[zones].analysis.coloring.custom ||
       !categoryColored(lutOf(renderer, zones), 20.0, red) ||
-      !categoryColored(lutOf(renderer, zones), 30.0, defaults.colors[3]) ||
+      !categoryColored(lutOf(renderer, zones), 30.0, paletteColor(defaults, 30)) ||
       renderer.setCategoryPalette(renderer.fields().size(), "okabe-ito")) {
     std::cerr << "A recolor did not make the field's colors custom over its palette\n";
     return false;

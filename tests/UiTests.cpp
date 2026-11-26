@@ -891,7 +891,7 @@ private slots:
     CategoryColoring coloring;
     // Default draws the file's colors, where it has them.
     QVERIFY(categoryColor(coloring, file, 2.0, 1) == file.at(2.0));
-    QVERIFY(categoryColor(coloring, {}, 2.0, 1) == defaults.colors[1]);
+    QVERIFY(categoryColor(coloring, {}, 2.0, 1) == defaults.colors[2]);
 
     // A recolor makes the colors custom, over the palette shown.
     QVERIFY(pickPalette(coloring, "okabe-ito"));
@@ -899,11 +899,11 @@ private slots:
     recolorCategory(coloring, 2.0, red);
     QVERIFY(coloring.custom && coloring.customBase == &okabeIto);
     QVERIFY(categoryColor(coloring, file, 2.0, 1) == red);
-    QVERIFY(categoryColor(coloring, file, 1.0, 0) == okabeIto.colors[0]);
+    QVERIFY(categoryColor(coloring, file, 1.0, 0) == okabeIto.colors[1]);
 
     // Another palette keeps them for Custom.
     QVERIFY(pickPalette(coloring, "tab10") && !coloring.custom);
-    QVERIFY(categoryColor(coloring, file, 2.0, 1) == findCategoryPalette("tab10")->colors[1]);
+    QVERIFY(categoryColor(coloring, file, 2.0, 1) == findCategoryPalette("tab10")->colors[2]);
     QVERIFY(pickPalette(coloring, kCustomPaletteId) && coloring.custom);
     QVERIFY(categoryColor(coloring, file, 2.0, 1) == red);
 
