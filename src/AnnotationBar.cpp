@@ -66,7 +66,7 @@ QToolButton* iconButton(QWidget* parent, Lucide icon, const QString& name, const
   return button;
 }
 
-// A round swatch in its label's color showing the label's number; a white ring marks
+// A round swatch in its label's color showing its value or key; a white ring marks
 // the checked one. Painted, as style sheets do not round a fill inset from its ring.
 class LabelSwatch : public QAbstractButton {
 public:
@@ -282,11 +282,16 @@ void AnnotationBar::setArrayName(const QString& name) {
 }
 
 void AnnotationBar::setLabels(const std::vector<Label>& labels) {
+  // Swatches show the values they write, unless one is too long for a swatch: then all
+  // show their keys, so the bar never mixes values with positions.
+  const bool valuesFit = std::all_of(
+      labels.begin(), labels.end(), [](const Label& label) { return label.name.size() <= 2; });
   for (int label = 1; label <= kLabels; ++label) {
     auto* swatch = static_cast<LabelSwatch*>(swatches_->button(label));
     const auto index = static_cast<size_t>(label - 1);
     swatch->setVisible(index < labels.size());
     if (index < labels.size()) {
+      swatch->setText(valuesFit ? labels[index].name : QString::number(label));
       swatch->setColor(labels[index].color);
       swatch->setAccessibleName(QStringLiteral("Label %1").arg(labels[index].name));
       swatch->setToolTip(QStringLiteral("%1 (%2)").arg(labels[index].name).arg(label));

@@ -1323,10 +1323,10 @@ void ViewerWindow::bindLabelArray() {
     labels.push_back({QString::number(value, 'g', 15), qColor({rgb[0], rgb[1], rgb[2]})});
   };
   if (shown) {
-    // The swatches are the categories, with the whole-number gaps filled and the value
-    // past the largest, when they fit: a region missing from this file (one the
-    // segmentation lost) can be painted back. Erase leaves no value: NaN where the
-    // array can hold it, else 0.
+    // The swatches are the categories, with the whole-number gaps filled when they fit
+    // and the value past the largest when a swatch is left: a region missing from this
+    // file (one the segmentation lost) can be painted back. Erase leaves no value: NaN
+    // where the array can hold it, else 0.
     const std::set<double>& present = shown->analysis.uniqueValues;
     std::set<double> domain = present;
     constexpr double kExactWhole = 9007199254740992.0; // 2^53
@@ -1341,11 +1341,16 @@ void ViewerWindow::bindLabelArray() {
       }
       return v >= array->GetDataTypeMin() && v <= array->GetDataTypeMax();
     };
-    if (whole && !present.empty() && *present.rbegin() - *present.begin() + 2.0 <= kNumLabels) {
-      for (double v = *present.begin(); v <= *present.rbegin() + 1.0; ++v) {
+    // The gaps come before the next value: {1, 3..9} needs all nine swatches for 1..9.
+    if (whole && !present.empty() && *present.rbegin() - *present.begin() + 1.0 <= kNumLabels) {
+      for (double v = *present.begin(); v <= *present.rbegin(); ++v) {
         if (storable(v)) {
           domain.insert(v);
         }
+      }
+      const double next = *present.rbegin() + 1.0;
+      if (domain.size() < static_cast<size_t>(kNumLabels) && storable(next)) {
+        domain.insert(next);
       }
     }
     // Colored as the field is: whole values pick their colors by value.
