@@ -538,24 +538,29 @@ private slots:
     QCOMPARE(range[1], 1.0);
   }
 
-  // Filled-in swatches are only values the array stores exactly, and filling them
-  // ends where doubles no longer step by one.
+  // Filled-in swatches are only values the array stores exactly, filling them ends where
+  // doubles no longer step by one, and gaps take precedence over the next value.
   void annotationSwatchesFitTheArray_data() {
     QTest::addColumn<int>("type");
-    QTest::addColumn<double>("low");
-    QTest::addColumn<double>("high");
+    QTest::addColumn<QList<double>>("values");
     QTest::addColumn<QList<double>>("swatches");
     QTest::newRow("unsigned-char")
-        << VTK_UNSIGNED_CHAR << 254.0 << 255.0 << QList<double>{254.0, 255.0};
+        << VTK_UNSIGNED_CHAR << QList<double>{254.0, 255.0} << QList<double>{254.0, 255.0};
     const double big = 9007199254740992.0; // 2^53
     QTest::newRow("beyond-double-steps")
-        << VTK_DOUBLE << big << big + 2.0 << QList<double>{big, big + 2.0};
+        << VTK_DOUBLE << QList<double>{big, big + 2.0} << QList<double>{big, big + 2.0};
+    QTest::newRow("gap-and-next") << VTK_INT << QList<double>{1.0, 3.0}
+                                  << QList<double>{1.0, 2.0, 3.0, 4.0};
+    QTest::newRow("from-zero") << VTK_INT << QList<double>{0.0, 2.0}
+                               << QList<double>{0.0, 1.0, 2.0, 3.0};
+    QTest::newRow("gap-fills-the-bar")
+        << VTK_CHAR << QList<double>{1.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0}
+        << QList<double>{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0};
   }
 
   void annotationSwatchesFitTheArray() {
     QFETCH(int, type);
-    QFETCH(double, low);
-    QFETCH(double, high);
+    QFETCH(QList<double>, values);
     QFETCH(QList<double>, swatches);
     vtkNew<CountingWindow> window;
     auto load = testMeshes(1);
@@ -564,8 +569,9 @@ private slots:
     zones.TakeReference(vtkDataArray::CreateDataArray(type));
     zones->SetName("zones");
     zones->SetNumberOfTuples(mesh->GetNumberOfPoints());
+    QVERIFY(zones->GetNumberOfTuples() >= values.size());
     for (vtkIdType i = 0; i < zones->GetNumberOfTuples(); ++i) {
-      zones->SetTuple1(i, i % 2 == 0 ? low : high);
+      zones->SetTuple1(i, values[static_cast<int>(i % values.size())]);
     }
     mesh->GetPointData()->AddArray(zones);
     auto view = viewer(window, std::move(load), ViewerOptions{});
@@ -578,6 +584,21 @@ private slots:
 
     const QList<double> offered(view->labelValues_.begin() + 1, view->labelValues_.end());
     QCOMPARE(offered, swatches);
+    const bool shortValues = std::all_of(swatches.begin(), swatches.end(), [](double v) {
+      return QString::number(v, 'g', 15).size() <= 2;
+    });
+    QStringList texts;
+    for (QAbstractButton* button : view->annotationBar_->findChildren<QAbstractButton*>()) {
+      if (button->isVisibleTo(view->annotationBar_) &&
+          button->accessibleName().startsWith(QStringLiteral("Label "))) {
+        texts << button->text();
+      }
+    }
+    QStringList expected;
+    for (int i = 0; i < swatches.size(); ++i) {
+      expected << (shortValues ? QString::number(swatches[i]) : QString::number(i + 1));
+    }
+    QCOMPARE(texts, expected);
   }
 
 #ifdef Q_OS_UNIX

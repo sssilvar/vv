@@ -1,5 +1,10 @@
 # [Unreleased]
 
+### Fixed
+
+- Annotate offers a missing whole-number category even when the categories span all 9 swatches, such as region 2 in a field with 1 and 3 to 9.
+- Annotation swatches show the values they write instead of their positions, so a swatch no longer reads 2 while painting 3.
+
 # [3.0.1] - 2026-11-26
 
 ### Changed

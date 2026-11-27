@@ -47,7 +47,8 @@ public:
   explicit AnnotationBar(QWidget* parent = nullptr);
 
   void setArrayName(const QString& name);
-  /// What label i + 1 writes, shown on its swatch's tooltip, and its color.
+  /// What label i + 1 writes, shown on its swatch when every name has at most two
+  /// characters and on its tooltip, and its color.
   struct Label {
     QString name;
     QColor color;
