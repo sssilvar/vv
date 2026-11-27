@@ -1,5 +1,7 @@
 # [Unreleased]
 
+# [3.0.2] - 2026-11-27
+
 ### Fixed
 
 - Annotate offers a missing whole-number category even when the categories span all 9 swatches, such as region 2 in a field with 1 and 3 to 9.
