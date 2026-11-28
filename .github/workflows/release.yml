@@ -79,7 +79,6 @@ jobs:
             mingw-w64-x86_64-vtk
             mingw-w64-x86_64-fast_float
             mingw-w64-x86_64-hdf5
-            mingw-w64-x86_64-cxxopts
             mingw-w64-x86_64-nlohmann-json
             mingw-w64-x86_64-nsis
 
