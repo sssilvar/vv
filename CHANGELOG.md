@@ -3,6 +3,7 @@
 ### Added
 
 - `vv update` installs the latest release over the running package; on Windows it downloads the new portable `.exe`.
+- Annotate's **Compare** menu, or **T**, shows up to three maps of the file's other fields beside the painted view, each with its own field picker and legend. The maps show the brush preview and draw a white line where the painted label changes, so their values stay readable inside the regions.
 
 ### Changed
 

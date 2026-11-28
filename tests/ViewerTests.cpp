@@ -1,9 +1,12 @@
 #include "ColorBarWidget.h"
 #include "ColorPanel.h"
+#include "FieldChip.h"
+#include "FieldList.h"
 #include "LayersPanel.h"
 #include "PanelLabel.h"
 #include "PlaybackBar.h"
 #include "ProbeCard.h"
+#include "RegionBorders.h"
 #include "ScalarPager.h"
 #include "SliceView.h"
 #include "TemporalSource.h"
@@ -663,6 +666,89 @@ private slots:
     view->previewActor_->GetMapper()->GetRelativeCoincidentTopologyPolygonOffsetParameters(factor,
                                                                                            units);
     QVERIFY(factor < 0.0 && units < 0.0);
+  }
+
+  // Compare puts the painted view on the left and maps of the file's other fields on the
+  // right, each with its legend and chip. Only the painted view takes strokes; the maps
+  // outline what is painted.
+  void annotationComparesMaps() {
+    vtkNew<CountingWindow> window;
+    auto view = viewer(window, testMeshes(1), ViewerOptions{});
+    view->annotateAction_->setChecked(true);
+    const std::vector<Tile>& tiles = view->renderer_.tiles();
+    // The first map shows the field shown before, then the next one.
+    const Pane& pane = view->renderer_.panes().front();
+    const size_t shown = pane.fields[static_cast<size_t>(pane.first)];
+    const size_t other = pane.fields[pane.first == 0 ? 1 : 0];
+
+    // The file has two fields besides the painted label array, so two maps at most.
+    view->setCompareMaps(3);
+    view->panesChanged();
+    QCOMPARE(view->compareCount_, size_t(2));
+    QVERIFY(!tiles[0].reference && tiles[1].reference && tiles[2].reference);
+    QVERIFY(tiles[1].field == shown && tiles[2].field == other);
+    QVERIFY(view->legends_[0]->isHidden());
+    QVERIFY(!view->legends_[1]->isHidden() && !view->legends_[2]->isHidden());
+    QVERIFY(!view->compareChips_[0]->isHidden() && view->compareChips_[2]->isHidden());
+    QCOMPARE(view->compareChips_[0]->text(),
+             QString::fromStdString(view->renderer_.fields()[shown].field.name));
+
+    // The brush preview shows in the maps as in the painted view.
+    view->updateBrushPreview(widgetPointAt(*view, 0.33, 0.27));
+    QVERIFY(view->previewActor_->GetVisibility());
+    QVERIFY(tiles[0].renderer->HasViewProp(view->previewActor_));
+    QVERIFY(tiles[1].renderer->HasViewProp(view->previewActor_));
+
+    // The same mesh point, in the top map: no stroke lands there.
+    vtkRenderer* map = tiles[1].renderer;
+    map->SetWorldPoint(0.33, 0.27, 0.0, 1.0);
+    map->WorldToDisplay();
+    const double* display = map->GetDisplayPoint();
+    const double scale = view->vtkWidget_->devicePixelRatioF();
+    view->strokeValue_ = 1;
+    view->paintAtWidgetPos({display[0] / scale, view->vtkWidget_->height() - display[1] / scale},
+                           1);
+    view->endStroke();
+    QVERIFY(view->undoStack_.empty());
+    QCOMPARE(view->regionBorders_->lines()->GetNumberOfLines(), vtkIdType(0));
+    paint(*view);
+    view->endStroke();
+    QCOMPARE(view->undoStack_.size(), size_t(1));
+    QVERIFY(view->regionBorders_->lines()->GetNumberOfLines() > 0);
+    view->undoStroke();
+    QCOMPARE(view->regionBorders_->lines()->GetNumberOfLines(), vtkIdType(0));
+
+    // A field another map shows trades places, and back.
+    view->openCompareList(1);
+    QVERIFY(!view->fieldList_->isHidden());
+    const std::vector<size_t> rows = view->compareCandidates();
+    emit view->fieldList_->pageChosen(
+        static_cast<int>(std::find(rows.begin(), rows.end(), shown) - rows.begin()));
+    QVERIFY(tiles[1].field == other && tiles[2].field == shown);
+    view->openCompareList(0);
+    emit view->fieldList_->pageChosen(
+        static_cast<int>(std::find(rows.begin(), rows.end(), shown) - rows.begin()));
+    QVERIFY(tiles[1].field == shown && tiles[2].field == other);
+
+    // T steps through the counts.
+    const auto compareKey = std::find_if(
+        view->annotateKeys_.begin(), view->annotateKeys_.end(), [](const QAction* action) {
+          return action->shortcut() == QKeySequence(Qt::Key_T);
+        });
+    QVERIFY(compareKey != view->annotateKeys_.end() && !view->splitAction_->isEnabled());
+    (*compareKey)->trigger();
+    QCOMPARE(view->compareCount_, size_t(0));
+    QVERIFY(!tiles[1].shown && view->compareChips_[0]->isHidden());
+    (*compareKey)->trigger();
+    QCOMPARE(view->compareCount_, size_t(1));
+    QVERIFY(tiles[1].shown && tiles[1].field == shown);
+
+    // Leaving shows the field alone again and keeps the maps for the next entry.
+    view->annotateAction_->setChecked(false);
+    QVERIFY(!tiles[1].shown && view->compareChips_[0]->isHidden());
+    QVERIFY(!view->legends_[0]->isHidden() && !(*compareKey)->isEnabled());
+    view->annotateAction_->setChecked(true);
+    QVERIFY(tiles[1].shown && tiles[1].field == shown);
   }
 
   // A shown categorical field is fixed in place, point by point, its categories on the

@@ -28,6 +28,9 @@
 #include <vtkLookupTable.h>
 #include <vtkMapper.h>
 #include <vtkObjectFactory.h>
+#include <vtkOpenGLActor.h>
+#include <vtkOpenGLRenderWindow.h>
+#include <vtkOpenGLState.h>
 #include <vtkPointData.h>
 #include <vtkPointSet.h>
 #include <vtkPoints.h>
@@ -164,6 +167,9 @@ constexpr const char* kGlassShading = R"(//VTK::Light::Impl
 constexpr double kGlassOutlineWidth = 1.5;
 // Across, in logical pixels.
 constexpr double kPinMarkerSize = 11.0;
+// The reference outline's bright line and the dark casing around it, in logical pixels.
+constexpr double kOutlineWidth = 2.0;
+constexpr double kOutlineCasingWidth = 4.5;
 
 // Trackball camera without vtkInteractorStyle's plain keys (w wireframe, s surface,
 // 3 stereo, p pick, f fly to, e exit...), which would change the view behind vv's
@@ -176,6 +182,25 @@ public:
   vtkTypeMacro(CameraStyle, vtkInteractorStyleTrackballCamera)
 };
 vtkStandardNewMacro(CameraStyle);
+
+// An actor that leaves the depth buffer as it found it: the meshes hide it, and it hides
+// nothing drawn after it.
+class OverlayActor : public vtkOpenGLActor {
+public:
+  static OverlayActor* New();
+  void Render(vtkRenderer* renderer, vtkMapper* mapper) override {
+    auto* window = vtkOpenGLRenderWindow::SafeDownCast(renderer->GetRenderWindow());
+    if (!window) {
+      mapper->Render(renderer, this);
+      return;
+    }
+    const vtkOpenGLState::ScopedglDepthMask restore(window->GetState());
+    window->GetState()->vtkglDepthMask(0);
+    mapper->Render(renderer, this);
+  }
+  vtkTypeMacro(OverlayActor, vtkOpenGLActor)
+};
+vtkStandardNewMacro(OverlayActor);
 
 } // namespace
 
@@ -235,10 +260,13 @@ void MeshRenderer::setup(const std::vector<vtkSmartPointer<vtkDataSet>>& meshes,
       pane.mode = mode;
       pane.first = 0;
     }
-    pane.tileCount = std::clamp<size_t>(pane.fields.size(), 1, kMaxFacetPage);
+    // Enough for a page of fields, or for the first tile and a reference per field.
+    pane.tileCount = std::max(std::clamp<size_t>(pane.fields.size(), 1, kMaxFacetPage),
+                              1 + std::min(pane.fields.size(), kMaxReferences));
     panes_.push_back(std::move(pane));
   }
   labels_.reset();
+  referenceLines_ = nullptr;
   buildTiles(colorsHex);
   frameScene();
 
@@ -289,6 +317,7 @@ void MeshRenderer::buildTiles(const std::vector<std::array<double, 3>>& colorsHe
   }
   glyphActors_.clear();
   pinMarkers_.clear();
+  outline_ = {};
   markerHit_.reset();
   probeLocators_.clear();
   tiles_.clear();
@@ -356,6 +385,13 @@ void MeshRenderer::layout() {
     size_t gridRows = 1;
     size_t shown = 1;
     pane.pageSize = 1;
+    const size_t references =
+        pane.mode == PaneMode::Single ? std::min(pane.references.size(), pane.tileCount - 1) : 0;
+    double column[4] = {}; // the references', right of the first tile
+    if (references > 0) {
+      gridViewport(pane.viewport, 1, 2, 1, column);
+      shown = 1 + references;
+    }
     if (pane.mode == PaneMode::Split) {
       const double paneWidth = (area[2] - area[0]) * width;
       const double paneHeight = (area[3] - area[1]) * height;
@@ -379,12 +415,22 @@ void MeshRenderer::layout() {
       Tile& tile = tiles_[pane.firstTile + count];
       tile.shown = count < shown;
       tile.field.reset();
+      tile.reference = tile.shown && references > 0 && count > 0;
       if (tile.shown) {
-        gridViewport(area, count, gridCols, gridRows, tile.viewport);
-        tile.renderer->SetViewport(tile.viewport);
-        if (pane.first >= 0) {
-          tile.field = pane.fields[static_cast<size_t>(pane.first) + count];
+        if (tile.reference) {
+          gridViewport(column, count - 1, 1, references, tile.viewport);
+          tile.field = pane.references[count - 1];
+        } else {
+          if (references > 0) {
+            gridViewport(area, 0, 2, 1, tile.viewport);
+          } else {
+            gridViewport(area, count, gridCols, gridRows, tile.viewport);
+          }
+          if (pane.first >= 0) {
+            tile.field = pane.fields[static_cast<size_t>(pane.first) + count];
+          }
         }
+        tile.renderer->SetViewport(tile.viewport);
         colorTile(pane.firstTile + count);
       }
       tile.renderer->SetDraw(tile.shown ? 1 : 0);
@@ -392,6 +438,50 @@ void MeshRenderer::layout() {
     }
   }
   updatePinMarkers();
+  updateReferenceOutline();
+}
+
+void MeshRenderer::updateReferenceOutline() {
+  auto& [casing, line] = outline_;
+  if (panes_.empty() || panes_.front().meshes.empty() || (!referenceLines_ && !casing)) {
+    return;
+  }
+  // The lines follow the scene's first mesh, which the first pane's tiles draw first.
+  const Pane& pane = panes_.front();
+  if (!casing) {
+    // Lines lie on the surface they outline; pulled toward the camera they win the depth
+    // test against it. Between themselves depth must not decide: VTK lengthens a segment
+    // shorter than its width, so on a fine mesh a casing would cover the bright line of the
+    // segment behind it. Neither writes depth, and the bright line draws last.
+    vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+    const auto make = [this, &pane](double gray) {
+      vtkNew<vtkPolyDataMapper> mapper;
+      mapper->ScalarVisibilityOff();
+      mapper->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -16.0);
+      vtkSmartPointer<vtkActor> actor = vtkSmartPointer<OverlayActor>::New();
+      actor->SetMapper(mapper);
+      actor->PickableOff();
+      actor->GetProperty()->SetColor(gray, gray, gray);
+      actor->GetProperty()->LightingOff();
+      // One actor in every tile that can be a reference; those not shown do not draw.
+      for (size_t count = 1; count < pane.tileCount; ++count) {
+        tiles_[pane.firstTile + count].renderer->AddActor(actor);
+      }
+      return actor;
+    };
+    casing = make(0.05);
+    line = make(1.0);
+  }
+  const bool show = referenceLines_ && pane.tileCount > 1 && tiles_[pane.firstTile + 1].reference &&
+                    context.actors[tiles_[pane.firstTile].firstActor]->GetVisibility();
+  // VTK's Qt widget sets DPI to 72 times the device pixel ratio.
+  const double scale = (context.window ? context.window->GetDPI() : 72.0) / 72.0;
+  casing->GetProperty()->SetLineWidth(static_cast<float>(kOutlineCasingWidth * scale));
+  line->GetProperty()->SetLineWidth(static_cast<float>(kOutlineWidth * scale));
+  for (vtkActor* actor : {casing.Get(), line.Get()}) {
+    actor->GetMapper()->SetInputDataObject(referenceLines_);
+    actor->SetVisibility(show);
+  }
 }
 
 void MeshRenderer::colorTile(size_t index) {
@@ -542,6 +632,27 @@ void MeshRenderer::stepPane(size_t pane, int step) {
   const int page = ((static_cast<int>(target.page()) + step) % pages + pages) % pages;
   showField(pane,
             target.mode == PaneMode::Single ? page - 1 : page * static_cast<int>(target.pageSize));
+}
+
+bool MeshRenderer::setReferences(size_t pane, std::vector<size_t> fields) {
+  if (pane >= panes_.size() || fields.size() > kMaxReferences) {
+    return false;
+  }
+  const std::vector<size_t>& carried = panes_[pane].fields;
+  if (std::any_of(fields.begin(), fields.end(), [&carried](size_t field) {
+        return std::find(carried.begin(), carried.end(), field) == carried.end();
+      })) {
+    return false;
+  }
+  panes_[pane].references = std::move(fields);
+  layout();
+  render();
+  return true;
+}
+
+void MeshRenderer::setReferenceOutline(vtkPolyData* lines) {
+  referenceLines_ = lines;
+  updateReferenceOutline();
 }
 
 void MeshRenderer::setLayoutMetrics(const LayoutMetrics& metrics) {
@@ -1158,6 +1269,7 @@ bool MeshRenderer::setPartsVisible(const std::vector<PartVisibilityChange>& chan
     }
   }
   updatePinMarkers();
+  updateReferenceOutline();
   render();
   return true;
 }

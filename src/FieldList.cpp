@@ -11,7 +11,7 @@
 namespace {
 
 constexpr int kMargin = 16; // from the edges of the view
-constexpr int kGap = 8;     // between the card and the pager
+constexpr int kGap = 8;     // between the card and its anchor
 constexpr int kMinWidth = 320;
 constexpr int kMaxHeight = 440;
 
@@ -73,18 +73,23 @@ void FieldList::resizeEvent(QResizeEvent* event) {
   place();
 }
 
-// Centered over the anchor and as tall as its rows, shortened to stay inside the margins.
+// Centered over the anchor, or under it where more of the rows fit there, and as tall as
+// its rows, shortened to stay inside the margins.
 void FieldList::place() {
   const QRect anchor = anchor_.isValid() ? anchor_ : QRect(width() / 2, height(), 0, 0);
   const int width = std::max(kMinWidth, anchor.width());
-  const int bottom = anchor.top() - kGap;
+  const int above = anchor.top() - kGap - kMargin;
+  const int below = this->height() - kMargin - (anchor.bottom() + 1 + kGap);
   // From the list, whose rows change while the card's layout may still hold its old hint.
   const QMargins margins = card_->layout()->contentsMargins();
-  const int wanted = list_->sizeHint().height() + margins.top() + margins.bottom();
-  const int height = std::max(1, std::min({wanted, kMaxHeight, bottom - kMargin}));
+  const int wanted =
+      std::min(kMaxHeight, list_->sizeHint().height() + margins.top() + margins.bottom());
+  const bool under = above < wanted && below > above;
+  const int height = std::max(1, std::min(wanted, under ? below : above));
   const int x = std::clamp(
       anchor.center().x() - width / 2, kMargin, std::max(kMargin, this->width() - kMargin - width));
-  card_->setGeometry(x, bottom - height, width, height);
+  const int y = under ? anchor.bottom() + 1 + kGap : anchor.top() - kGap - height;
+  card_->setGeometry(x, y, width, height);
 }
 
 void FieldList::dismiss() {

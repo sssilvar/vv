@@ -10,6 +10,7 @@
 #include <optional>
 #include <vector>
 
+class QAction;
 class QButtonGroup;
 class QFrame;
 class QLabel;
@@ -32,8 +33,9 @@ std::optional<int> strokeLabel(AnnotationTool tool, Qt::MouseButton button, int 
 bool strokeReleaseMissed(QEvent::Type type, Qt::MouseButton button, Qt::MouseButtons buttons);
 
 /// Bar of the annotate mode: the painted array's name, the tool (Rotate, Paint,
-/// Erase), a swatch per label, the brush size in rings of cells, Undo, Save, Save as… and
-/// a button that leaves the mode.
+/// Erase), a swatch per label, the brush size in rings of cells, a menu of how many maps of
+/// other fields to compare beside the painted view, Undo, Save, Save as… and a button that
+/// leaves the mode.
 ///
 /// Intent-only: it emits what the user asks for and shows what the set methods push.
 class AnnotationBar : public QWidget {
@@ -43,6 +45,7 @@ public:
   /// Labels 1 to kLabels have a swatch; 0 is unlabeled.
   static constexpr int kLabels = 9;
   static constexpr int kMaxBrushRings = 15;
+  static constexpr int kMaxCompareMaps = 3;
 
   explicit AnnotationBar(QWidget* parent = nullptr);
 
@@ -61,6 +64,9 @@ public:
   void setLabel(int label);
   void setBrushRings(int rings);
   void setUndoAvailable(bool available);
+  /// count maps shown of the available ones the menu offers, at most kMaxCompareMaps; none
+  /// available disables the menu.
+  void setCompareMaps(int count, int available);
 
   /// Wraps the groups of controls into as many rows as maxWidth needs and returns
   /// the bar's size.
@@ -70,6 +76,7 @@ signals:
   void toolChosen(AnnotationTool tool);
   void labelChosen(int label);
   void brushRingsChosen(int rings);
+  void compareMapsChosen(int count); // 0 for none
   void undoRequested();
   void saveRequested();
   void saveAsRequested();
@@ -84,6 +91,8 @@ private:
   QSlider* brush_ = nullptr;
   QLabel* rings_ = nullptr;
   QToolButton* undo_ = nullptr;
+  QToolButton* compare_ = nullptr;
+  std::vector<QAction*> compareCounts_; // [i] shows i maps
   QVBoxLayout* rows_ = nullptr;
   std::vector<QWidget*> groups_;    // wrapped as whole units, in order
   std::vector<QFrame*> separators_; // separators_[i] precedes groups_[i + 1] in a row
