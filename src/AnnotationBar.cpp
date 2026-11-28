@@ -4,6 +4,8 @@
 #include "OverlayStyle.h"
 
 #include <QAbstractButton>
+#include <QAction>
+#include <QActionGroup>
 #include <QButtonGroup>
 #include <QFont>
 #include <QFontMetrics>
@@ -13,6 +15,7 @@
 #include <QLabel>
 #include <QLayoutItem>
 #include <QMargins>
+#include <QMenu>
 #include <QPainter>
 #include <QPen>
 #include <QRectF>
@@ -153,7 +156,9 @@ AnnotationBar::AnnotationBar(QWidget* parent) : QWidget(parent) {
           "QLabel#annotationArray { font-size: 12px; }"
           "QLabel#annotationRings { color: %1; font-size: 12px; }"
           "QToolButton#panelSegment { padding: 3px 8px; }"
-          "QToolButton#annotationSave { font-size: 12px; padding: 0 10px 0 6px; }"
+          "QToolButton#annotationSave, QToolButton#annotationCompare { font-size: 12px;"
+          "  padding: 0 10px 0 6px; }"
+          "QToolButton#annotationCompare::menu-indicator { image: none; width: 0; }"
           "QFrame#annotationSeparator { background: %4; }"
           "QSlider::groove:horizontal { height: 4px; background: %2; border-radius: 2px; }"
           "QSlider::handle:horizontal { width: 12px; margin: -5px 0; border-radius: 6px;"
@@ -230,6 +235,33 @@ AnnotationBar::AnnotationBar(QWidget* parent) : QWidget(parent) {
     emit brushRingsChosen(rings);
   });
 
+  QWidget* compare = makeGroup(this, 4);
+  compare_ = new QToolButton(compare);
+  compare_->setObjectName("annotationCompare");
+  compare_->setText(QStringLiteral("Compare"));
+  compare_->setIcon(lucideIcon(Lucide::LayoutPanelLeft, kIconSize));
+  compare_->setIconSize(QSize(kIconSize, kIconSize));
+  compare_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  compare_->setFixedHeight(kButtonSize);
+  compare_->setCheckable(true);
+  compare_->setFocusPolicy(Qt::NoFocus);
+  compare_->setAccessibleName(QStringLiteral("Compare"));
+  compare_->setPopupMode(QToolButton::InstantPopup);
+  auto* counts = new QMenu(compare_);
+  overlay::styleMenu(counts);
+  auto* exclusive = new QActionGroup(counts);
+  for (int count = 0; count <= kMaxCompareMaps; ++count) {
+    QAction* action = counts->addAction(count == 0   ? QStringLiteral("Off")
+                                        : count == 1 ? QStringLiteral("1 map")
+                                                     : QStringLiteral("%1 maps").arg(count));
+    action->setCheckable(true);
+    exclusive->addAction(action);
+    connect(action, &QAction::triggered, this, [this, count]() { emit compareMapsChosen(count); });
+    compareCounts_.push_back(action);
+  }
+  compare_->setMenu(counts);
+  compare->layout()->addWidget(compare_);
+
   QWidget* actions = makeGroup(this, 4);
   undo_ = iconButton(actions,
                      Lucide::Undo2,
@@ -262,7 +294,7 @@ AnnotationBar::AnnotationBar(QWidget* parent) : QWidget(parent) {
   actions->layout()->addWidget(leave);
   connect(leave, &QToolButton::clicked, this, &AnnotationBar::leaveRequested);
 
-  groups_ = {title, tools, swatches, brush, actions};
+  groups_ = {title, tools, swatches, brush, compare, actions};
   for (size_t i = 1; i < groups_.size(); ++i) {
     auto* separator = new QFrame(this);
     separator->setObjectName("annotationSeparator");
@@ -274,6 +306,7 @@ AnnotationBar::AnnotationBar(QWidget* parent) : QWidget(parent) {
   setLabel(1);
   setBrushRings(3);
   setUndoAvailable(false);
+  setCompareMaps(0, 0);
   fitWidth(QWIDGETSIZE_MAX);
 }
 
@@ -319,6 +352,20 @@ void AnnotationBar::setBrushRings(int rings) {
 
 void AnnotationBar::setUndoAvailable(bool available) {
   undo_->setEnabled(available);
+}
+
+void AnnotationBar::setCompareMaps(int count, int available) {
+  count = std::clamp(count, 0, available);
+  for (size_t index = 0; index < compareCounts_.size(); ++index) {
+    compareCounts_[index]->setEnabled(static_cast<int>(index) <= available);
+    compareCounts_[index]->setChecked(static_cast<int>(index) == count);
+  }
+  compare_->setChecked(count > 0);
+  compare_->setEnabled(available > 0);
+  compare_->setToolTip(available > 0
+                           ? QStringLiteral("Compare: maps of other fields beside the painted "
+                                            "view (T)")
+                           : QStringLiteral("Compare: no other field to show"));
 }
 
 void AnnotationBar::showRings(int rings) {

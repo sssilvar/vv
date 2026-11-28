@@ -4,6 +4,7 @@
 #include "ColorPanel.h"
 #include "CommandPalette.h"
 #include "FacetPages.h"
+#include "FieldChip.h"
 #include "FieldList.h"
 #include "KeyHints.h"
 #include "LayersPanel.h"
@@ -14,6 +15,7 @@
 #include "PanelLabel.h"
 #include "PlaybackBar.h"
 #include "ProbeCard.h"
+#include "RegionBorders.h"
 #include "ScalarPager.h"
 #include "ScalarVizUtils.h"
 #include "SliceView.h"
@@ -605,6 +607,8 @@ private:
 // Paintable labels 1..kNumLabels, one swatch each; value 0 is "unlabeled". Kept at
 // 9 so the categorical LUT uses the distinct tab10 palette.
 constexpr int kNumLabels = AnnotationBar::kLabels;
+static_assert(AnnotationBar::kMaxCompareMaps == static_cast<int>(kMaxReferences),
+              "the bar offers a map per reference tile");
 constexpr size_t kMaxUndo = 50;
 
 // Top center, clear of the rail's column and wrapped to fit beside it.
@@ -974,8 +978,9 @@ void ViewerWindow::buildViewport(vtkGenericOpenGLRenderWindow* renderWindow) {
   fieldList_ = new FieldList(vtkWidget_);
   fieldList_->setVisible(false);
   QObject::connect(fieldList_, &FieldList::pageChosen, this, [this](int index) {
-    const bool single = renderer_.panes()[listPane_].mode == PaneMode::Single;
-    showField(listPane_, single ? index - 1 : index);
+    if (listChoose_) {
+      listChoose_(index);
+    }
   });
   // Back to the view, so Space cycles again.
   QObject::connect(fieldList_, &FieldList::closed, this, [this]() {
@@ -1430,6 +1435,25 @@ void ViewerWindow::setupAnnotation() {
   QObject::connect(annotationBar_, &AnnotationBar::leaveRequested, this, [this]() {
     annotateAction_->setChecked(false);
   });
+  QObject::connect(annotationBar_, &AnnotationBar::compareMapsChosen, this, [this](int count) {
+    setCompareMaps(static_cast<size_t>(std::max(count, 0)));
+    panesChanged();
+  });
+  for (size_t slot = 0; slot < kMaxReferences; ++slot) {
+    auto* chip = new FieldChip(vtkWidget_);
+    chip->hide();
+    connect(chip, &FieldChip::clicked, this, [this, slot]() { openCompareList(slot); });
+    compareChips_.push_back(chip);
+  }
+  for (size_t line = 0; line < kMaxReferences; ++line) {
+    auto* divider = new QWidget(vtkWidget_);
+    divider->setAttribute(Qt::WA_TransparentForMouseEvents);
+    divider->setAttribute(Qt::WA_StyledBackground);
+    divider->setStyleSheet(
+        QStringLiteral("background: %1;").arg(overlay::css(overlay::kSelectedBorder)));
+    divider->hide();
+    compareDividers_.push_back(divider);
+  }
 
   const QString undo = QKeySequence(QKeySequence::Undo).toString(QKeySequence::NativeText);
   keyHints_ =
@@ -1437,6 +1461,7 @@ void ViewerWindow::setupAnnotation() {
                     {{QStringLiteral("E"), QStringLiteral("K")}, QStringLiteral("hold to erase")},
                     {{QStringLiteral("1–9")}, QStringLiteral("pick label")},
                     {{QStringLiteral("+"), QStringLiteral("−")}, QStringLiteral("brush")},
+                    {{QStringLiteral("T")}, QStringLiteral("compare")},
                     {{undo}, QStringLiteral("undo")}},
                    vtkWidget_);
 }
@@ -1455,6 +1480,8 @@ void ViewerWindow::setAnnotating(bool on) {
     renderer_.setPaneMode(0, PaneMode::Single);
     annotating_ = true;
     renderer_.setLabelColoring(labelField_, labelLut_, labelRange_);
+    // The painted field may be another one now; the maps keep the others.
+    setCompareMaps(compareCount_);
   } else {
     endStroke();
     heldTool_.reset();
@@ -1464,6 +1491,8 @@ void ViewerWindow::setAnnotating(bool on) {
     if (const auto labels = renderer_.findField(labelField_)) {
       renderer_.reanalyzeField(*labels);
     }
+    fieldList_->dismiss(); // a map's
+    applyCompare();
   }
   annotationBar_->setVisible(on);
   keyHints_->setVisible(on);
@@ -1513,7 +1542,8 @@ bool ViewerWindow::handleAnnotatePointer(QMouseEvent* event) {
     if (strokeValue_) {
       return true; // another button during a stroke
     }
-    if (!paintArmed()) {
+    // Beside the painted view a drag turns the camera.
+    if (!paintArmed() || !inPaintTile(mouseLocalPos(event))) {
       return false;
     }
     strokeValue_ = strokeLabel(activeTool(), event->button(), currentLabel_);
@@ -1530,6 +1560,10 @@ bool ViewerWindow::handleAnnotatePointer(QMouseEvent* event) {
       return true;
     }
     if (paintArmed() && event->buttons() == Qt::NoButton) {
+      const bool brush = inPaintTile(mouseLocalPos(event));
+      if (brush != (vtkWidget_->cursor().shape() == Qt::BitmapCursor)) {
+        vtkWidget_->setCursor(brush ? makeBrushCursor() : sceneCursor());
+      }
       updateBrushPreview(mouseLocalPos(event));
     }
     return false;
@@ -1548,7 +1582,8 @@ bool ViewerWindow::handleAnnotatePointer(QMouseEvent* event) {
 
 vtkIdType ViewerWindow::annotationCellAt(const QPointF& pos) {
   vtkRenderer* ren = renderer_.getRenderer();
-  if (!ren || !picker_) {
+  // The ray through a point beside the painted view would still meet the mesh.
+  if (!ren || !picker_ || !inPaintTile(pos)) {
     return -1;
   }
   const std::array<double, 2> display = displayPoint(vtkWidget_, pos);
@@ -1590,8 +1625,13 @@ void ViewerWindow::paintAtWidgetPos(const QPointF& pos, int label) {
   if (!changed) {
     return;
   }
+  labelsChanged();
+}
+
+void ViewerWindow::labelsChanged() {
   // Fixed LUT covers every value, so edits recolor live — no LUT rebuild needed.
   labelArray_->Modified();
+  updateRegionBorders();
   if (renderer_.context.window) {
     renderer_.context.window->Render();
   }
@@ -1612,10 +1652,9 @@ void ViewerWindow::endStroke() {
 }
 
 void ViewerWindow::updateBrushPreview(const QPointF& pos) {
-  vtkRenderer* ren = renderer_.getRenderer();
   vtkDataSet* mesh = renderer_.getPrimaryMesh();
-  const vtkIdType cell = annotationCellAt(pos);
-  if (!ren || !mesh || !labelLut_ || cell < 0) {
+  const vtkIdType cell = annotationCellAt(pos); // none without a renderer
+  if (!mesh || !labelLut_ || cell < 0) {
     clearBrushPreview();
     return;
   }
@@ -1642,7 +1681,11 @@ void ViewerWindow::updateBrushPreview(const QPointF& pos) {
     previewActor_->SetMapper(mapper);
     previewActor_->GetProperty()->SetOpacity(0.5);
     previewActor_->GetProperty()->SetLighting(false);
-    ren->AddActor(previewActor_);
+    // In the maps too, where the brush is aimed by their values.
+    const Pane& pane = renderer_.panes().front();
+    for (size_t tile = pane.firstTile; tile < pane.firstTile + pane.tileCount; ++tile) {
+      renderer_.tiles()[tile].renderer->AddActor(previewActor_);
+    }
   }
   vtkDataSetMapper::SafeDownCast(previewActor_->GetMapper())->SetInputData(extract->GetOutput());
 
@@ -1704,10 +1747,7 @@ void ViewerWindow::undoStroke() {
   undoStack_.pop_back();
   annotationBar_->setUndoAvailable(!undoStack_.empty());
   setWindowModified(true);
-  labelArray_->Modified();
-  if (renderer_.context.window) {
-    renderer_.context.window->Render();
-  }
+  labelsChanged();
 }
 
 QString ViewerWindow::inPlacePath() const {
@@ -1808,6 +1848,147 @@ void ViewerWindow::syncAnnotateKeys() {
   for (QAction* key : annotateKeys_) {
     key->setEnabled(annotating_);
   }
+}
+
+std::vector<size_t> ViewerWindow::compareCandidates() const {
+  std::vector<size_t> fields = renderer_.panes().front().fields;
+  if (const auto painted = renderer_.findField(labelField_)) {
+    fields.erase(std::remove(fields.begin(), fields.end(), *painted), fields.end());
+  }
+  return fields;
+}
+
+void ViewerWindow::setCompareMaps(size_t count) {
+  const std::vector<size_t> candidates = compareCandidates();
+  const auto offered = [&candidates](size_t field) {
+    return std::find(candidates.begin(), candidates.end(), field) != candidates.end();
+  };
+  std::vector<size_t>& fields = compareFields_;
+  fields.erase(std::remove_if(fields.begin(),
+                              fields.end(),
+                              [&offered](size_t field) { return !offered(field); }),
+               fields.end());
+  compareCount_ = std::min({count, kMaxReferences, candidates.size()});
+  // A new map shows the field the view showed before annotating, then the file's next ones.
+  const Pane& pane = renderer_.panes().front();
+  std::vector<size_t> order;
+  if (pane.first >= 0) {
+    order.push_back(pane.fields[static_cast<size_t>(pane.first)]);
+  }
+  order.insert(order.end(), candidates.begin(), candidates.end());
+  for (const size_t field : order) {
+    if (fields.size() < compareCount_ && offered(field) &&
+        std::find(fields.begin(), fields.end(), field) == fields.end()) {
+      fields.push_back(field);
+    }
+  }
+  applyCompare();
+}
+
+void ViewerWindow::applyCompare() {
+  std::vector<size_t> shown;
+  if (annotating_) {
+    shown.assign(compareFields_.begin(),
+                 compareFields_.begin() + static_cast<std::ptrdiff_t>(compareCount_));
+  }
+  // Finding the surface's faces walks the whole mesh, so only once maps show.
+  if (!shown.empty() && !regionBorders_) {
+    regionBorders_ = std::make_unique<RegionBorders>(renderer_.getPrimaryMesh());
+  }
+  updateRegionBorders();
+  renderer_.setReferenceOutline(shown.empty() ? nullptr : regionBorders_->lines());
+  if (renderer_.panes().front().references != shown) {
+    renderer_.setReferences(0, std::move(shown));
+    // The painted view's half frames the meshes again, unless the camera moved.
+    renderer_.refitCameraIfUntouched();
+    if (renderer_.context.window) {
+      renderer_.context.window->Render();
+    }
+  }
+  if (annotationBar_) {
+    annotationBar_->setCompareMaps(
+        static_cast<int>(compareCount_),
+        static_cast<int>(std::min(kMaxReferences, compareCandidates().size())));
+  }
+}
+
+void ViewerWindow::updateRegionBorders() {
+  if (regionBorders_ && annotating_ && compareCount_ > 0 && labelArray_) {
+    regionBorders_->update(labelArray_, labelField_.association);
+  }
+}
+
+void ViewerWindow::openCompareList(size_t slot) {
+  if (!annotating_ || slot >= compareCount_) {
+    return;
+  }
+  const std::vector<size_t> fields = compareCandidates();
+  std::vector<SearchItem> items;
+  for (const size_t field : fields) {
+    const SceneField& scene = renderer_.fields()[field];
+    SearchItem item;
+    item.text = QStringFromUtf8(scene.field.name);
+    item.detail = legendSubtitle(scene.field.association, scene.analysis);
+    item.current = compareFields_[slot] == field;
+    items.push_back(std::move(item));
+  }
+  openList(compareChips_[slot], items, [this, slot, fields](int row) {
+    if (row < 0 || static_cast<size_t>(row) >= fields.size() || slot >= compareFields_.size()) {
+      return;
+    }
+    // A field another map shows trades places with this one's.
+    const size_t field = fields[static_cast<size_t>(row)];
+    const auto other = std::find(compareFields_.begin(), compareFields_.end(), field);
+    if (other != compareFields_.end()) {
+      *other = compareFields_[slot];
+    }
+    compareFields_[slot] = field;
+    applyCompare();
+    panesChanged();
+  });
+}
+
+// Each map's chip at the top right of its tile, below the annotation bar where they meet,
+// and a line left of the maps and between them.
+void ViewerWindow::layoutCompareOverlays() {
+  const Pane& pane = renderer_.panes().front();
+  for (size_t slot = 0; slot < compareChips_.size(); ++slot) {
+    FieldChip* chip = compareChips_[slot];
+    QWidget* divider = compareDividers_[slot];
+    const size_t index = pane.firstTile + 1 + slot;
+    const bool shown = annotating_ && index < pane.firstTile + pane.tileCount &&
+                       renderer_.tiles()[index].reference;
+    divider->setVisible(shown);
+    if (!shown) {
+      chip->hide();
+      continue;
+    }
+    const Tile& tile = renderer_.tiles()[index];
+    const QRect view = viewportRect(vtkWidget_, tile.viewport);
+    const QRect all = viewportRect(vtkWidget_, pane.viewport);
+    divider->setGeometry(slot == 0 ? QRect(view.left(), all.top(), 1, all.height())
+                                   : QRect(view.left(), view.top(), view.width(), 1));
+    divider->lower();
+
+    const SceneField& field = renderer_.fields()[*tile.field];
+    chip->setField(QStringFromUtf8(field.field.name),
+                   legendSubtitle(field.field.association, field.analysis));
+    const QRect area = view.adjusted(
+        kFacetLegendMargin, kFacetLegendMargin, -kFacetLegendMargin, -kFacetLegendMargin);
+    const QSize size = chip->fitWidth(std::max(0, area.width()));
+    QRect place(QPoint(area.right() + 1 - size.width(), area.top()), size);
+    if (!annotationBar_->isHidden() && place.intersects(annotationBar_->geometry())) {
+      place.moveTop(annotationBar_->geometry().bottom() + 1 + kOverlayGap);
+    }
+    chip->setGeometry(place);
+    chip->setVisible(area.contains(place));
+  }
+}
+
+bool ViewerWindow::inPaintTile(const QPointF& pos) const {
+  vtkRenderer* ren = renderer_.getRenderer();
+  const std::array<double, 2> display = displayPoint(vtkWidget_, pos);
+  return ren && ren->IsInViewport(static_cast<int>(display[0]), static_cast<int>(display[1]));
 }
 
 void ViewerWindow::closeEvent(QCloseEvent* event) {
@@ -1956,15 +2137,15 @@ void ViewerWindow::syncPager(size_t index) {
 void ViewerWindow::syncLegend(size_t index) {
   const Tile& tile = renderer_.tiles()[index];
   ColorBarWidget* legend = legends_[index];
-  // While annotating, the bar's swatches are the legend.
-  const bool show = tile.shown && tile.field && !annotating_;
+  // While annotating, the bar's swatches are the painted view's legend.
+  const bool show = tile.shown && tile.field && (!annotating_ || tile.reference);
   legend->setVisible(show);
   if (!show) {
     return;
   }
   const SceneField& field = renderer_.fields()[*tile.field];
   // A tile among others keeps its line short.
-  const bool single = renderer_.panes()[tile.pane].mode == PaneMode::Single;
+  const bool single = renderer_.panes()[tile.pane].mode == PaneMode::Single && !tile.reference;
   legend->setTitle(QStringFromUtf8(field.field.name));
   legend->setSubtitle(legendSubtitle(
       single ? std::optional<FieldAssociation>(field.field.association) : std::nullopt,
@@ -2085,7 +2266,6 @@ void ViewerWindow::openFieldList(size_t index) {
     return;
   }
   setActivePane(index);
-  listPane_ = index;
   const Pane& pane = renderer_.panes()[index];
   std::vector<SearchItem> items;
   for (int position = pane.mode == PaneMode::Single ? -1 : 0;
@@ -2093,8 +2273,19 @@ void ViewerWindow::openFieldList(size_t index) {
        ++position) {
     items.push_back(fieldItem(index, position));
   }
+  openList(pager, items, [this, index](int row) {
+    const bool single = renderer_.panes()[index].mode == PaneMode::Single;
+    showField(index, single ? row - 1 : row);
+  });
+}
+
+void ViewerWindow::openList(QWidget* anchor,
+                            const std::vector<SearchItem>& items,
+                            std::function<void(int)> choose) {
+  listAnchor_ = anchor;
+  listChoose_ = std::move(choose);
   hideProbe();
-  fieldList_->setAnchor(QRect(pager->mapTo(vtkWidget_, QPoint(0, 0)), pager->size()));
+  fieldList_->setAnchor(QRect(anchor->mapTo(vtkWidget_, QPoint(0, 0)), anchor->size()));
   fieldList_->open(items);
 }
 
@@ -2434,6 +2625,16 @@ void ViewerWindow::buildRail() {
     });
     annotateKeys_.push_back(action);
   }
+  // T splits a pane, which annotation does not; there it steps through the compare maps.
+  auto* compare = new QAction(this);
+  compare->setShortcut(QKeySequence(Qt::Key_T));
+  addAction(compare);
+  QObject::connect(compare, &QAction::triggered, this, [this]() {
+    setCompareMaps((compareCount_ + 1) %
+                   (std::min(kMaxReferences, compareCandidates().size()) + 1));
+    panesChanged();
+  });
+  annotateKeys_.push_back(compare);
   auto* undo = new QAction(this);
   undo->setShortcut(QKeySequence(QKeySequence::Undo));
   addAction(undo);
@@ -2755,9 +2956,6 @@ void ViewerWindow::layoutOverlays() {
   }
   layoutPanes();
   fieldList_->setGeometry(vtkWidget_->rect());
-  if (const ScalarPager* pager = paneUi_[listPane_].pager) {
-    fieldList_->setAnchor(QRect(pager->mapTo(vtkWidget_, QPoint(0, 0)), pager->size()));
-  }
   palette_->setGeometry(vtkWidget_->rect());
   if (rail_) {
     if (annotating_) {
@@ -2794,7 +2992,11 @@ void ViewerWindow::layoutOverlays() {
           railPanelGeometry(besideRail(size.width()), rail_->geometry(), size));
     }
   }
-  // After the annotation bar, which it goes under.
+  // After the annotation bar, which they go under.
+  layoutCompareOverlays();
+  if (listAnchor_) {
+    fieldList_->setAnchor(QRect(listAnchor_->mapTo(vtkWidget_, QPoint(0, 0)), listAnchor_->size()));
+  }
   notice_->setGeometry(noticeGeometry(vtkWidget_, notice_, annotationBar_));
   stackOverlays();
 }
@@ -2829,10 +3031,11 @@ void ViewerWindow::layoutPanes() {
     }
     for (size_t tile = pane.firstTile; tile < pane.firstTile + pane.tileCount; ++tile) {
       if (!legends_[tile]->isHidden()) {
+        const Tile& shown = renderer_.tiles()[tile];
         legends_[tile]->setGeometry(
-            legendGeometry(viewportRect(vtkWidget_, renderer_.tiles()[tile].viewport),
+            legendGeometry(viewportRect(vtkWidget_, shown.viewport),
                            legends_[tile],
-                           pane.mode,
+                           shown.reference ? PaneMode::Split : pane.mode,
                            ui.pager && !ui.pager->isHidden() ? pager : QRect()));
       }
     }
@@ -2842,6 +3045,9 @@ void ViewerWindow::layoutPanes() {
 void ViewerWindow::stackOverlays() {
   for (ColorBarWidget* legend : legends_) {
     legend->raise();
+  }
+  for (FieldChip* chip : compareChips_) {
+    chip->raise();
   }
   for (ProbeCard* card : probeCards_) {
     card->raise();

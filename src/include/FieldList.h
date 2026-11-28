@@ -8,8 +8,9 @@
 
 class QMouseEvent;
 
-/// The pages the field pager steps through, in its order, on a card above the pager: a
-/// search field, then a row per page with its kind under its name, the shown one checked.
+/// The pages the field pager steps through, in its order, on a card above the pager (or
+/// below what opened it, where more rows fit): a search field, then a row per page with
+/// its kind under its name, the shown one checked.
 /// While open it covers its parent, so a click beside the card closes it instead of
 /// reaching what lies under it.
 class FieldList : public QWidget {
@@ -22,7 +23,7 @@ public:
   /// anchor first.
   void open(const std::vector<SearchItem>& pages);
 
-  /// Where the pager is, in this widget's coordinates: the card sits above it.
+  /// Where the pager or chip that opened it is, in this widget's coordinates.
   void setAnchor(const QRect& anchor);
 
   /// Hide without choosing; emits closed when it was open.

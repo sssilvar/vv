@@ -25,6 +25,7 @@ class vtkCellPicker;
 class vtkStaticCellLocator;
 class vtkFeatureEdges;
 class vtkImageSlice;
+class vtkPolyData;
 class vtkPolyDataNormals;
 
 struct RendererContext {
@@ -50,6 +51,10 @@ struct SceneField {
 // How a pane shows its file's fields: one at a time, or a page of them side by side.
 enum class PaneMode { Single, Split };
 
+// Reference tiles a Single pane can stack beside its first one, for comparing what is
+// painted there with other fields.
+constexpr size_t kMaxReferences = 3;
+
 // One viewport of a pane: the pane's meshes colored by one field, or by their part colors.
 struct Tile {
   vtkSmartPointer<vtkRenderer> renderer;
@@ -57,15 +62,18 @@ struct Tile {
   size_t firstActor = 0;       // its actors follow in context.actors, one per pane mesh
   std::optional<size_t> field; // index into the scene's fields while shown
   bool shown = false;
+  bool reference = false; // stacked beside its pane's first tile while shown
   double viewport[4] = {0.0, 0.0, 1.0, 1.0};
 };
 
-// A file's share of the window. Its tiles are a fixed pool: Single draws the first, Split
-// as many as its page holds, and paging hands them other fields.
+// A file's share of the window. Its tiles are a fixed pool: Single draws the first, and its
+// references beside it, Split as many as its page holds, and paging hands them other fields.
 struct Pane {
   std::vector<size_t> meshes; // indices into the meshes given to setup
   std::vector<size_t> fields; // the scene fields its meshes carry, in the scene's order
   PaneMode mode = PaneMode::Single;
+  // Scene fields that Single shows top to bottom in a column right of the first tile.
+  std::vector<size_t> references;
   int first = -1;       // position in fields of the first one shown; -1 is plain geometry
   size_t pageSize = 1;  // fields a page shows
   size_t firstTile = 0; // its tiles follow in the renderer's tiles
@@ -152,6 +160,10 @@ public:
   void showField(size_t pane, int position);
   // The pane's page that many pages on, wrapping both ways.
   void stepPane(size_t pane, int step);
+  // Fields of the pane shown top to bottom in a column right of its first tile while it is
+  // Single, which then takes the left half; at most kMaxReferences, and empty for none.
+  // False, changing nothing, for a field the pane does not carry.
+  bool setReferences(size_t pane, std::vector<size_t> fields);
   // While linked, showing a field in one pane shows it in every pane whose file has it,
   // and plain geometry in every Single pane; modes stay each pane's own.
   void setFieldsLinked(bool linked) {
@@ -189,6 +201,10 @@ public:
   // externally owned LUT, so the value-to-color mapping stays fixed while the array is
   // edited (annotation mode). A null lut gives the tile its field back.
   void setLabelColoring(const ScalarField& field, vtkLookupTable* lut, const double range[2]);
+  // Lines drawn over the meshes of every reference tile shown, such as the borders of the
+  // regions painted in the first; null removes them. The caller may change the lines in
+  // place; the next render draws them. Does not render.
+  void setReferenceOutline(vtkPolyData* lines);
   // Draw again after the specified mesh's data changed (e.g. a new playback frame),
   // keeping every color range.
   void refreshAfterDataChange(size_t mesh);
@@ -269,6 +285,8 @@ private:
   // The panes' grid, each pane's page and tiles, and the field every shown tile draws.
   void layout();
   void colorTile(size_t tile);
+  // Shows the reference outline while references show and the first mesh does.
+  void updateReferenceOutline();
   void colorActor(size_t actor);
   bool recolor(size_t field); // after its table or range changed; renders
   bool retable(size_t field); // after its colormap or category colors changed; renders
@@ -303,6 +321,10 @@ private:
   vtkSmartPointer<vtkCellPicker> probePicker_;
   std::vector<vtkSmartPointer<vtkStaticCellLocator>> probeLocators_;
   std::vector<PinMarker> pinMarkers_;
+  vtkSmartPointer<vtkPolyData> referenceLines_;
+  // A dark casing under a bright line, so the outline reads on every color of a map; both
+  // in each tile past the first pane's first, made when an outline is first set.
+  std::array<vtkSmartPointer<vtkActor>, 2> outline_;
   std::optional<ProbeHit> markerHit_;
   double sceneBounds_[6] = {0.0, 1.0, 0.0, 1.0, 0.0, 1.0};
   vtkSmartPointer<vtkCallbackCommand> clipCb_;

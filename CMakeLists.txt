@@ -187,6 +187,7 @@ add_library(vv_ui STATIC
   src/ColorPanel.cpp
   src/Colormaps.cpp
   src/CommandPalette.cpp
+  src/FieldChip.cpp
   src/FieldList.cpp
   src/KeyHints.cpp
   src/LayersPanel.cpp
@@ -206,6 +207,7 @@ add_library(vv_ui STATIC
   src/include/ColorPanel.h
   src/include/Colormaps.h
   src/include/CommandPalette.h
+  src/include/FieldChip.h
   src/include/FieldList.h
   src/include/KeyHints.h
   src/include/LayersPanel.h
@@ -228,6 +230,7 @@ target_link_libraries(vv_ui PUBLIC Qt${QT_VERSION_MAJOR}::Widgets PRIVATE vv_opt
 
 add_library(vv_viewer STATIC
   src/MeshRenderer.cpp
+  src/RegionBorders.cpp
   src/ScalarVizUtils.cpp
   src/SliceView.cpp
   src/ViewerWindow.cpp
@@ -235,6 +238,7 @@ add_library(vv_viewer STATIC
   src/include/FacetPages.h
   src/include/MeshRenderer.h
   src/include/ProbeTrace.h
+  src/include/RegionBorders.h
   src/include/ScalarVizUtils.h
   src/include/SliceView.h
   src/include/ViewerWindow.h

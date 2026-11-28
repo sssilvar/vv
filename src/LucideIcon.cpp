@@ -460,6 +460,11 @@ QPainterPath lucidePath(Lucide icon) {
     add("m7 22-4-4 4-4");
     add("M21 13v1a4 4 0 0 1-4 4H3");
     break;
+  case Lucide::LayoutPanelLeft:
+    path.addRoundedRect(QRectF(3.0, 3.0, 7.0, 18.0), 1.0, 1.0);
+    path.addRoundedRect(QRectF(14.0, 3.0, 7.0, 7.0), 1.0, 1.0);
+    path.addRoundedRect(QRectF(14.0, 14.0, 7.0, 7.0), 1.0, 1.0);
+    break;
   }
   return path;
 }

@@ -4,6 +4,7 @@
 #include "Colormaps.h"
 #include "CommandPalette.h"
 #include "FacetPages.h"
+#include "FieldChip.h"
 #include "FieldList.h"
 #include "LayersPanel.h"
 #include "LucideIcon.h"
@@ -258,15 +259,16 @@ private slots:
   }
 
   void lucideIconsFitTheirBox() {
-    for (const Lucide icon :
-         {Lucide::ChevronLeft, Lucide::ChevronRight, Lucide::ChevronDown,  Lucide::Check,
-          Lucide::Search,      Lucide::Eye,          Lucide::EyeOff,       Lucide::Layers,
-          Lucide::Palette,     Lucide::Box,          Lucide::Grid3x3,      Lucide::Globe,
-          Lucide::ScanEye,     Lucide::Gem,          Lucide::Crosshair,    Lucide::Brush,
-          Lucide::Rotate3d,    Lucide::Eraser,       Lucide::Undo2,        Lucide::Save,
-          Lucide::X,           Lucide::Wind,         Lucide::RotateCcw,    Lucide::Camera,
-          Lucide::Play,        Lucide::Pause,        Lucide::ChevronFirst, Lucide::ChevronLast,
-          Lucide::Repeat}) {
+    for (const Lucide icon : {Lucide::ChevronLeft, Lucide::ChevronRight, Lucide::ChevronDown,
+                              Lucide::Check,       Lucide::Search,       Lucide::Eye,
+                              Lucide::EyeOff,      Lucide::Layers,       Lucide::Palette,
+                              Lucide::Box,         Lucide::Grid3x3,      Lucide::Globe,
+                              Lucide::ScanEye,     Lucide::Gem,          Lucide::Crosshair,
+                              Lucide::Brush,       Lucide::Rotate3d,     Lucide::Eraser,
+                              Lucide::Undo2,       Lucide::Save,         Lucide::X,
+                              Lucide::Wind,        Lucide::RotateCcw,    Lucide::Camera,
+                              Lucide::Play,        Lucide::Pause,        Lucide::ChevronFirst,
+                              Lucide::ChevronLast, Lucide::Repeat,       Lucide::LayoutPanelLeft}) {
       const QPainterPath path = lucidePath(icon);
       QVERIFY(!path.isEmpty());
       QVERIFY(QRectF(0, 0, 24, 24).contains(path.boundingRect()));
@@ -1701,6 +1703,21 @@ private slots:
     QVERIFY(empty->isVisible());
   }
 
+  // Opened from a chip near the top of the view, the card drops below it.
+  void fieldListOpensBelowATopAnchor() {
+    QWidget view;
+    FieldList list(&view);
+    openFieldList(view, list);
+    auto* card = list.findChild<QWidget*>(QStringLiteral("fieldListCard"));
+    QVERIFY(card);
+    QVERIFY(card->geometry().bottom() < 540);
+
+    const QRect chip(300, 40, 120, 28);
+    list.setAnchor(chip);
+    QVERIFY(card->geometry().top() > chip.bottom());
+    QVERIFY(card->geometry().bottom() < view.height());
+  }
+
   void fieldListReturnPicksHighlighted() {
     QWidget view;
     FieldList list(&view);
@@ -2194,6 +2211,44 @@ private slots:
 
     QTest::mouseClick(buttonNamed(bar, QStringLiteral("Leave annotate")), Qt::LeftButton);
     QCOMPARE(leave.count(), 1);
+  }
+
+  // The menu offers as many maps as there are other fields to show, and no menu without one.
+  void annotationBarOffersCompareMaps() {
+    AnnotationBar bar;
+    QSignalSpy chosen(&bar, &AnnotationBar::compareMapsChosen);
+    auto* compare = qobject_cast<QToolButton*>(buttonNamed(bar, QStringLiteral("Compare")));
+    QVERIFY(compare);
+    QVERIFY(compare->menu());
+    QVERIFY(!compare->isEnabled());
+
+    bar.setCompareMaps(1, 2);
+    QVERIFY(compare->isEnabled() && compare->isChecked());
+    const QList<QAction*> counts = compare->menu()->actions();
+    QCOMPARE(counts.size(), AnnotationBar::kMaxCompareMaps + 1);
+    QVERIFY(counts[1]->isChecked());
+    QVERIFY(counts[2]->isEnabled() && !counts[3]->isEnabled());
+    QCOMPARE(chosen.count(), 0);
+
+    counts[2]->trigger();
+    QCOMPARE(chosen.count(), 1);
+    QCOMPARE(chosen.last().at(0).toInt(), 2);
+    bar.setCompareMaps(0, 2);
+    QVERIFY(!compare->isChecked() && counts[0]->isChecked());
+  }
+
+  // The chip keeps to the width it is given, eliding the name, and shows all of it in
+  // its tooltip.
+  void fieldChipElidesItsName() {
+    FieldChip chip;
+    const QString name = QStringLiteral("LAT_smoothed_with_a_very_long_suffix");
+    chip.setField(name, QStringLiteral("Points · continuous"));
+    const QSize full = chip.fitWidth(QWIDGETSIZE_MAX);
+    QCOMPARE(chip.text(), name);
+    const QSize narrow = chip.fitWidth(full.width() / 2);
+    QVERIFY(narrow.width() <= full.width() / 2);
+    QVERIFY(chip.text() != name);
+    QVERIFY(chip.toolTip().contains(name));
   }
 
   void annotationBarWrapsToFit() {

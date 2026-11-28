@@ -38,7 +38,8 @@ enum class Lucide {
   Pause,
   ChevronFirst,
   ChevronLast,
-  Repeat
+  Repeat,
+  LayoutPanelLeft
 };
 
 // SVG path data with the commands Lucide uses: M L H V C S A Z, absolute and

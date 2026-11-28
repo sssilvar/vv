@@ -131,6 +131,7 @@ Open Annotate to paint a per-cell integer `label` array, or start with `vv -a me
 
 - **Rotate**, **Paint** and **Erase** choose the left-drag action. Hold-to-paint/erase keys temporarily override it; right-drag erases while Paint or Erase is selected.
 - Swatches show the values they write, or their keys 1 to 9 when a value is too long. Keys 1 to 9 select a swatch by position. The brush paints the hovered cell and the chosen number of neighboring rings along the surface, without jumping to nearby disconnected sheets. A preview shows the affected cells.
+- **Compare** shows up to three of the file's other fields in a column of maps right of the painted view, which keeps the left half; **T** steps through none to three. Click a map's field name to choose another field; picking one another map shows swaps the two. The maps share the camera and draw a white line over their colors wherever the painted label changes, so their values stay readable inside the regions: along the edges between cells, or halfway between the points of a point field, where the painted view's colors blend. Strokes land only in the painted view, and the brush preview shows in the maps too; a drag over a map turns the camera.
 - **Undo** reverts up to 50 strokes.
 - **Save** (Ctrl+S) replaces the opened file with the labeled mesh, after a confirmation whose **Don't ask again** box turns it off. It applies to a single-mesh `.vtk`, `.vtp` or `.vtu` file; otherwise it asks for a file like Save as.
 - **Save as…** (Ctrl+Shift+S) writes the labeled mesh to `.vtp` for PolyData or `.vtu` for an unstructured grid. VTK XML `.vtu` output is not currently supported as input by vv.
@@ -171,7 +172,7 @@ Letter keys below do not require Shift. Shortcuts apply to the viewer; focused e
 | Space                             | Next field of the active pane, or next page in split view; play/pause when the playback bar is present.           |
 | Shift+Space                       | Next field or page of the active pane, including during playback.                                                 |
 | Ctrl+Space; Option+Space on macOS | Previous field or page of the active pane.                                                                        |
-| T                                 | Switch the active pane between single and split view.                                                             |
+| T                                 | Switch the active pane between single and split view; during annotation, show none to three compare maps.         |
 | Right click on a mesh             | That pane's menu: Split view, Choose field… and, among several files, Link fields across files.                   |
 | Left / Right                      | Previous / next frame in a time series.                                                                           |
 | P / B                             | Toggle Probe / Annotate.                                                                                          |

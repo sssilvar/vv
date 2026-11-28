@@ -1,5 +1,5 @@
 add_executable(vv_renderer_tests MeshRendererTests.cpp
-  ../src/MeshRenderer.cpp ../src/ScalarVizUtils.cpp ../src/Colormaps.cpp)
+  ../src/MeshRenderer.cpp ../src/RegionBorders.cpp ../src/ScalarVizUtils.cpp ../src/Colormaps.cpp)
 target_link_libraries(vv_renderer_tests PRIVATE vv_options vv_mesh
   VTK::CommonColor VTK::FiltersSources VTK::RenderingOpenGL2 VTK::InteractionStyle VTK::RenderingAnnotation)
 vtk_module_autoinit(TARGETS vv_renderer_tests MODULES ${VTK_LIBRARIES})

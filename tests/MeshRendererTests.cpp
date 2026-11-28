@@ -1,5 +1,6 @@
 #include "MeshRenderer.h"
 #include "ProbeTrace.h"
+#include "RegionBorders.h"
 #include "TemporalSource.h"
 
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include <vtkCamera.h>
 #include <vtkCellArray.h>
 #include <vtkCellData.h>
+#include <vtkCellType.h>
 #include <vtkCommand.h>
 #include <vtkFloatArray.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -32,6 +34,7 @@
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRendererCollection.h>
 #include <vtkShaderProperty.h>
+#include <vtkUnstructuredGrid.h>
 
 namespace {
 // Shows field in the first pane and returns its index among the scene's fields.
@@ -987,6 +990,147 @@ bool checkPaneFields(MeshRenderer& renderer) {
   return true;
 }
 
+// Visible actors of the tile drawing lines.
+int outlineActors(const Tile& tile, const vtkPolyData* lines) {
+  int count = 0;
+  vtkActorCollection* actors = tile.renderer->GetActors();
+  actors->InitTraversal();
+  while (vtkActor* actor = actors->GetNextActor()) {
+    count += actor->GetVisibility() && actor->GetMapper() &&
+                     actor->GetMapper()->GetInputDataObject(0, 0) == lines
+                 ? 1
+                 : 0;
+  }
+  return count;
+}
+
+// A Single pane stacks its references right of its first tile, which keeps the left half,
+// and draws the outline over the references only.
+bool checkReferences(MeshRenderer& renderer) {
+  renderer.context.window->SetSize(1200, 800);
+  renderer.setLayoutMetrics({});
+  renderer.setup({probeSquare()}, {{"square", {0}}}, {{0.0, 0.5, 1.0}}, PaneMode::Single);
+  const size_t lat = renderer.findField({"lat", FieldAssociation::Point}).value();
+  const size_t region = renderer.findField({"region", FieldAssociation::Cell}).value();
+  const Pane& pane = renderer.panes().front();
+  const std::vector<Tile>& tiles = renderer.tiles();
+  // The first tile and a reference per field, though a page of two fields needs two.
+  if (tiles.size() != 3 || !renderer.setReferences(0, {region, lat})) {
+    std::cerr << "A pane of two fields has no tile for each reference\n";
+    return false;
+  }
+  const double left[4] = {0.0, 0.0, 0.5, 1.0};
+  const double top[4] = {0.5, 0.5, 1.0, 1.0};
+  const double bottom[4] = {0.5, 0.0, 1.0, 0.5};
+  if (shownTiles(renderer) != std::vector<size_t>{0, 1, 2} || tiles[0].reference ||
+      !tiles[1].reference || !tiles[2].reference ||
+      tiles[0].field != pane.fields[static_cast<size_t>(pane.first)] || tiles[1].field != region ||
+      tiles[2].field != lat || !sameViewport(tiles[0].viewport, left) ||
+      !sameViewport(tiles[1].viewport, top) || !sameViewport(tiles[2].viewport, bottom)) {
+    std::cerr << "The references are not stacked right of the first tile\n";
+    return false;
+  }
+
+  vtkNew<vtkPolyData> lines;
+  renderer.setReferenceOutline(lines);
+  if (outlineActors(tiles[0], lines) != 0 || outlineActors(tiles[1], lines) != 2 ||
+      outlineActors(tiles[2], lines) != 2) {
+    std::cerr << "The outline is not drawn, cased, over the references alone\n";
+    return false;
+  }
+  renderer.setPartVisible(0, false);
+  if (outlineActors(tiles[1], lines) != 0) {
+    std::cerr << "The outline shows over a hidden mesh\n";
+    return false;
+  }
+  renderer.setPartVisible(0, true);
+
+  const double whole[4] = {0.0, 0.0, 1.0, 1.0};
+  if (renderer.setReferences(0, {region, lat, region, lat}) || renderer.setReferences(0, {99}) ||
+      !renderer.setReferences(0, {}) || shownTiles(renderer) != std::vector<size_t>{0} ||
+      !sameViewport(tiles[0].viewport, whole) || outlineActors(tiles[1], lines) != 0) {
+    std::cerr << "References were not refused or cleared as asked\n";
+    return false;
+  }
+  renderer.setReferenceOutline(nullptr);
+  return true;
+}
+
+// Borders follow the edges between cells of different labels and cross the faces whose
+// points differ halfway, on a surface or on the outer faces of a volume.
+bool checkRegionBorders() {
+  const vtkSmartPointer<vtkPolyData> square = probeSquare();
+  RegionBorders borders(square);
+  const auto lineCount = [&borders]() { return borders.lines()->GetNumberOfLines(); };
+
+  // Cells 0 and 1 of the 4 x 4 grid's bottom row: the edge between them, the top of each
+  // and the right of 1. The square's own border is not one.
+  vtkNew<vtkIntArray> cells;
+  cells->SetNumberOfTuples(16);
+  cells->FillComponent(0, 0.0);
+  borders.update(cells, FieldAssociation::Cell);
+  const vtkIdType none = lineCount();
+  cells->SetValue(0, 1);
+  cells->SetValue(1, 2);
+  borders.update(cells, FieldAssociation::Cell);
+  const vtkIdType two = lineCount();
+  borders.update(cells, FieldAssociation::Point);
+  if (none != 0 || two != 4 || lineCount() != 0) {
+    std::cerr << "Region borders of cells: " << none << ", " << two << " and " << lineCount()
+              << " lines\n";
+    return false;
+  }
+
+  // The middle point alone: a line across each of its four faces, halfway to its neighbors.
+  vtkNew<vtkFloatArray> points;
+  points->SetNumberOfTuples(25);
+  points->FillComponent(0, std::numeric_limits<double>::quiet_NaN());
+  points->SetValue(12, 3.0F);
+  borders.update(points, FieldAssociation::Point);
+  const vtkIdType diamond = lineCount();
+  bool halfway = true;
+  for (vtkIdType point = 0; point < borders.lines()->GetNumberOfPoints(); ++point) {
+    const double* at = borders.lines()->GetPoint(point);
+    halfway = halfway && std::abs(std::abs(at[0] - 0.5) + std::abs(at[1] - 0.5) - 0.125) < 1e-6;
+  }
+  // A third label across a face from it: that face's four lines meet in its middle, and
+  // one crosses each of the label's other three faces.
+  points->SetValue(6, 5.0F);
+  borders.update(points, FieldAssociation::Point);
+  if (diamond != 4 || !halfway || lineCount() != 10) {
+    std::cerr << "Region borders of points: " << diamond << " and " << lineCount()
+              << " lines, halfway " << halfway << "\n";
+    return false;
+  }
+
+  // Two tetrahedra sharing a triangle: its three edges divide their outer faces.
+  vtkNew<vtkPoints> corners;
+  for (const auto& p : {std::array<double, 3>{0.0, 0.0, 0.0},
+                        std::array<double, 3>{1.0, 0.0, 0.0},
+                        std::array<double, 3>{0.0, 1.0, 0.0},
+                        std::array<double, 3>{0.2, 0.2, 1.0},
+                        std::array<double, 3>{0.2, 0.2, -1.0}}) {
+    corners->InsertNextPoint(p.data());
+  }
+  vtkNew<vtkUnstructuredGrid> grid;
+  grid->SetPoints(corners);
+  const vtkIdType above[4] = {0, 1, 2, 3};
+  const vtkIdType below[4] = {0, 2, 1, 4};
+  grid->InsertNextCell(VTK_TETRA, 4, above);
+  grid->InsertNextCell(VTK_TETRA, 4, below);
+  RegionBorders solid(grid);
+  vtkNew<vtkIntArray> tets;
+  tets->SetNumberOfTuples(2);
+  tets->SetValue(0, 1);
+  tets->SetValue(1, 0);
+  solid.update(tets, FieldAssociation::Cell);
+  if (solid.lines()->GetNumberOfLines() != 3) {
+    std::cerr << "Region borders on a volume: " << solid.lines()->GetNumberOfLines() << " lines\n";
+    return false;
+  }
+  return true;
+}
+
 bool categoryColored(vtkLookupTable* lut, double value, const std::array<double, 3>& rgb) {
   return lut && lut->GetAnnotatedValueIndex(value) >= 0 &&
          sameColor(lut, lut->GetAnnotatedValueIndex(value), rgb);
@@ -1267,7 +1411,8 @@ int main() {
                  checkNonFiniteValues() && checkProbe(renderer) && checkGlass(renderer) &&
                  checkPaneFields(renderer) && checkCategoryNaNs(renderer) &&
                  checkCategoryPalettes(renderer) && checkDegeneratePick() && checkPin(renderer) &&
-                 checkTrace() && checkSplitPages(renderer)
+                 checkTrace() && checkSplitPages(renderer) && checkReferences(renderer) &&
+                 checkRegionBorders()
              ? 0
              : 1;
 }

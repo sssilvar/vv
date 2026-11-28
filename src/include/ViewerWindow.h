@@ -10,6 +10,7 @@
 #include <QMainWindow>
 #include <QPointF>
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -20,6 +21,7 @@
 class ColorBarWidget;
 class ColorPanel;
 class CommandPalette;
+class FieldChip;
 class FieldList;
 class KeyHints;
 class LayersPanel;
@@ -29,6 +31,7 @@ enum class NoticeKind;
 class StylePanel;
 class PlaybackBar;
 class PanelLabel;
+class RegionBorders;
 class ProbeCard;
 class ScalarPager;
 class SliceView;
@@ -115,6 +118,15 @@ private:
   bool saveAnnotations(SaveMode mode);
   QString inPlacePath() const; // empty when the opened file cannot be written back
   void syncAnnotateKeys();
+  // Compare maps: other fields of the file beside the painted view while annotating.
+  std::vector<size_t> compareCandidates() const; // the file's fields but the painted one
+  void setCompareMaps(size_t count);             // keeping each slot's field, then applies them
+  void applyCompare();        // to the renderer and the bar; the outline is set up on first use
+  void updateRegionBorders(); // the outline, from the labels
+  void labelsChanged();       // after a stroke or undo wrote them: recolors, outlines, renders
+  void openCompareList(size_t slot);
+  void layoutCompareOverlays();               // each map's chip, and the lines between the views
+  bool inPaintTile(const QPointF& pos) const; // over the view painting writes from
 
   std::optional<size_t> paneAt(const QPointF& pos) const; // pos in vtkWidget_
   void setActivePane(size_t pane);      // the one Space, the Color panel and the palette act on
@@ -133,6 +145,9 @@ private:
   void streamShownFields(); // a time series reads only the arrays its tiles show
   SearchItem fieldItem(size_t pane, int position) const; // as the pager and lists show it
   void openFieldList(size_t pane);
+  // The field list over anchor, which stays its anchor; choose takes the row picked.
+  void
+  openList(QWidget* anchor, const std::vector<SearchItem>& items, std::function<void(int)> choose);
   void togglePalette();
   std::vector<PaletteItem> paletteItems(); // fields, colormaps or palettes, and commands
   // The field the Color panel and the palette's colors edit: the active pane's, while
@@ -210,8 +225,11 @@ private:
   std::vector<PaneUi> paneUi_;           // parallel to the renderer's panes
   std::vector<ColorBarWidget*> legends_; // parallel to the renderer's tiles
   size_t activePane_ = 0;
-  FieldList* fieldList_ = nullptr;        // opened from a pager
-  size_t listPane_ = 0;                   // whose fields the list shows
+  FieldList* fieldList_ = nullptr; // opened from a pager or a compare chip
+  // The pager or chip the list opened from, which live as long as the window. Not a QPointer:
+  // clang-analyzer 18 reports a false use-after-free in ~QWeakPointer.
+  const QWidget* listAnchor_ = nullptr;
+  std::function<void(int)> listChoose_;   // takes the row picked in it
   std::vector<ScalarField> vectorFields_; // 3-component arrays, drawn as glyphs
   int activeVectorIdx_ = -1;
 
@@ -253,6 +271,12 @@ private:
   std::vector<double> labelValues_; // [0] is what Erase writes, [i] what label i writes
   double labelRange_[2] = {0.0, 1.0};
   vtkSmartPointer<class vtkActor> previewActor_; // faded hover overlay of the brush footprint
+  // Compare maps: each slot's field, kept for the next entry, and how many show.
+  std::vector<size_t> compareFields_;
+  size_t compareCount_ = 0;
+  std::vector<FieldChip*> compareChips_;  // per slot, over its tile
+  std::vector<QWidget*> compareDividers_; // left of the maps, then between them
+  std::unique_ptr<RegionBorders> regionBorders_;
   // Undo: each stroke records the (tuple, previous value) pairs it changed.
   std::vector<std::pair<long long, double>> currentStroke_;
   std::vector<std::vector<std::pair<long long, double>>> undoStack_;
