@@ -1,5 +1,7 @@
 # [Unreleased]
 
+# [3.1.0] - 2026-11-28
+
 ### Added
 
 - `vv update` installs the latest release over the running package; on Windows it downloads the new portable `.exe`.
