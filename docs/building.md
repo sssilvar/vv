@@ -51,7 +51,7 @@ pacman -S --needed \
   mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja \
   mingw-w64-x86_64-qt6-base mingw-w64-x86_64-vtk \
   mingw-w64-x86_64-fast_float mingw-w64-x86_64-hdf5 \
-  mingw-w64-x86_64-cxxopts mingw-w64-x86_64-nlohmann-json
+  mingw-w64-x86_64-nlohmann-json
 cmake -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/mingw64
 cmake --build build
