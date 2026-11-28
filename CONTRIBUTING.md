@@ -22,6 +22,8 @@ The Unix-only `stdin-errors` and `build-helper` checks are not registered on Win
 
 New parsers must preserve recognition precedence: [buildParsers](src/MeshLoading.cpp) picks the first matching parser and does not retry another after parsing fails. Avoid broad recognition that captures another format. Stdin loses the source extension and directory; [stdin-errors](tests/StdinTests.cpp) protects copy error handling and temporary-file cleanup. Update the [input reference](docs/usage.md#inputs-and-command-line) when adding or changing a parser.
 
+Compile platform-specific code on every platform when its APIs allow it, and select the platform in ordinary code, as [SelfUpdate.cpp](src/SelfUpdate.cpp) does with `QOperatingSystemVersion::currentType()`. Code inside `#if` is only checked by the platform that builds it, and its helpers become unused elsewhere.
+
 Temporal sources update the existing rendered dataset through [TemporalSource](src/include/TemporalSource.h). Keep frame work limited to the active array, and preserve sampled range semantics. Viewer integration tests cover annotation save prompts, probe correspondence, visibility and column-color changes; bulk changes and column edits must preserve their single-render-submission behavior.
 
 ## Tests and checks
@@ -38,11 +40,26 @@ Apply the platform-specific prefix/toolchain settings from the [build guide](doc
 
 For ASan/UBSan on macOS/Linux with GCC or Clang, add `-DVV_ENABLE_SANITIZERS=ON` to the configure command and rebuild before running CTest. Sanitizer findings terminate the affected test instead of recovering. CI runs this configuration in a separate Linux job.
 
-Linux sanitizer CI configures `-DVV_TEST_QPA_PLATFORM=xcb` and runs `xvfb-run -a ./scripts/test-sanitizers.sh BUILD_DIR`, keeping leak detection enabled with full allocation backtraces (`ASAN_OPTIONS=fast_unwind_on_malloc=0`). Install Xvfb, xauth and Openbox for this run; the helper waits for Openbox to manage windows so native focus tests work, and stops it when CTest exits. The viewer check allows 120 seconds for allocation tracing; ordinary builds keep its 30-second timeout. Qt 5.15.3's offscreen backend retains screen objects at shutdown even in a standalone Qt program; xcb cleans up those objects.
+The `sanitizers` job of [scripts/ci-linux.sh](scripts/ci-linux.sh) configures `-DVV_TEST_QPA_PLATFORM=xcb` and runs `xvfb-run -a ./scripts/test-sanitizers.sh BUILD_DIR`, keeping leak detection enabled with full allocation backtraces (`ASAN_OPTIONS=fast_unwind_on_malloc=0`). Install Xvfb, xauth and Openbox for this run; the helper waits for Openbox to manage windows so native focus tests work, and stops it when CTest exits. The viewer check allows 120 seconds for allocation tracing; ordinary builds keep its 30-second timeout. Qt 5.15.3's offscreen backend retains screen objects at shutdown even in a standalone Qt program; xcb cleans up those objects.
 
 These tests exercise raster widgets and count VTK render submissions without creating an OpenGL context. The helper sets `QT_XCB_GL_INTEGRATION=none` to avoid Qt initializing Mesa while choosing visuals for raster windows. The separate required frame benchmark exercises real OpenGL rendering.
 
-CI sets `LSAN_OPTIONS=suppressions=$PWD/tests/lsan-fontconfig.supp:print_suppressions=1` for a single [initialization-only exception](tests/lsan-fontconfig.supp). Fontconfig 2.13.1 retains 288 bytes after a standalone `FcInit()` call; its `FcFini()` cleanup resets global state shared with other clients. The anchored `^FcInit$` rule excludes allocations made inside that initialization function, including any other initialization-time library leaks. Later font matching and application callbacks remain checked. Sanitizer test logs retain suppression counts even on successful CI runs. Inspect complete allocation paths before changing exceptions; library-name patterns also match application allocations whose stacks pass through those libraries.
+The job sets `LSAN_OPTIONS=suppressions=$PWD/tests/lsan-fontconfig.supp:print_suppressions=1` for a single [initialization-only exception](tests/lsan-fontconfig.supp). Fontconfig 2.13.1 retains 288 bytes after a standalone `FcInit()` call; its `FcFini()` cleanup resets global state shared with other clients. The anchored `^FcInit$` rule excludes allocations made inside that initialization function, including any other initialization-time library leaks. Later font matching and application callbacks remain checked. Sanitizer test logs retain suppression counts even on successful CI runs. Inspect complete allocation paths before changing exceptions; library-name patterns also match application allocations whose stacks pass through those libraries.
+
+### Linux CI locally
+
+CI's Linux jobs run [scripts/ci-linux.sh](scripts/ci-linux.sh), so one command reproduces them:
+
+```sh
+scripts/ci-linux.sh --docker
+scripts/ci-linux.sh --docker quality
+```
+
+`--docker` builds the `ci` stage of the [Dockerfile](Dockerfile) with Docker or Podman and runs the jobs there on Ubuntu 24.04. Omit it on an Ubuntu 24.04 host that has CI's packages. `scripts/ci-linux.sh --help` lists the jobs; their build trees persist in `build/ci-quality` and `build/ci-sanitizers`. The container uses the host's architecture, so on Apple Silicon it runs arm64 GCC where CI runs x86-64.
+
+Run it before pushing changes developed on another platform. GCC's optimizer-dependent warnings such as `-Wmaybe-uninitialized` and `-Wnull-dereference` only appear in its Release build, and clang-format 18, clang-tidy 18's analyzer and leaks inside Ubuntu's VTK 9.1 do not reproduce with Apple Clang, newer LLVM tools or Homebrew's VTK.
+
+A job continues past a failed step when later steps can still run, and CI builds pass `-k 0` to Ninja, so one run reports every failing file and gate. Let a CI run finish before pushing a fix: a new push cancels the jobs still running and hides their failures.
 
 ### Formatting
 
@@ -53,7 +70,7 @@ cmake --build build/dev --target format
 cmake --build build/dev --target format-check
 ```
 
-`format` updates C++ sources; `format-check` reports differences without changing files or inspecting unrelated Git changes. CMake searches for `clang-format` on `PATH`, then through `xcrun` on macOS. Set `-DCLANG_FORMAT_EXE=/path/to/clang-format` at configuration if needed. Use the formatter version reported by CI when local output differs.
+`format` updates C++ sources; `format-check` reports differences without changing files or inspecting unrelated Git changes. CMake searches for `clang-format` on `PATH`, then through `xcrun` on macOS. Set `-DCLANG_FORMAT_EXE=/path/to/clang-format` at configuration if needed. CI uses Ubuntu 24.04's clang-format 18; when a newer local version disagrees, `scripts/ci-linux.sh --docker format` gives CI's verdict.
 
 ### Static analysis
 

@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS deps
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
@@ -30,6 +30,20 @@ RUN apt-get update && apt-get install -y \
     freeglut3-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Tools for scripts/ci-linux.sh --docker. The default build skips this stage,
+# so the published image does not carry them.
+FROM deps AS ci
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang-format \
+    clang-tidy \
+    cppcheck \
+    xvfb \
+    xauth \
+    openbox \
+    libgl1-mesa-dri \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM deps
 WORKDIR /app
 
 COPY CMakeLists.txt ./
