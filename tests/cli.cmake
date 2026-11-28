@@ -29,3 +29,9 @@ foreach(option IN ITEMS --unknown-option --range)
     message(FATAL_ERROR "${option} did not report a usage error: ${result}: ${error}")
   endif()
 endforeach()
+
+execute_process(COMMAND "${VV}" update extra
+  RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 3)
+if(NOT result STREQUAL "1" OR NOT error MATCHES "Usage: vv update")
+  message(FATAL_ERROR "update with extra arguments was not rejected: ${result}: ${error}")
+endif()

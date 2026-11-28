@@ -1,4 +1,5 @@
 #include "MeshLoading.h"
+#include "SelfUpdate.h"
 #include "TemporalSource.h"
 #include "ViewerWindow.h"
 #include "version.h"
@@ -62,7 +63,7 @@ Args parseArgs(int argc, char* argv[]) {
   Args args;
   std::string range;
   cxxopts::Options options("vv", "A Qt-based mesh viewer");
-  options.positional_help("<meshfile> [<meshfile2> ...]");
+  options.positional_help("<meshfile> [<meshfile2> ...] | update");
   options.add_options()(
       "s,split",
       "Open every file split into a tile per scalar instead of one scalar at a time",
@@ -172,6 +173,10 @@ void addWindowsQtPluginPath() {
 #endif
 
 int main(int argc, char* argv[]) try {
+  // A mesh file named "update" can still be opened as ./update.
+  if (argc >= 2 && std::string(argv[1]) == "update") {
+    return runSelfUpdate(argc, argv);
+  }
   Args args = parseArgs(argc, argv);
 
   MeshLoadResult loadResult = loadMeshes(args.meshfiles);
