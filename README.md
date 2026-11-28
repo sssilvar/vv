@@ -6,7 +6,7 @@ Opens VTK, STL, XDMF, mesh JSON, EnSite DIF, CARTO, FreeSurfer, LS-DYNA and NIfT
 
 ## Install
 
-Download a package from [Releases](https://github.com/sssilvar/vv/releases). Packages include Qt and VTK.
+Download a package from [Releases](https://github.com/sssilvar/vv/releases). Packages include Qt and VTK. Run `vv update` later to install the latest release.
 
 ### Linux (x86_64)
 

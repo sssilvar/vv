@@ -38,6 +38,8 @@ Stdin is copied to a temporary file before loading. Only content-recognized form
 | `-v`, `--version`        | Print the version and build date, then exit.                                                                          |
 | `-h`, `--help`           | Print the command-line reference, then exit.                                                                          |
 
+Run `vv update` to install the latest release over a package from Releases. It needs `curl` and network access. The Linux AppImage and binary and the macOS `~/.local` tree are replaced in place; on Windows the new portable `.exe` is downloaded to your Downloads folder. Builds installed another way should be updated the same way. To open a mesh file named `update`, pass `./update`.
+
 ## Comparing files and fields
 
 Each file opens in its own pane, laid out in an adaptive grid. All panes share a camera, preserving relative positions for meshes in a common coordinate frame. Colored letter badges identify files consistently in panes, Layers and probe cards.

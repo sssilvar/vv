@@ -243,9 +243,9 @@ add_library(vv_viewer STATIC
 set_target_properties(vv_viewer PROPERTIES AUTOMOC ON)
 target_link_libraries(vv_viewer PRIVATE vv_options PUBLIC vv_mesh vv_ui)
 
-add_executable(vv src/main_qt.cpp)
+add_executable(vv src/main_qt.cpp src/SelfUpdate.cpp src/include/SelfUpdate.h)
 set_target_properties(vv PROPERTIES AUTOMOC ON)
-target_link_libraries(vv PRIVATE vv_options vv_viewer cxxopts::cxxopts)
+target_link_libraries(vv PRIVATE vv_options vv_viewer cxxopts::cxxopts nlohmann_json::nlohmann_json)
 
 if(WIN32)
   set(VV_ICON_RC "${GENERATED_ASSETS_DIR}/vv_icon.rc")
