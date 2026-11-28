@@ -4,6 +4,10 @@
 
 - `vv update` installs the latest release over the running package; on Windows it downloads the new portable `.exe`.
 
+### Changed
+
+- vv opens maximized on the screen under the mouse pointer.
+
 # [3.0.2] - 2026-11-27
 
 ### Fixed

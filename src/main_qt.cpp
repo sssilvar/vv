@@ -6,8 +6,12 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QCursor>
 #include <QDir>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QString>
+#include <QStyle>
 #include <QSurfaceFormat>
 #include <QVTKOpenGLNativeWidget.h>
 #ifdef _WIN32
@@ -215,7 +219,14 @@ int main(int argc, char* argv[]) try {
   }
 
   ViewerWindow window(std::move(loadResult), viewerOptions);
-  window.show();
+  // Maximize on the screen under the cursor; the window manager would otherwise
+  // pick the primary screen. The centered size is what un-maximizing restores.
+  if (QScreen* screen = QGuiApplication::screenAt(QCursor::pos())) {
+    const QRect available = screen->availableGeometry();
+    window.setGeometry(QStyle::alignedRect(
+        Qt::LeftToRight, Qt::AlignCenter, window.size().boundedTo(available.size()), available));
+  }
+  window.showMaximized();
   return QApplication::exec();
 } catch (const std::exception& e) {
   std::cerr << "vv: fatal: " << e.what() << '\n';
